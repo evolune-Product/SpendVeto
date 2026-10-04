@@ -1,0 +1,18 @@
+{
+  "name": "spendveto-wasm-policy",
+  "version": "0.1.0",
+  "private": true,
+  "description": "SpendVeto's policy-decision core, compiled to a portable WebAssembly module — the same rules as client/policy.js's checkPolicy, with all state (freezes, ledger spend, delegation tree, resolved payees) supplied by the host instead of fetched live, so the module itself does zero I/O and runs identically offline, in a browser, or at the edge.",
+  "type": "module",
+  "scripts": {
+    "asbuild:debug": "asc assembly/index.ts --target debug --outFile build/debug.wasm --textFile build/debug.wat --sourceMap --debug --runtime incremental --exportRuntime",
+    "asbuild:release": "asc assembly/index.ts --target release --outFile build/release.wasm --textFile build/release.wat --optimize --runtime incremental --exportRuntime --noAssert",
+    "asbuild": "npm run asbuild:debug && npm run asbuild:release",
+    "test": "node tests/parity.mjs"
+  },
+  "devDependencies": {
+    "assemblyscript": "^0.27.36",
+    "assemblyscript-json": "^1.1.0"
+  },
+  "license": "Apache-2.0"
+}

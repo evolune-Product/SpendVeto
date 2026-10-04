@@ -4,7 +4,7 @@
 
 [**Live site + playground**](https://spendveto.com) · [**Docs**](https://spendveto.com/docs.html) · Apache-2.0 · x402 + MCP native
 
-**Every claim in this README is executed before it ships.** `npm run verify` runs **321 end-to-end assertions** from a clean clone — real secp256k1 keypairs, real ECDSA verification, a real MCP stdio JSON-RPC session, and a synthetic runaway agent frozen mid-burst. If a claim isn't a test, it doesn't ship; features that can't work locally yet are declared slots that refuse honestly, never stubs that pretend.
+**Every claim in this README is executed before it ships.** `npm run verify` runs **382 end-to-end assertions** from a clean clone — real secp256k1 keypairs, real ECDSA verification, a real MCP stdio JSON-RPC session, and a synthetic runaway agent frozen mid-burst. If a claim isn't a test, it doesn't ship; features that can't work locally yet are declared slots that refuse honestly, never stubs that pretend.
 
 What *isn't* true yet is stated just as plainly: no external security audit, no customers. Settlement is testnet and simulate only, by default, for every chain. XRPL mainnet settlement (real money, RLUSD) is fully wired but **disabled unless an operator explicitly opts in** — that's their decision and their risk; we don't run, monitor, or control anyone's deployment. Funding positioning and market numbers live in [`PITCH.md`](./PITCH.md).
 
@@ -19,6 +19,14 @@ JavaScript (`spendveto-sdk`) and Python (`sdk-python/`, stdlib only) clients. Se
 ## India: UPI mandate governance
 
 `POST /api/upi/evaluate` decides allow / requires_approval / deny for an agent's UPI mandate debit with the RBI Digital Payments E-mandate Framework (2026) rules — human authentication on the first debit and above ₹15,000 (₹1,00,000 for insurance, mutual funds, card bills), 24 h pre-debit notice, withdrawn and expired mandates refused — deterministic, INR end to end, verdict ECDSA-signed, payee VPA masked. **Evaluator only:** it does not initiate or settle UPI, is not a PSP, and claims no NPCI/RBI approval (NPCI's agent protocol is not live). "Requires approval" always means a human completes the customer's authentication. Try the rules in your browser at `site/upi.html`. Operator policy goes under `policy.upi` (`maxPerTxnINR`, `maxPerDayINR`, `allowedPayeeVpas`, `allowedCategories`).
+
+## EU, UK, Brazil, US: regional payment governance
+
+The same evaluator pattern UPI uses, extended to four more rails, each read from its own regulation rather than templated off UPI — `server/eu-sepa.js` (PSD2 SCA exemptions — Art. 10 one-off, Art. 14(1) fixed-amount recurring, an operator-declared Art. 18 TRA threshold — plus SEPA Direct Debit pre-notification), `server/uk-fps.js` (Faster Payments push payments, Confirmation of Payee, the PSR's £85,000 APP fraud-reimbursement cap), `server/br-pix.js` (BCB's time-windowed nighttime transfer limit, Pix Automático scheduling/retry rules), `server/us-ach.js` (Nacha WEB-debit account validation as a hard fraud deny, Regulation E consumer-authorization rights). Playgrounds at `site/eu.html` / `uk.html` / `br.html` / `us.html`, each running the identical evaluator code the server does (byte-identity enforced in `npm run verify`). All evaluators only — none initiates or settles a payment.
+
+## Sanctions / denylist screening
+
+`server/sanctions.js` checks every external payee against OFAC's real, current Specially Designated Nationals digital-currency-address list (fetched from the U.S. Treasury's own Sanctions List Service — `npm run sanctions:update`) directly inside `checkPolicy()`, right after the freeze check: an exact-match hit is refused unconditionally, not overridable by any allowlist or delegation scope. Screens by the payee address's own cryptographic format (not OFAC's chain tag, which mixes formats under one label), so an EVM address is screened against every SpendVeto EVM chain regardless of which one OFAC tagged. Not a complete compliance program — one list, exact address match only, no name/alias screening — documented plainly in `server/SANCTIONS_SCREENING.md`. Kept as a separate suite (`node scripts/test-sanctions.mjs`, 15 assertions against real cited SDN entries) rather than in the main `npm run verify` count, since it needs a government-data fetch the main suite shouldn't require to run offline.
 
 ## What this actually is
 
@@ -44,9 +52,9 @@ npm run call -- summarize      # $0.02 — above the approval line: go approve/d
 npm run call -- translate      # $0.005
 ```
 
-`npm run verify` runs the whole thing headlessly — **321 end-to-end assertions**: catalog, forged-signature rejection, hard policy blocks, all three approval outcomes (approved / denied / timed-out-fails-closed), delegation caps including the n-level cascade, tool + chain scoping, multichain settlement (chain-scoped signatures, per-chain balances, chain allowlists), runaway-burst auto-freeze, the manual kill switch, signed-receipt verification, CSV export, per-tool/per-wallet/per-chain analytics, webhook alerts actually arriving at a live receiver, structured self-correcting denials, side-effect-free dry runs, TTL grant expiry, one-click approval links, the stats endpoint, AP2 mandate-chain drift detection, human-not-present authority, governed Bazaar discovery, ACP shared-payment-token scope, request-integrity binding (including a payload swapped after authorization), signed dispute evidence packs and their tamper detection, OpenTelemetry span export under an inbound traceparent, and a real MCP stdio JSON-RPC round trip.
+`npm run verify` runs the whole thing headlessly — **382 end-to-end assertions**: catalog, forged-signature rejection, hard policy blocks, all three approval outcomes (approved / denied / timed-out-fails-closed), delegation caps including the n-level cascade, tool + chain scoping, multichain settlement (chain-scoped signatures, per-chain balances, chain allowlists), runaway-burst auto-freeze, the manual kill switch, signed-receipt verification, CSV export, per-tool/per-wallet/per-chain analytics, webhook alerts actually arriving at a live receiver, structured self-correcting denials, side-effect-free dry runs, TTL grant expiry, one-click approval links, the stats endpoint, AP2 mandate-chain drift detection, human-not-present authority, governed Bazaar discovery, ACP shared-payment-token scope, request-integrity binding (including a payload swapped after authorization), signed dispute evidence packs and their tamper detection, OpenTelemetry span export under an inbound traceparent, and a real MCP stdio JSON-RPC round trip.
 
-> **On the number:** a fresh clone runs **321** assertions. Three more exercise a real cross-project integration against [Basis](https://github.com/revanthrajeev/basis) and run only when `../prediction-copilot` is checked out beside this repo — the suite prints `(skipped: cross-project Basis integration test …)` when it isn't. Every published number is the 321 anyone can reproduce.
+> **On the number:** a fresh clone runs **382** assertions. Three more exercise a real cross-project integration against [Basis](https://github.com/revanthrajeev/basis) and run only when `../prediction-copilot` is checked out beside this repo — the suite prints `(skipped: cross-project Basis integration test …)` when it isn't. Every published number is the 382 anyone can reproduce.
 
 **Marketing site**: `npm run site` serves the deploy-ready landing page (Three.js hero, animated product walkthrough) at http://localhost:8403 — `site/` is fully static and self-contained, drop it on Vercel/Netlify as-is. Includes an **interactive playground** (`site/playground.html`) that runs the real policy-decision logic client-side — set a budget, fire agent spend, watch it pass/pause/block — and a **use-cases** page grounded in real 2026 agent-spend scenarios.
 
@@ -349,7 +357,7 @@ scripts/
   policy.mjs                list/apply policy packs
   site.mjs                  serves the marketing site on :8403
   sdk-python/               Python client (pip install ./sdk-python), same surface as the npm SDK
-  verify.mjs                321 end-to-end assertions incl. MCP stdio round trip + multichain + auto-freeze
+  verify.mjs                382 end-to-end assertions incl. MCP stdio round trip + multichain + auto-freeze
 data/
   policy.json               editable spend rules incl. anomaly burst threshold + alertWebhookUrl
   policy-packs/             importable governance presets (cautious/standard/production)

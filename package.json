@@ -1,6 +1,6 @@
 {
   "name": "spendveto",
-  "version": "0.24.0",
+  "version": "0.25.0",
   "private": true,
   "type": "module",
   "description": "Agent payment rails + spend governance \u2014 an x402-metered endpoint in front of an AI agent call, with a policy engine and dashboard.",
@@ -17,7 +17,8 @@
     "demo": "node scripts/demo-record.mjs",
     "proxy": "node proxy/server.js",
     "policy": "node scripts/policy.mjs",
-    "quickstart:ai": "node scripts/quickstart-ai.mjs"
+    "quickstart:ai": "node scripts/quickstart-ai.mjs",
+    "sanctions:update": "node scripts/fetch-sanctions-list.mjs"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.110.0",

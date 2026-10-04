@@ -11,5 +11,6 @@ data/agents.json
 data/consents.json
 data/upto.json
 data/policy.json.bak
+data/sanctions/
 *.log
 .DS_Store

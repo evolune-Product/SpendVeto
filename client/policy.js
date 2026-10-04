@@ -3,6 +3,7 @@ import { createHash } from "node:crypto";
 import { fileURLToPath } from "node:url";
 import { PORT } from "../shared-config.js";
 import { resolvePayeeList } from "./ens.js";
+import { screenAddress } from "../server/sanctions.js";
 
 const POLICY_PATH = fileURLToPath(new URL("../data/policy.json", import.meta.url));
 
@@ -60,6 +61,7 @@ function deny(code, reason, suggestion, extra = {}) {
 export async function checkPolicy(address, proposedPriceUSD, toolId, chain, category, payee, policyOverride) {
   const policy = policyOverride || loadPolicy();
   const price = Number(proposedPriceUSD);
+  const normPayee = payee ? String(payee).toLowerCase() : null;
 
   // Kill switch first: a frozen wallet (manual or anomaly-detected) spends
   // nothing, regardless of what the other rules would say.
@@ -72,6 +74,30 @@ export async function checkPolicy(address, proposedPriceUSD, toolId, chain, cate
     }
   } catch {
     // freezes endpoint unreachable — the ledger fetch below decides whether the server is up at all
+  }
+
+  // Sanctions screening (server/sanctions.js): checked before anything configurable, because this
+  // isn't a policy an operator should be able to dial down — it's OFAC's own published SDN digital-
+  // currency-address list, checked locally, deterministically, no network call on this path. A hit
+  // is absolute: no policy override, no allowlist, no delegation scope can waive it. Only external
+  // payees are screened (same scoping as the payee allowlist below) — a first-party catalog tool
+  // with no declared payTo has no third-party recipient to screen. An address this deployment can't
+  // screen (list not fetched yet, or the chain's address family has no current OFAC coverage) is
+  // NOT treated as clean — it's simply not blocked on sanctions grounds, which sanctionsListStatus()
+  // reports honestly rather than this silently claiming protection it isn't providing.
+  //
+  // Passes the RAW `payee`, not the lowercased `normPayee` below — screenAddress does its own
+  // format-aware canonicalization (server/sanctions.js), and base58 addresses (Solana, XRP) are
+  // case-sensitive, so the EVM-oriented lowercasing normPayee exists for would corrupt one before
+  // it was even classified.
+  if (payee) {
+    const screening = screenAddress(payee, chain);
+    if (screening.sanctioned) {
+      const entry = screening.match.entries[0];
+      const programs = entry.programs?.length ? ` (program: ${entry.programs.join(", ")})` : "";
+      return deny("sanctioned_payee", `payee ${payee} matches OFAC's Specially Designated Nationals list${programs} — SDN uid ${entry.sdnUid}`,
+        "do not retry against this address under any circumstances; this is a sanctions compliance block, not a configurable policy rule", { policy, screening });
+    }
   }
 
   // Chain allowlist: a policy may pin which chains agents are allowed to pay
@@ -87,7 +113,6 @@ export async function checkPolicy(address, proposedPriceUSD, toolId, chain, cate
   // refused before anything is signed — the "allowlisting limits blast radius"
   // guardrail. Only external payees (tools that declare a payTo) are checked;
   // first-party catalog tools with no payTo are governed by tool scope instead.
-  const normPayee = payee ? String(payee).toLowerCase() : null;
   if (normPayee && Array.isArray(policy.allowedPayees) && policy.allowedPayees.length > 0) {
     // Entries may be raw addresses or .eth names — an allowlist a human can
     // actually audit ("vitalik.eth", not "0xd8dA..."). resolvePayeeList

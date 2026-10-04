@@ -49,6 +49,44 @@ export async function signUpiDecision(fields) {
   return { message, signature, signer: receiptSigner.address };
 }
 
+// Same key, same shape, one signer per region's local payment regulation (server/eu-sepa.js, server/uk-fps.js,
+// server/br-pix.js, server/us-ach.js) — each denominated in its own currency, never converted.
+export function euDecisionMessage({ id, agent, amountEUR, payeeMasked, verdict, code, ts }) {
+  return `spendveto-eu-decision:${id || "-"}:${agent}:${amountEUR}:${payeeMasked || "-"}:${verdict}:${code || "-"}:${ts}`;
+}
+export async function signEuDecision(fields) {
+  const message = euDecisionMessage(fields);
+  const signature = await receiptSigner.signMessage({ message });
+  return { message, signature, signer: receiptSigner.address };
+}
+
+export function ukDecisionMessage({ id, agent, amountGBP, payeeMasked, verdict, code, ts }) {
+  return `spendveto-uk-decision:${id || "-"}:${agent}:${amountGBP}:${payeeMasked || "-"}:${verdict}:${code || "-"}:${ts}`;
+}
+export async function signUkDecision(fields) {
+  const message = ukDecisionMessage(fields);
+  const signature = await receiptSigner.signMessage({ message });
+  return { message, signature, signer: receiptSigner.address };
+}
+
+export function brDecisionMessage({ id, agent, amountBRL, payeeMasked, verdict, code, ts }) {
+  return `spendveto-br-decision:${id || "-"}:${agent}:${amountBRL}:${payeeMasked || "-"}:${verdict}:${code || "-"}:${ts}`;
+}
+export async function signBrDecision(fields) {
+  const message = brDecisionMessage(fields);
+  const signature = await receiptSigner.signMessage({ message });
+  return { message, signature, signer: receiptSigner.address };
+}
+
+export function usDecisionMessage({ id, agent, amountUSD, payeeMasked, verdict, code, ts }) {
+  return `spendveto-us-decision:${id || "-"}:${agent}:${amountUSD}:${payeeMasked || "-"}:${verdict}:${code || "-"}:${ts}`;
+}
+export async function signUsDecision(fields) {
+  const message = usDecisionMessage(fields);
+  const signature = await receiptSigner.signMessage({ message });
+  return { message, signature, signer: receiptSigner.address };
+}
+
 // Same key, third kind of portable evidence: a signed consent record for a
 // delegation grant or revoke (server/consents.js) — Visa Trusted Agent
 // Protocol's "signed consent record, independently verifiable" pattern.

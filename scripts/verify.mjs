@@ -17,6 +17,10 @@ import { createHmac } from "node:crypto";
 import { checkPolicy } from "../client/policy.js";
 import { SpendVeto, SpendVetoDenialError } from "../sdk/index.js";
 import { evaluateUpiMandate } from "../server/upi.js";
+import { evaluateSepaDebit } from "../server/eu-sepa.js";
+import { evaluateUkPushPayment } from "../server/uk-fps.js";
+import { evaluatePixPayment } from "../server/br-pix.js";
+import { evaluateAchDebit } from "../server/us-ach.js";
 import { createSpendVetoTools, createSpendVetoTool } from "../integrations/langchain.js";
 import { createSpendVetoFunctionTools } from "../integrations/openai-agents.js";
 import { createSpendVetoPlugin } from "../integrations/eliza.js";
@@ -1562,6 +1566,235 @@ try {
     "deterministic"
   );
 
+  // --- EU payment governance (PSD2 Strong Customer Authentication + SEPA Direct Debit): RTS exemption math,
+  // deterministic, EUR end to end. SpendVeto decides; "requires_approval" always means the payer completes SCA
+  // themselves; nothing here initiates or settles a SEPA payment. ---
+  const EU_AGENT = "0x3333333333333333333333333333333333333333";
+  const eu = (mandate) =>
+    fetch(`${BASE}/api/eu/evaluate`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ agent: EU_AGENT, mandate }) }).then((r) => r.json());
+  const fifteenDAgo = new Date(Date.now() - 15 * 24 * 3600e3).toISOString();
+  const spotify = { id: "e_ok", payeeIban: "DE89370400440532013000", category: "entertainment", amountEUR: 9.99, notifiedAt: fifteenDAgo };
+
+  const euOk = await eu(spotify);
+  check("EU: a notified recurring debit, same fixed amount, already authenticated once, is allowed (RTS Art. 14(1))", euOk.decision === "allow" && euOk.currency === "EUR", `${euOk.decision}/${euOk.currency}`);
+  const euSigOk = await verifyMessage({ address: euOk.signer, message: euOk.message, signature: euOk.signature });
+  check("EU: the verdict is ECDSA-signed over euros and verifies independently", euSigOk && euOk.message.includes(":9.99:") && euOk.message.startsWith("spendveto-eu-decision:"), euOk.message);
+  check("EU: the creditor IBAN is masked in the response and never echoed raw (GDPR Art. 5(1)(c) data minimisation)", euOk.mandate.payee === "DE89***00" && !JSON.stringify(euOk).includes("DE89370400440532013000"), euOk.mandate.payee);
+
+  const euFirst = await eu({ ...spotify, id: "e_first", firstDebit: true });
+  check("EU: the first debit of a mandate always needs the payer's own Strong Customer Authentication (sca_required_first_debit)", euFirst.decision === "requires_approval" && euFirst.code === "sca_required_first_debit" && euFirst.sca?.by === "human", euFirst.code);
+  const euChanged = await eu({ ...spotify, id: "e_chg", amountChangedFromMandate: true });
+  check("EU: the RTS Art. 14(1) exemption only covers a FIXED amount — a changed amount needs SCA again (sca_required_amount_changed)", euChanged.decision === "requires_approval" && euChanged.code === "sca_required_amount_changed", euChanged.code);
+  const euOneOffSmall = await eu({ id: "e_oo1", payeeIban: "FR1420041010050500013M02606", amountEUR: 25, recurring: false });
+  check("EU: a one-off payment under EUR 30 is allowed under the RTS Art. 10 low-value exemption", euOneOffSmall.decision === "allow", euOneOffSmall.decision);
+  const euOneOffBig = await eu({ id: "e_oo2", payeeIban: "FR1420041010050500013M02606", amountEUR: 80, recurring: false });
+  check("EU: a EUR 80 one-off payment above both Art. 10 and any declared Art. 18 TRA threshold needs SCA (sca_required_one_off)", euOneOffBig.decision === "requires_approval" && euOneOffBig.code === "sca_required_one_off", euOneOffBig.code);
+  const euNoNotice = await eu({ ...spotify, id: "e_nn", notifiedAt: undefined });
+  check("EU: a recurring collection with no SEPA pre-notification on record is refused (predebit_notice_missing)", euNoNotice.decision === "deny" && euNoNotice.code === "predebit_notice_missing", euNoNotice.code);
+  const euLate = await eu({ ...spotify, id: "e_late", notifiedAt: new Date(Date.now() - 2 * 24 * 3600e3).toISOString() });
+  check("EU: a payer notified less than 14 days before the collection is refused (predebit_notice_late)", euLate.decision === "deny" && euLate.code === "predebit_notice_late", euLate.code);
+  const euRevoked = await eu({ ...spotify, id: "e_rev", revoked: true });
+  check("EU: a mandate the payer withdrew can never be debited (mandate_revoked)", euRevoked.decision === "deny" && euRevoked.code === "mandate_revoked", euRevoked.code);
+  const euExp = await eu({ ...spotify, id: "e_exp", expiresAt: "2020-01-01T00:00:00Z" });
+  check("EU: an expired mandate carries no authority (mandate_expired)", euExp.decision === "deny" && euExp.code === "mandate_expired", euExp.code);
+  const euBadIban = await eu({ ...spotify, id: "e_iban", payeeIban: "not-an-iban" });
+  const euBadAmount = await eu({ ...spotify, id: "e_amt", amountEUR: 9.999 });
+  check("EU: malformed input is refused before any policy runs (amount_invalid for sub-cent, payee_iban_invalid)", euBadAmount.code === "amount_invalid" && euBadIban.code === "payee_iban_invalid", `${euBadAmount.code}/${euBadIban.code}`);
+  check("EU: every verdict states what it is not — no SEPA initiation, no PSP/PISP status, no authorisation claimed", /does not initiate/.test(euOk.disclaimer) && /no competent-authority authorisation/.test(euOk.disclaimer) && euOk.regulatoryBasis.length === 2, euOk.disclaimer?.slice(0, 60));
+
+  const EU_POL = { maxPerTxnEUR: 20, maxPerDayEUR: 25, allowedPayeeIbans: ["DE89370400440532013000"], allowedCategories: ["entertainment"] };
+  const euP = (m, spent = 0) => evaluateSepaDebit({ ...spotify, ...m }, { policy: EU_POL, spentTodayEUR: spent, now: NOW });
+  check(
+    "EU: operator policy — payee allowlist, category scope, per-debit cap and a daily cap each refuse with their own code",
+    euP({ payeeIban: "FR1420041010050500013M02606" }).code === "payee_not_allowed" &&
+      euP({ category: "gaming" }).code === "category_not_allowed" &&
+      euP({ amountEUR: 21 }).code === "txn_cap" &&
+      euP({ amountEUR: 10 }, 20).code === "day_cap" &&
+      euP({ amountEUR: 5 }, 10).decision === "allow",
+    "payee/category/txn/day"
+  );
+  check(
+    "EU: a one-off payment above Art. 10 but within the operator's declared Article 18 TRA fraud-rate threshold is allowed",
+    evaluateSepaDebit({ id: "e_tra", payeeIban: "FR1420041010050500013M02606", amountEUR: 80, recurring: false }, { policy: { pspFraudRateBps: 1 }, now: NOW }).decision === "allow",
+    "Art.18 TRA"
+  );
+  check(
+    "EU: the in-browser playground runs the SAME evaluator the server uses — site/assets/eu-sepa.js is byte-identical to server/eu-sepa.js",
+    readFileSync(fileURLToPath(new URL("../site/assets/eu-sepa.js", import.meta.url)), "utf8") === readFileSync(fileURLToPath(new URL("../server/eu-sepa.js", import.meta.url)), "utf8"),
+    "no drift between the demo and the product"
+  );
+  check("EU: the evaluator is pure — the same mandate and clock give the same verdict every time", JSON.stringify(euP({})) === JSON.stringify(euP({})), "deterministic");
+
+  // --- UK payment governance (Faster Payments push payments): Confirmation of Payee + APP fraud reimbursement
+  // exposure, deterministic, GBP end to end. Faster Payments has no recurring-pull equivalent, so this governs a
+  // one-off PUSH payment, not a mandate. ---
+  const UK_AGENT = "0x4444444444444444444444444444444444444444";
+  const uk = (payment) =>
+    fetch(`${BASE}/api/uk/evaluate`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ agent: UK_AGENT, payment }) }).then((r) => r.json());
+  const netflixUk = { id: "u_ok", payeeSortCode: "123456", payeeAccountNumber: "87654321", category: "entertainment", amountGBP: 9.99, copResult: "match" };
+
+  const ukOk = await uk(netflixUk);
+  check("UK: a matched, previously-paid payee within the reimbursement cap is allowed", ukOk.decision === "allow" && ukOk.currency === "GBP", `${ukOk.decision}/${ukOk.currency}`);
+  const ukSigOk = await verifyMessage({ address: ukOk.signer, message: ukOk.message, signature: ukOk.signature });
+  check("UK: the verdict is ECDSA-signed over sterling and verifies independently", ukSigOk && ukOk.message.includes(":9.99:") && ukOk.message.startsWith("spendveto-uk-decision:"), ukOk.message);
+  check("UK: the payee account number is masked in the response and never echoed raw (UK GDPR / DPA 2018)", ukOk.payment.payee === "****4321" && !JSON.stringify(ukOk).includes("87654321"), ukOk.payment.payee);
+
+  const ukNoMatch = await uk({ ...netflixUk, id: "u_nm", copResult: "no_match" });
+  check("UK: a Confirmation of Payee no-match is never silently paid through (cop_no_match)", ukNoMatch.decision === "requires_approval" && ukNoMatch.code === "cop_no_match" && ukNoMatch.authorisation?.by === "human", ukNoMatch.code);
+  const ukUnavail = await uk({ ...netflixUk, id: "u_ua", copResult: "unavailable" });
+  check("UK: an unverifiable Confirmation of Payee result needs a human, not a silent pass (cop_unavailable)", ukUnavail.decision === "requires_approval" && ukUnavail.code === "cop_unavailable", ukUnavail.code);
+  const ukClose = await uk({ ...netflixUk, id: "u_cm", copResult: "close_match" });
+  check("UK: a close-but-not-exact Confirmation of Payee match needs the payer to confirm the corrected name (cop_close_match)", ukClose.decision === "requires_approval" && ukClose.code === "cop_close_match", ukClose.code);
+  const ukNoCop = await uk({ ...netflixUk, id: "u_nc", copResult: undefined });
+  check("UK: a payment with no Confirmation of Payee result on record at all is refused (cop_result_missing)", ukNoCop.decision === "deny" && ukNoCop.code === "cop_result_missing", ukNoCop.code);
+  const ukNewPayee = await uk({ ...netflixUk, id: "u_np", firstPaymentToPayee: true });
+  check("UK: the first payment ever made to a payee needs human review regardless of a Confirmation of Payee match (new_payee_review)", ukNewPayee.decision === "requires_approval" && ukNewPayee.code === "new_payee_review", ukNewPayee.code);
+  const ukUncapped = await uk({ ...netflixUk, id: "u_cap", amountGBP: 90000 });
+  check("UK: exposure above the GBP 85,000 APP fraud reimbursement cap needs a human — above it there is no backstop at all (app_fraud_uncapped_exposure)", ukUncapped.decision === "requires_approval" && ukUncapped.code === "app_fraud_uncapped_exposure", ukUncapped.code);
+  const ukRevoked = await uk({ ...netflixUk, id: "u_rev", revoked: true });
+  check("UK: a withdrawn payment instruction can never be paid (payment_revoked)", ukRevoked.decision === "deny" && ukRevoked.code === "payment_revoked", ukRevoked.code);
+  const ukExp = await uk({ ...netflixUk, id: "u_exp", expiresAt: "2020-01-01T00:00:00Z" });
+  check("UK: an expired payment instruction carries no authority (payment_expired)", ukExp.decision === "deny" && ukExp.code === "payment_expired", ukExp.code);
+  const ukBadSort = await uk({ ...netflixUk, id: "u_sc", payeeSortCode: "12-34-56" });
+  const ukBadAmount = await uk({ ...netflixUk, id: "u_amt", amountGBP: 9.999 });
+  check("UK: malformed input is refused before any policy runs (amount_invalid for sub-pence, payee_details_invalid for a bad sort code)", ukBadAmount.code === "amount_invalid" && ukBadSort.code === "payee_details_invalid", `${ukBadAmount.code}/${ukBadSort.code}`);
+  check("UK: every verdict states what it is not — no Faster Payments initiation, no PSP status, no PSR/FCA authorisation claimed", /does not initiate/.test(ukOk.disclaimer) && /no PSR\/FCA authorisation/.test(ukOk.disclaimer) && ukOk.regulatoryBasis.length === 2, ukOk.disclaimer?.slice(0, 60));
+
+  const UK_POL = { maxPerTxnGBP: 20, maxPerDayGBP: 25, allowedPayeeAccounts: ["123456:87654321"], allowedCategories: ["entertainment"] };
+  const ukP = (p, spent = 0) => evaluateUkPushPayment({ ...netflixUk, ...p }, { policy: UK_POL, spentTodayGBP: spent, now: NOW });
+  check(
+    "UK: operator policy — payee allowlist, category scope, per-payment cap and a daily cap each refuse with their own code, checked before Confirmation of Payee",
+    ukP({ payeeSortCode: "000000", payeeAccountNumber: "00000000" }).code === "payee_not_allowed" &&
+      ukP({ category: "gaming" }).code === "category_not_allowed" &&
+      ukP({ amountGBP: 21 }).code === "txn_cap" &&
+      ukP({ amountGBP: 10 }, 20).code === "day_cap" &&
+      ukP({ amountGBP: 5 }, 10).decision === "allow",
+    "payee/category/txn/day"
+  );
+  check(
+    "UK: the in-browser playground runs the SAME evaluator the server uses — site/assets/uk-fps.js is byte-identical to server/uk-fps.js",
+    readFileSync(fileURLToPath(new URL("../site/assets/uk-fps.js", import.meta.url)), "utf8") === readFileSync(fileURLToPath(new URL("../server/uk-fps.js", import.meta.url)), "utf8"),
+    "no drift between the demo and the product"
+  );
+  check("UK: the evaluator is pure — the same payment and clock give the same verdict every time", JSON.stringify(ukP({})) === JSON.stringify(ukP({})), "deterministic");
+
+  // --- Brazil payment governance (Pix): the BCB nighttime limit for ordinary transfers, Pix Automático's
+  // scheduling/retry rules for recurring ones, deterministic, BRL end to end. ---
+  const BR_AGENT = "0x5555555555555555555555555555555555555555";
+  const br = (mandate) =>
+    fetch(`${BASE}/api/br/evaluate`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ agent: BR_AGENT, mandate }) }).then((r) => r.json());
+  const ifood = { id: "b_ok", payeeKey: "contato@ifood.com.br", category: "food", amountBRL: 49.9 }; // well under the nighttime limit, so this allow case holds regardless of what time it is when verify runs
+
+  const brOk = await br(ifood);
+  check("BR: an ordinary Pix transfer well under the nighttime limit is allowed at any time of day", brOk.decision === "allow" && brOk.currency === "BRL", `${brOk.decision}/${brOk.currency}`);
+  const brSigOk = await verifyMessage({ address: brOk.signer, message: brOk.message, signature: brOk.signature });
+  check("BR: the verdict is ECDSA-signed over reais and verifies independently", brSigOk && brOk.message.includes(":49.9:") && brOk.message.startsWith("spendveto-br-decision:"), brOk.message);
+  check("BR: the Pix key is masked in the response and never echoed raw (LGPD data minimisation)", brOk.mandate.payee === "co***@ifood.com.br" && !JSON.stringify(brOk).includes("contato@ifood.com.br"), brOk.mandate.payee);
+
+  const brCancelled = await br({ ...ifood, id: "b_cxl", cancelled: true });
+  check("BR: a cancelled Pix Automático authorisation can never be charged (pix_auto_cancelled)", brCancelled.decision === "deny" && brCancelled.code === "pix_auto_cancelled", brCancelled.code);
+  const brExp = await br({ ...ifood, id: "b_exp", expiresAt: "2020-01-01T00:00:00Z" });
+  check("BR: an expired authorisation carries no authority (mandate_expired)", brExp.decision === "deny" && brExp.code === "mandate_expired", brExp.code);
+  const brBadKey = await br({ ...ifood, id: "b_key", payeeKey: "not-a-pix-key" });
+  const brBadAmount = await br({ ...ifood, id: "b_amt", amountBRL: 10.555 });
+  check("BR: malformed input is refused before any policy runs (amount_invalid for sub-centavo, payee_key_invalid)", brBadAmount.code === "amount_invalid" && brBadKey.code === "payee_key_invalid", `${brBadAmount.code}/${brBadKey.code}`);
+  const brFirst = await br({ ...ifood, id: "b_first", recurring: true, firstCharge: true, amountBRL: 29.9 });
+  check("BR: the first Pix Automático charge always needs the payer's own in-app authorisation (pix_auto_first_authorization)", brFirst.decision === "requires_approval" && brFirst.code === "pix_auto_first_authorization" && brFirst.authorisation?.by === "human", brFirst.code);
+  check("BR: every verdict states what it is not — no Pix initiation, no PSP status, no BCB authorisation claimed", /does not initiate/.test(brOk.disclaimer) && /no BCB authorisation/.test(brOk.disclaimer) && brOk.regulatoryBasis.length === 2, brOk.disclaimer?.slice(0, 60));
+
+  check(
+    "BR: at most 3 Pix Automático charge attempts are allowed in a rolling 7-day window — the 4th is refused (pix_auto_retry_limit_exceeded)",
+    evaluatePixPayment({ ...ifood, id: "b_retry", recurring: true, firstCharge: false }, { attemptsInWindow: 3, now: NOW }).code === "pix_auto_retry_limit_exceeded",
+    "retry limit"
+  );
+  check(
+    "BR: a Pix Automático charge scheduled less than 2 days before its due date violates BCB's window (pix_auto_scheduling_window)",
+    evaluatePixPayment({ ...ifood, id: "b_sched", recurring: true, firstCharge: false, scheduledAt: "2026-01-01T00:00:00Z", dueAt: "2026-01-01T12:00:00Z" }, { now: NOW }).code === "pix_auto_scheduling_window",
+    "scheduling window"
+  );
+  check(
+    "BR: an ordinary transfer over the nighttime limit, made during the nighttime window, needs the payer's own in-app confirmation (pix_nighttime_limit)",
+    evaluatePixPayment({ id: "b_night", payeeKey: "shop@okvarejo.com.br", amountBRL: 1500 }, { now: new Date("2026-01-01T23:00:00Z").getTime() }).code === "pix_nighttime_limit",
+    "nighttime limit, inside the window"
+  );
+  check(
+    "BR: the SAME over-limit transfer outside the nighttime window is allowed — the limit is time-bound, not a flat cap",
+    evaluatePixPayment({ id: "b_day", payeeKey: "shop@okvarejo.com.br", amountBRL: 1500 }, { now: new Date("2026-01-01T12:00:00Z").getTime() }).decision === "allow",
+    "same amount, daytime"
+  );
+
+  const BR_POL = { maxPerTxnBRL: 20, maxPerDayBRL: 25, allowedPayeeKeys: ["contato@ifood.com.br"], allowedCategories: ["food"] };
+  const brP = (m, spent = 0) => evaluatePixPayment({ ...ifood, ...m }, { policy: BR_POL, spentTodayBRL: spent, now: NOW });
+  check(
+    "BR: operator policy — payee allowlist, category scope, per-payment cap and a daily cap each refuse with their own code",
+    brP({ payeeKey: "other@shop.com.br" }).code === "payee_not_allowed" &&
+      brP({ category: "gaming" }).code === "category_not_allowed" &&
+      brP({ amountBRL: 21 }).code === "txn_cap" &&
+      brP({ amountBRL: 10 }, 20).code === "day_cap" &&
+      brP({ amountBRL: 5 }, 10).decision === "allow",
+    "payee/category/txn/day"
+  );
+  check(
+    "BR: the in-browser playground runs the SAME evaluator the server uses — site/assets/br-pix.js is byte-identical to server/br-pix.js",
+    readFileSync(fileURLToPath(new URL("../site/assets/br-pix.js", import.meta.url)), "utf8") === readFileSync(fileURLToPath(new URL("../server/br-pix.js", import.meta.url)), "utf8"),
+    "no drift between the demo and the product"
+  );
+  check("BR: the evaluator is pure — the same mandate and clock give the same verdict every time", JSON.stringify(brP({})) === JSON.stringify(brP({})), "deterministic");
+
+  // --- US payment governance (ACH / Nacha + Regulation E): account validation is a system fraud-detection gate
+  // (DENY), consumer authorization/notice/stop-payment rights are the human-approval path, deterministic, USD end
+  // to end. ---
+  const US_AGENT = "0x6666666666666666666666666666666666666666";
+  const us = (mandate) =>
+    fetch(`${BASE}/api/us/evaluate`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ agent: US_AGENT, mandate }) }).then((r) => r.json());
+  const spotifyUs = { id: "s_ok", payeeRoutingNumber: "021000021", payeeAccountNumber: "123456789", category: "entertainment", amountUSD: 9.99, accountValidated: true, authorizationOnRecord: true };
+
+  const usOk = await us(spotifyUs);
+  check("US: a validated account with authorization on record is allowed", usOk.decision === "allow" && usOk.currency === "USD", `${usOk.decision}/${usOk.currency}`);
+  const usSigOk = await verifyMessage({ address: usOk.signer, message: usOk.message, signature: usOk.signature });
+  check("US: the verdict is ECDSA-signed over dollars and verifies independently", usSigOk && usOk.message.includes(":9.99:") && usOk.message.startsWith("spendveto-us-decision:"), usOk.message);
+  check("US: the payee account number is masked in the response and never echoed raw (GLBA nonpublic personal information)", usOk.mandate.payee === "****6789" && !JSON.stringify(usOk).includes("123456789"), usOk.mandate.payee);
+
+  const usUnvalidated = await us({ ...spotifyUs, id: "s_nv", accountValidated: false });
+  check("US: the first use of an unvalidated account is a hard DENY, not a pause for a human — Nacha's rule is a system control (web_debit_account_validation_required)", usUnvalidated.decision === "deny" && usUnvalidated.code === "web_debit_account_validation_required", usUnvalidated.code);
+  const usNoAuth = await us({ ...spotifyUs, id: "s_na", authorizationOnRecord: false });
+  check("US: no written (or similarly authenticated) consumer authorization on record needs the consumer, not the agent (reg_e_authorization_missing)", usNoAuth.decision === "requires_approval" && usNoAuth.code === "reg_e_authorization_missing" && usNoAuth.authorization?.by === "human", usNoAuth.code);
+  const usVaryNoNotice = await us({ ...spotifyUs, id: "s_vn", amountVariesFromAuthorized: true });
+  const usVaryLate = await us({ ...spotifyUs, id: "s_vl", amountVariesFromAuthorized: true, varianceNoticeAt: new Date(Date.now() - 3 * 24 * 3600e3).toISOString() });
+  check("US: a varying debit amount needs >= 10 days' notice (Reg E 1005.10(c)) — missing or late notice both require the consumer (reg_e_variable_amount_notice)", usVaryNoNotice.code === "reg_e_variable_amount_notice" && usVaryLate.code === "reg_e_variable_amount_notice", `${usVaryNoNotice.code}/${usVaryLate.code}`);
+  const usStopConfirmed = await us({ ...spotifyUs, id: "s_stop1", stopPaymentRequested: true, stopPaymentConfirmedInWriting: true });
+  check("US: a written-confirmed stop-payment order is binding — the debit is refused (reg_e_stop_payment)", usStopConfirmed.decision === "deny" && usStopConfirmed.code === "reg_e_stop_payment", usStopConfirmed.code);
+  const usStopOral = await us({ ...spotifyUs, id: "s_stop2", stopPaymentRequested: true, stopPaymentRequestedAt: new Date().toISOString() });
+  check("US: an oral stop-payment order is immediately binding too, within its 14-day window (reg_e_stop_payment)", usStopOral.decision === "deny" && usStopOral.code === "reg_e_stop_payment", usStopOral.code);
+  const usRevoked = await us({ ...spotifyUs, id: "s_rev", revoked: true });
+  check("US: a withdrawn preauthorization can never be debited (authorization_revoked)", usRevoked.decision === "deny" && usRevoked.code === "authorization_revoked", usRevoked.code);
+  const usExp = await us({ ...spotifyUs, id: "s_exp", expiresAt: "2020-01-01T00:00:00Z" });
+  check("US: an expired authorization carries no authority (authorization_expired)", usExp.decision === "deny" && usExp.code === "authorization_expired", usExp.code);
+  const usSameDay = await us({ ...spotifyUs, id: "s_sd", sameDay: true, amountUSD: 2000000 });
+  check("US: Nacha's USD 1,000,000 Same Day ACH per-entry limit is unconditional — not something operator policy can raise (same_day_ach_limit_exceeded)", usSameDay.decision === "deny" && usSameDay.code === "same_day_ach_limit_exceeded", usSameDay.code);
+  const usBadRouting = await us({ ...spotifyUs, id: "s_rt", payeeRoutingNumber: "12345" });
+  const usBadAmount = await us({ ...spotifyUs, id: "s_amt", amountUSD: 9.999 });
+  check("US: malformed input is refused before any policy runs (amount_invalid for sub-cent, payee_details_invalid for a bad routing number)", usBadAmount.code === "amount_invalid" && usBadRouting.code === "payee_details_invalid", `${usBadAmount.code}/${usBadRouting.code}`);
+  check("US: every verdict states what it is not — no ACH origination, no ODFI/RDFI status, no Nacha/Fed authorization claimed", /does not originate/.test(usOk.disclaimer) && /no Nacha or Federal Reserve authorization/.test(usOk.disclaimer) && usOk.regulatoryBasis.length === 2, usOk.disclaimer?.slice(0, 60));
+
+  const US_POL = { maxPerTxnUSD: 20, maxPerDayUSD: 25, allowedPayeeAccounts: ["021000021:123456789"], allowedCategories: ["entertainment"] };
+  const usP = (m, spent = 0) => evaluateAchDebit({ ...spotifyUs, ...m }, { policy: US_POL, spentTodayUSD: spent, now: NOW });
+  check(
+    "US: operator policy — payee allowlist, category scope, per-debit cap and a daily cap each refuse with their own code, checked after account validation",
+    usP({ payeeRoutingNumber: "011000015", payeeAccountNumber: "000000000" }).code === "payee_not_allowed" &&
+      usP({ category: "gaming" }).code === "category_not_allowed" &&
+      usP({ amountUSD: 21 }).code === "txn_cap" &&
+      usP({ amountUSD: 10 }, 20).code === "day_cap" &&
+      usP({ amountUSD: 5 }, 10).decision === "allow",
+    "payee/category/txn/day"
+  );
+  check(
+    "US: the in-browser playground runs the SAME evaluator the server uses — site/assets/us-ach.js is byte-identical to server/us-ach.js",
+    readFileSync(fileURLToPath(new URL("../site/assets/us-ach.js", import.meta.url)), "utf8") === readFileSync(fileURLToPath(new URL("../server/us-ach.js", import.meta.url)), "utf8"),
+    "no drift between the demo and the product"
+  );
+  check("US: the evaluator is pure — the same mandate and clock give the same verdict every time", JSON.stringify(usP({})) === JSON.stringify(usP({})), "deterministic");
+
   // --- Request integrity: is this the spend I allowed? ---
   // Every other control answers "is this spend allowed?". Between the decision
   // and the execution a compromised agent can swap the payload — same payer,
@@ -1649,8 +1882,8 @@ try {
   // --- Rails: one pay() contract, every rail behind it ---
   const { rails } = await fetch(`${BASE}/api/rails`).then((r) => r.json());
   check(
-    "rail registry: two live x402 rails + five declared adapter slots",
-    rails.length === 7 && rails.filter((r) => r.status === "live").length === 2 && rails.filter((r) => r.status === "roadmap").length === 5,
+    "rail registry: two live x402 rails + nine declared adapter slots",
+    rails.length === 11 && rails.filter((r) => r.status === "live").length === 2 && rails.filter((r) => r.status === "roadmap").length === 9,
     rails.map((r) => `${r.id}:${r.status}`).join(" ")
   );
   check("every rail implements the same contract (id, name, status, pay)", RAILS.every((r) => r.id && r.name && r.status && typeof r.pay === "function"));
@@ -1676,7 +1909,7 @@ try {
     sampleHash
   );
   const railHealth = await fetch(`${PROXY}/proxy/health`).then((r) => r.json());
-  check("proxy advertises its rails alongside custody + catalog", railHealth.rails?.length === 7 && railHealth.rails.every((r) => r.pay === undefined), railHealth.rails?.map((r) => r.id).join(", "));
+  check("proxy advertises its rails alongside custody + catalog", railHealth.rails?.length === 11 && railHealth.rails.every((r) => r.pay === undefined), railHealth.rails?.map((r) => r.id).join(", "));
 
   // --- Stats: blocked-spend dollars, the governance headline number ---
   const stats = await fetch(`${BASE}/api/stats`).then((r) => r.json());

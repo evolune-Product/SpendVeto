@@ -44,6 +44,9 @@
   .src a { color: var(--green); }
 
   .row-btns { display: flex; gap: 0.8rem; flex-wrap: wrap; margin-top: 1.4rem; }
+  .regions { display: flex; gap: 0.6rem; flex-wrap: wrap; margin-top: 0.8rem; }
+  .regions a { font-size: 0.82rem; padding: 0.4rem 0.8rem; border: 1px solid var(--line); border-radius: 99px; color: var(--dim); }
+  .regions a.here { color: var(--green); border-color: rgba(70,214,140,0.4); }
 </style>
 </head>
 <body>
@@ -58,7 +61,7 @@
     <a href="./index.html">Home</a>
     <a href="./playground.html">Playground</a>
     <a href="./ai-spend.html">AI spend</a>
-    <a href="./upi.html">India · UPI</a>
+    <a class="nav-rotator" href="./upi.html">Regions · <span class="rot"><em>India</em><em>EU</em><em>UK</em><em>Brazil</em><em>US</em></span></a>
     <a href="./docs.html">Docs</a>
     <a href="./about.html">About</a>
     <a class="nav-cta" href="./signup.html">Join waitlist</a>
@@ -68,6 +71,14 @@
 <div class="pg">
 <h1>UPI agent payments, governed — deterministically.</h1>
 <p class="lede">India is building the rails for AI agents to pay on UPI. NPCI's position is clear: <em>"AI may recommend, but authentication and final settlement must follow deterministic auditable rules."</em> SpendVeto is that rule layer. It decides whether an agent's UPI mandate debit may proceed — using the RBI e-mandate framework's own thresholds — and the agent can never approve itself.</p>
+
+<div class="regions">
+  <a href="./upi.html" class="here">India · UPI</a>
+  <a href="./eu.html">EU · SCA</a>
+  <a href="./uk.html">UK · Faster Payments</a>
+  <a href="./br.html">Brazil · Pix</a>
+  <a href="./us.html">US · ACH</a>
+</div>
 
 <h2>What's real, with sources</h2>
 <div class="card"><b>RBI Digital Payments E-mandate Framework, 2026</b> (issued 21 April 2026; cards, PPIs and UPI): additional-factor authentication at registration and first debit; recurring debits need no further authentication up to ₹15,000 (₹1,00,000 for insurance, mutual funds and credit-card bills); customers are notified at least 24 hours before each debit; mandates can be withdrawn.
@@ -100,6 +111,10 @@
     <a href="./use-cases.html">Use cases</a>
     <a href="./ai-spend.html">AI spend</a>
     <a href="./upi.html">India · UPI</a>
+    <a href="./eu.html">EU · SCA</a>
+    <a href="./uk.html">UK · Faster Payments</a>
+    <a href="./br.html">Brazil · Pix</a>
+    <a href="./us.html">US · ACH</a>
     <a href="./playground.html">Playground</a>
     <a href="./about.html">About</a>
     <a href="./security.html">Security</a>

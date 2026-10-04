@@ -25,6 +25,10 @@ export const RAILS = [
   roadmapRail("google-ap2", "Google AP2", "mandate-based agent payments — adapter slot"),
   roadmapRail("openai-acp", "OpenAI ACP", "agentic checkout — adapter slot"),
   roadmapRail("npci-upi-agent", "NPCI UPI (Unified Agent Protocol / UPI Circle)", "India — governed today via /api/upi/evaluate; settlement is a slot: NPCI's agent protocol is not live and needs RBI approval. SpendVeto decides, it never initiates UPI"),
+  roadmapRail("eu-sepa-pisp", "EU SEPA (PSD2 Open Banking / PISP)", "Eurozone — governed today via /api/eu/evaluate (RTS Strong Customer Authentication exemptions, SEPA Direct Debit pre-notification); settlement is a slot: initiating a SEPA payment requires PISP authorisation under a national competent authority, which SpendVeto does not hold. SpendVeto decides, it never initiates SEPA"),
+  roadmapRail("uk-faster-payments-pisp", "UK Faster Payments (Open Banking / PISP)", "UK — governed today via /api/uk/evaluate (Confirmation of Payee, PSR APP fraud reimbursement exposure); settlement is a slot: initiating a Faster Payments transaction requires PISP authorisation from the FCA, which SpendVeto does not hold. SpendVeto decides, it never initiates Faster Payments"),
+  roadmapRail("br-pix-automatico", "Brazil Pix (Pix Automático / Open Finance)", "Brazil — governed today via /api/br/evaluate (BCB nighttime limit, Pix Automático scheduling and retry rules); settlement is a slot: initiating Pix requires registration as a BCB-regulated participant, which SpendVeto does not hold. SpendVeto decides, it never initiates Pix"),
+  roadmapRail("us-ach-nacha", "US ACH (Nacha Operating Rules)", "United States — governed today via /api/us/evaluate (Nacha WEB debit account validation, Regulation E consumer-authorization rules); settlement is a slot: originating an ACH entry requires an Originating Depository Financial Institution relationship, which SpendVeto does not hold. SpendVeto decides, it never originates ACH entries"),
   roadmapRail("stripe-mpp", "Stripe Machine Payments", "fiat machine payments — adapter slot"),
   safeAllowance,
 ];

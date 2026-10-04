@@ -13,7 +13,7 @@ import { HTTPFacilitatorClient } from "@x402/core/server";
 import { MODE, PORT, TOOLS, CHAINS, FACILITATOR_URL, findChain, DEFAULT_CHAIN } from "../shared-config.js";
 import { randomUUID } from "node:crypto";
 import { writeFileSync } from "node:fs";
-import { createSimulateGate, receiptMessage, signDecision, signUpiDecision, consentMessage } from "./simulate.js";
+import { createSimulateGate, receiptMessage, signDecision, signUpiDecision, signEuDecision, signUkDecision, signBrDecision, signUsDecision, consentMessage } from "./simulate.js";
 import { decisionEvents, toJSONL } from "./events.js";
 import { checkPolicy, policyHash } from "../client/policy.js";
 import { verifyMessage } from "viem";
@@ -39,6 +39,10 @@ import { checkCartAgainstIntent, reconcileHumanNotPresent } from "./ap2.js";
 import { toBazaarResources, governCatalog } from "./discovery.js";
 import { checkSessionAgainstToken } from "./acp.js";
 import { evaluateUpiMandate, maskVpa, UPI_REGULATORY_BASIS, UPI_DISCLAIMER } from "./upi.js";
+import { evaluateSepaDebit, maskIban, EU_REGULATORY_BASIS, EU_DISCLAIMER } from "./eu-sepa.js";
+import { evaluateUkPushPayment, maskAccountNumber as maskAccountNumberUk, UK_REGULATORY_BASIS, UK_DISCLAIMER } from "./uk-fps.js";
+import { evaluatePixPayment, maskPixKey, BR_REGULATORY_BASIS, BR_DISCLAIMER } from "./br-pix.js";
+import { evaluateAchDebit, maskAccountNumber as maskAccountNumberUs, US_REGULATORY_BASIS, US_DISCLAIMER } from "./us-ach.js";
 import { catalogOpenApiSpec } from "./openapi.js";
 import { authorize as uptoAuthorize, settleAuthorization, voidAuthorization, getAuthorizations, openHoldUSD, uptoSummary } from "./upto.js";
 import { bindAuthorization, verifyBinding, getBinding, requestDigest } from "./integrity.js";
@@ -1079,6 +1083,167 @@ app.post("/api/upi/evaluate", async (req, res) => {
     mandate: { id: mandate?.id ?? null, amountINR: Number(mandate?.amountINR) || null, payee: payeeMasked, category: mandate?.category ?? null },
     regulatoryBasis: UPI_REGULATORY_BASIS,
     disclaimer: UPI_DISCLAIMER,
+    ts,
+    ...signed,
+  });
+});
+
+// EU payment governance (PSD2 Strong Customer Authentication + SEPA Direct Debit). Decides allow / requires_approval
+// / deny with the RTS's own exemption math (Art. 10 one-off low-value, Art. 14(1) recurring fixed-amount, Art. 18
+// transaction-risk-analysis), and signs the verdict in EUR. Never initiates or settles anything on SEPA, and
+// "requires_approval" always means the payer completes Strong Customer Authentication themselves (server/eu-sepa.js).
+const euSpentToday = new Map(); // agent -> { day, total }
+app.post("/api/eu/evaluate", async (req, res) => {
+  const { agent, mandate } = req.body || {};
+  if (!/^0x[0-9a-fA-F]{40}$/.test(agent || "")) return res.status(400).json({ error: "agent must be a 0x-prefixed 20-byte address" });
+
+  let euPolicy = {};
+  try {
+    euPolicy = JSON.parse(readFileSync(POLICY_FILE, "utf8")).eu || {};
+  } catch {}
+  const day = new Date().toISOString().slice(0, 10);
+  const tally = euSpentToday.get(agent);
+  const spentTodayEUR = tally && tally.day === day ? tally.total : 0;
+
+  const ts = new Date().toISOString();
+  const v = evaluateSepaDebit(mandate, { policy: euPolicy, spentTodayEUR });
+  if (v.decision === "allow") euSpentToday.set(agent, { day, total: Math.round((spentTodayEUR + Number(mandate.amountEUR)) * 100) / 100 });
+
+  const payeeMasked = maskIban(mandate?.payeeIban);
+  const signed = await signEuDecision({ id: mandate?.id, agent, amountEUR: Number(mandate?.amountEUR) || 0, payeeMasked, verdict: v.decision, code: v.code, ts });
+  res.json({
+    decision: v.decision,
+    reason: v.reason,
+    ...(v.code ? { code: v.code } : {}),
+    ...(v.suggestion ? { suggestion: v.suggestion } : {}),
+    ...(v.sca ? { sca: v.sca } : {}),
+    currency: "EUR",
+    mandate: { id: mandate?.id ?? null, amountEUR: Number(mandate?.amountEUR) || null, payee: payeeMasked, category: mandate?.category ?? null },
+    regulatoryBasis: EU_REGULATORY_BASIS,
+    disclaimer: EU_DISCLAIMER,
+    ts,
+    ...signed,
+  });
+});
+
+// UK payment governance (Faster Payments push payments). Decides allow / requires_approval / deny using Confirmation
+// of Payee results and the PSR's APP fraud reimbursement cap, and signs the verdict in GBP. Never initiates or
+// settles a Faster Payments transaction, and "requires_approval" always means the payer makes the call themselves
+// (server/uk-fps.js).
+const ukSpentToday = new Map(); // agent -> { day, total }
+app.post("/api/uk/evaluate", async (req, res) => {
+  const { agent, payment } = req.body || {};
+  if (!/^0x[0-9a-fA-F]{40}$/.test(agent || "")) return res.status(400).json({ error: "agent must be a 0x-prefixed 20-byte address" });
+
+  let ukPolicy = {};
+  try {
+    ukPolicy = JSON.parse(readFileSync(POLICY_FILE, "utf8")).uk || {};
+  } catch {}
+  const day = new Date().toISOString().slice(0, 10);
+  const tally = ukSpentToday.get(agent);
+  const spentTodayGBP = tally && tally.day === day ? tally.total : 0;
+
+  const ts = new Date().toISOString();
+  const v = evaluateUkPushPayment(payment, { policy: ukPolicy, spentTodayGBP });
+  if (v.decision === "allow") ukSpentToday.set(agent, { day, total: Math.round((spentTodayGBP + Number(payment.amountGBP)) * 100) / 100 });
+
+  const payeeMasked = maskAccountNumberUk(payment?.payeeAccountNumber);
+  const signed = await signUkDecision({ id: payment?.id, agent, amountGBP: Number(payment?.amountGBP) || 0, payeeMasked, verdict: v.decision, code: v.code, ts });
+  res.json({
+    decision: v.decision,
+    reason: v.reason,
+    ...(v.code ? { code: v.code } : {}),
+    ...(v.suggestion ? { suggestion: v.suggestion } : {}),
+    ...(v.authorisation ? { authorisation: v.authorisation } : {}),
+    currency: "GBP",
+    payment: { id: payment?.id ?? null, amountGBP: Number(payment?.amountGBP) || null, payee: payeeMasked, category: payment?.category ?? null },
+    regulatoryBasis: UK_REGULATORY_BASIS,
+    disclaimer: UK_DISCLAIMER,
+    ts,
+    ...signed,
+  });
+});
+
+// Brazil payment governance (Pix). Decides allow / requires_approval / deny using the nighttime-limit rule for
+// ordinary transfers and Pix Automático's scheduling/retry rules for recurring ones, and signs the verdict in BRL.
+// Never initiates or settles a Pix payment, and "requires_approval" always means the payer acts in their own
+// banking app (server/br-pix.js).
+const brSpentToday = new Map(); // agent -> { day, total }
+const brPixAttempts = new Map(); // mandate id -> allowed-attempt timestamps (ms), last 7 days
+app.post("/api/br/evaluate", async (req, res) => {
+  const { agent, mandate } = req.body || {};
+  if (!/^0x[0-9a-fA-F]{40}$/.test(agent || "")) return res.status(400).json({ error: "agent must be a 0x-prefixed 20-byte address" });
+
+  let brPolicy = {};
+  try {
+    brPolicy = JSON.parse(readFileSync(POLICY_FILE, "utf8")).br || {};
+  } catch {}
+  const day = new Date().toISOString().slice(0, 10);
+  const tally = brSpentToday.get(agent);
+  const spentTodayBRL = tally && tally.day === day ? tally.total : 0;
+
+  const now = Date.now();
+  const sevenDaysAgo = now - 7 * 24 * 60 * 60 * 1000;
+  const attemptLog = (mandate?.id && brPixAttempts.get(mandate.id)) || [];
+  const attemptsInWindow = attemptLog.filter((t) => t >= sevenDaysAgo).length;
+
+  const ts = new Date().toISOString();
+  const v = evaluatePixPayment(mandate, { policy: brPolicy, spentTodayBRL, attemptsInWindow });
+  if (v.decision === "allow") {
+    brSpentToday.set(agent, { day, total: Math.round((spentTodayBRL + Number(mandate.amountBRL)) * 100) / 100 });
+    if (mandate?.id && mandate?.recurring) brPixAttempts.set(mandate.id, [...attemptLog.filter((t) => t >= sevenDaysAgo), now]);
+  }
+
+  const payeeMasked = maskPixKey(mandate?.payeeKey);
+  const signed = await signBrDecision({ id: mandate?.id, agent, amountBRL: Number(mandate?.amountBRL) || 0, payeeMasked, verdict: v.decision, code: v.code, ts });
+  res.json({
+    decision: v.decision,
+    reason: v.reason,
+    ...(v.code ? { code: v.code } : {}),
+    ...(v.suggestion ? { suggestion: v.suggestion } : {}),
+    ...(v.authorisation ? { authorisation: v.authorisation } : {}),
+    currency: "BRL",
+    mandate: { id: mandate?.id ?? null, amountBRL: Number(mandate?.amountBRL) || null, payee: payeeMasked, category: mandate?.category ?? null },
+    regulatoryBasis: BR_REGULATORY_BASIS,
+    disclaimer: BR_DISCLAIMER,
+    ts,
+    ...signed,
+  });
+});
+
+// US payment governance (ACH / Nacha + Regulation E). Decides allow / requires_approval / deny — account validation
+// is a system fraud-detection gate (DENY, not a human pause), while consumer authorization/notice/stop-payment
+// rights under Regulation E are the human-approval path — and signs the verdict in USD. Never originates or settles
+// an ACH entry (server/us-ach.js).
+const usSpentToday = new Map(); // agent -> { day, total }
+app.post("/api/us/evaluate", async (req, res) => {
+  const { agent, mandate } = req.body || {};
+  if (!/^0x[0-9a-fA-F]{40}$/.test(agent || "")) return res.status(400).json({ error: "agent must be a 0x-prefixed 20-byte address" });
+
+  let usPolicy = {};
+  try {
+    usPolicy = JSON.parse(readFileSync(POLICY_FILE, "utf8")).us || {};
+  } catch {}
+  const day = new Date().toISOString().slice(0, 10);
+  const tally = usSpentToday.get(agent);
+  const spentTodayUSD = tally && tally.day === day ? tally.total : 0;
+
+  const ts = new Date().toISOString();
+  const v = evaluateAchDebit(mandate, { policy: usPolicy, spentTodayUSD });
+  if (v.decision === "allow") usSpentToday.set(agent, { day, total: Math.round((spentTodayUSD + Number(mandate.amountUSD)) * 100) / 100 });
+
+  const payeeMasked = maskAccountNumberUs(mandate?.payeeAccountNumber);
+  const signed = await signUsDecision({ id: mandate?.id, agent, amountUSD: Number(mandate?.amountUSD) || 0, payeeMasked, verdict: v.decision, code: v.code, ts });
+  res.json({
+    decision: v.decision,
+    reason: v.reason,
+    ...(v.code ? { code: v.code } : {}),
+    ...(v.suggestion ? { suggestion: v.suggestion } : {}),
+    ...(v.authorization ? { authorization: v.authorization } : {}),
+    currency: "USD",
+    mandate: { id: mandate?.id ?? null, amountUSD: Number(mandate?.amountUSD) || null, payee: payeeMasked, category: mandate?.category ?? null },
+    regulatoryBasis: US_REGULATORY_BASIS,
+    disclaimer: US_DISCLAIMER,
     ts,
     ...signed,
   });
