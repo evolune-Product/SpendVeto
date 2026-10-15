@@ -1,6 +1,6 @@
 {
   "name": "spendveto",
-  "version": "0.25.0",
+  "version": "0.26.0",
   "private": true,
   "type": "module",
   "description": "Agent payment rails + spend governance \u2014 an x402-metered endpoint in front of an AI agent call, with a policy engine and dashboard.",
@@ -10,6 +10,7 @@
     "mcp": "node mcp/server.js",
     "delegate": "node scripts/delegate.mjs",
     "verify": "node scripts/verify.mjs",
+    "check-chains": "node scripts/check-chains.mjs",
     "gen-wallets": "node scripts/gen-wallets.mjs",
     "apikey": "node scripts/apikey.mjs",
     "deploy-safe-allowance": "node scripts/deploy-safe-allowance.mjs",

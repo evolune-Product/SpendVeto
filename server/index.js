@@ -46,6 +46,7 @@ import { evaluateAchDebit, maskAccountNumber as maskAccountNumberUs, US_REGULATO
 import { catalogOpenApiSpec } from "./openapi.js";
 import { authorize as uptoAuthorize, settleAuthorization, voidAuthorization, getAuthorizations, openHoldUSD, uptoSummary } from "./upto.js";
 import { bindAuthorization, verifyBinding, getBinding, requestDigest } from "./integrity.js";
+import { evaluateRequirements as evaluateAuthCapture, recordCollect, capturePayment, chargePayment, voidPayment, refundPayment, markReclaimed, reclaimable, authCaptureHoldUSD, authCaptureSummary, getPayments as getAuthCapturePayments, findPayment as findAuthCapturePayment } from "./authcapture.js";
 import { buildEvidencePack, checkEvidencePack } from "./disputes.js";
 import { decisionSpans, toOtlpPayload, exportSpans } from "./otel.js";
 
@@ -97,6 +98,13 @@ if (MODE === "testnet") {
     hedera: process.env.SERVER_PAYOUT_ADDRESS_HEDERA,
     xrpl: process.env.SERVER_PAYOUT_ADDRESS_XRPL,
   };
+  // Per chain, not per family: a chain that is real money behind an explicit
+  // opt-in (XRPL mainnet, `mainnetOptIn` in the registry) takes its payout
+  // address ONLY from its own variable — so enabling the XRPL testnet with
+  // SERVER_PAYOUT_ADDRESS_XRPL can never also switch mainnet on.
+  // An empty value counts as unset — a blank SERVER_PAYOUT_ADDRESS_XRPL_MAINNET=
+  // line in a .env file must not read as "opted in to real money".
+  const payoutFor = (c) => (c.mainnetOptIn ? process.env[c.mainnetOptIn] : payToFor[c.family]) || undefined;
   // x402 v2, registry-driven: ask the configured facilitator what it can
   // actually settle (GET /supported) and bring every registry chain it names
   // live — schemes registered and 402s advertising one accepts entry per live
@@ -114,7 +122,7 @@ if (MODE === "testnet") {
     console.error(`[testnet] facilitator /supported unreachable (${err.message}) — falling back to base-sepolia only`);
     supportedNetworks = new Set([findChain("base-sepolia").caip2]);
   }
-  liveSettlementChains = CHAINS.filter((c) => supportedNetworks.has(c.caip2) && payToFor[c.family] != null).map((c) => c.id);
+  liveSettlementChains = CHAINS.filter((c) => supportedNetworks.has(c.caip2) && payoutFor(c) != null).map((c) => c.id);
   if (liveSettlementChains.length === 0) liveSettlementChains = ["base-sepolia"];
   console.log(`[testnet] live settlement chains via ${FACILITATOR_URL}: ${liveSettlementChains.join(", ")}`);
 
@@ -167,22 +175,28 @@ if (MODE === "testnet") {
         return atomic(7);
       case "xrpl":
         return String(tool.price);
+      // The token's own EIP-712 domain, per chain (registry `eip712`, checked
+      // live): Circle's mainnet USDC signs as "USD Coin", testnet as "USDC".
+      // A hardcoded name here signs every mainnet authorization against a
+      // domain the token contract doesn't have — rejected at settlement.
       default:
-        return { amount: String(Math.round(Number(tool.price) * 1e6)), asset: c.usdc, extra: { name: "USDC", version: "2" } };
+        return { amount: String(Math.round(Number(tool.price) * 1e6)), asset: c.usdc, extra: { ...(c.eip712 || { name: "USDC", version: "2" }) } };
     }
   };
-  const routes = Object.fromEntries(
-    TOOLS.map((tool) => [
-      `GET ${tool.path}`,
-      {
-        accepts: liveSettlementChains.map((id) => {
-          const c = findChain(id);
-          return { scheme: "exact", price: usdcAmount(tool, id), network: c.caip2, payTo: payToFor[c.family] };
-        }),
-        description: `SpendVeto demo — ${tool.label}`,
-      },
-    ])
-  );
+  // Every paid route is gated for GET *and* HEAD. Express answers a HEAD with
+  // the GET handler (body stripped), so a rule that names only GET leaves the
+  // paid handler — and whatever it costs to run — reachable unpaid by HEAD.
+  // Found by probing this gate after x402 fixed the same class upstream
+  // (#3796, 2026-10-13; not yet in a published @x402/express) — pinned by an
+  // assertion in scripts/verify.mjs.
+  const paidRule = (tool) => ({
+    accepts: liveSettlementChains.map((id) => {
+      const c = findChain(id);
+      return { scheme: "exact", price: usdcAmount(tool, id), network: c.caip2, payTo: payoutFor(c) };
+    }),
+    description: `SpendVeto demo — ${tool.label}`,
+  });
+  const routes = Object.fromEntries(TOOLS.flatMap((tool) => [[`GET ${tool.path}`, paidRule(tool)], [`HEAD ${tool.path}`, paidRule(tool)]]));
   app.use(paymentMiddleware(routes, resourceServer));
   // x402-express already verified + settled payment before these handlers run.
   // Ledger accounting for testnet mode happens client-side (see client/pay-and-call.js) —
@@ -1312,15 +1326,127 @@ app.post("/api/upto/void", (req, res) => {
   res.json({ decision: "voided", authorization: result.authorization, releasedUSD: result.releasedUSD, heldUSD: openHoldUSD(result.authorization.address) });
 });
 
-// The hold number client/policy.js folds into the hourly budget.
+// The hold number client/policy.js folds into the hourly budget: every open
+// upto ceiling plus every live auth-capture hold (server/authcapture.js) —
+// two schemes, one question: what has this wallet signed away but not spent?
 app.get("/api/upto/holds/:address", (req, res) => {
-  res.json({ address: req.params.address, heldUSD: openHoldUSD(req.params.address) });
+  const uptoUSD = openHoldUSD(req.params.address);
+  const authCaptureUSD = authCaptureHoldUSD(req.params.address);
+  res.json({ address: req.params.address, heldUSD: Math.round((uptoUSD + authCaptureUSD) * 1e6) / 1e6, uptoUSD, authCaptureUSD });
 });
 
 app.get("/api/upto", (req, res) => {
   const { address } = req.query;
   const authorizations = getAuthorizations().filter((a) => !address || String(a.address).toLowerCase() === String(address).toLowerCase());
   res.json({ authorizations, summary: uptoSummary(address) });
+});
+
+// x402 `auth-capture` (server/authcapture.js): refuse a hostile route before
+// signing, govern the maximum, hold the escrow against the budget, and hold
+// the seller's lifecycle calls to the terms the buyer signed.
+function readAuthCapturePolicy() {
+  try {
+    return JSON.parse(readFileSync(POLICY_FILE, "utf8"));
+  } catch {
+    return {};
+  }
+}
+
+async function governAuthCapture(body) {
+  const { address, requirements, authorizationTo, toolId, category } = body || {};
+  if (!/^0x[0-9a-fA-F]{40}$/.test(address || "")) return { status: 400, json: { error: "address must be a 0x-prefixed 20-byte address" } };
+  const ts = new Date().toISOString();
+  const evaluation = evaluateAuthCapture(requirements, { policy: readAuthCapturePolicy(), authorizationTo });
+  if (!evaluation.ok) return { status: 403, json: { decision: "deny", stage: "scheme", code: evaluation.code, reason: evaluation.reason, suggestion: evaluation.suggestion, ts } };
+  // Policy decides on the maximum: from the moment the authorization exists,
+  // the maximum is what the buyer is exposed to.
+  const verdict = await checkPolicy(address, evaluation.maxUSD, toolId, evaluation.chain, category, evaluation.payee);
+  if (!verdict.allowed) return { status: 403, json: { decision: "deny", stage: "policy", code: verdict.code, reason: verdict.reason, suggestion: verdict.suggestion, maxUSD: evaluation.maxUSD, ts }, blocked: { evaluation, verdict } };
+  if (verdict.requiresApproval) {
+    return { status: 403, json: { decision: "requires_approval", stage: "policy", code: "requires_approval", reason: `an auth-capture maximum of $${evaluation.maxUSD} is above requireApprovalAboveUSD $${verdict.policy.requireApprovalAboveUSD} — a human signs off on the maximum, not the eventual capture`, suggestion: "request approval for this maximum before signing, or ask the seller for a lower one", maxUSD: evaluation.maxUSD, ts } };
+  }
+  return { status: 200, json: { decision: "allow", stage: "policy", evaluation, ts }, evaluation };
+}
+
+// Dry run: would SpendVeto let this wallet sign this route? No state change.
+app.post("/api/authcapture/evaluate", async (req, res) => {
+  const out = await governAuthCapture(req.body);
+  res.status(out.status).json(out.json);
+});
+
+app.post("/api/authcapture/authorize", async (req, res) => {
+  const { address, toolId, category } = req.body || {};
+  const out = await governAuthCapture(req.body);
+  if (out.blocked) {
+    const { evaluation, verdict } = out.blocked;
+    appendLedgerEntry({
+      address, resource: toolId ? `auth-capture:${toolId}` : "auth-capture", amount: evaluation.maxUSD, chain: evaluation.chain,
+      ...(category ? { category } : {}), ...(evaluation.payee ? { payTo: evaluation.payee } : {}),
+      status: "blocked", mode: "auth-capture", reason: `auth-capture maximum: ${verdict.reason}`, policyHash: policyHash(),
+    });
+  }
+  if (!out.evaluation) return res.status(out.status).json(out.json);
+  const payment = recordCollect({ address, evaluation: out.evaluation, toolId, category });
+  res.status(201).json({ decision: "allow", stage: "policy", payment, heldUSD: authCaptureHoldUSD(address), ts: out.json.ts });
+});
+
+// Seller lifecycle, re-checked against the signed terms. Captured or charged
+// money — never the maximum — is what enters the spend record.
+const bookCapture = (p, amountUSD, op) =>
+  appendLedgerEntry({
+    address: p.address, resource: p.toolId ? `auth-capture:${p.toolId}` : "auth-capture", amount: amountUSD, chain: p.chain,
+    ...(p.category ? { category: p.category } : {}), ...(p.payee ? { payTo: p.payee } : {}),
+    status: "paid", mode: "auth-capture", authCaptureId: p.id, op, maxUSD: p.maxUSD, policyHash: policyHash(),
+  });
+
+app.post("/api/authcapture/:id/capture", (req, res) => {
+  const r = capturePayment(req.params.id, req.body?.amountUSD);
+  if (!r.ok) return res.status(r.code === "ac_unknown" ? 404 : 409).json({ decision: "deny", code: r.code, reason: r.reason, suggestion: r.suggestion });
+  bookCapture(r.payment, r.capturedUSD, "capture");
+  res.json({ decision: "captured", payment: r.payment, capturedUSD: r.capturedUSD, remainingUSD: r.remainingUSD, heldUSD: authCaptureHoldUSD(r.payment.address) });
+});
+
+app.post("/api/authcapture/:id/charge", (req, res) => {
+  const r = chargePayment(req.params.id, req.body?.amountUSD);
+  if (!r.ok) return res.status(r.code === "ac_unknown" ? 404 : 409).json({ decision: "deny", code: r.code, reason: r.reason, suggestion: r.suggestion });
+  bookCapture(r.payment, r.capturedUSD, "charge");
+  res.json({ decision: "charged", payment: r.payment, capturedUSD: r.capturedUSD, releasedUSD: r.releasedUSD, heldUSD: authCaptureHoldUSD(r.payment.address) });
+});
+
+app.post("/api/authcapture/:id/void", (req, res) => {
+  const r = voidPayment(req.params.id);
+  if (!r.ok) return res.status(r.code === "ac_unknown" ? 404 : 409).json({ decision: "deny", code: r.code, reason: r.reason, suggestion: r.suggestion });
+  res.json({ decision: "voided", payment: r.payment, releasedUSD: r.releasedUSD, heldUSD: authCaptureHoldUSD(r.payment.address) });
+});
+
+app.post("/api/authcapture/:id/refund", (req, res) => {
+  const r = refundPayment(req.params.id, req.body?.amountUSD);
+  if (!r.ok) return res.status(r.code === "ac_unknown" ? 404 : 409).json({ decision: "deny", code: r.code, reason: r.reason, suggestion: r.suggestion });
+  res.json({ decision: "refunded", payment: r.payment, refundedUSD: r.refundedUSD, refundableUSD: r.refundableUSD });
+});
+
+app.post("/api/authcapture/:id/reclaimed", (req, res) => {
+  const r = markReclaimed(req.params.id, req.body?.txHash);
+  if (!r.ok) return res.status(r.code === "ac_unknown" ? 404 : 409).json({ decision: "deny", code: r.code, reason: r.reason, suggestion: r.suggestion });
+  res.json({ decision: "reclaimed", payment: r.payment, recoveredUSD: r.recoveredUSD });
+});
+
+// Money left behind: holds past their capture deadline that only the buyer's
+// own reclaim call can recover.
+app.get("/api/authcapture/reclaimable", (req, res) => {
+  res.json(reclaimable(req.query.address));
+});
+
+app.get("/api/authcapture", (req, res) => {
+  const { address } = req.query;
+  const payments = getAuthCapturePayments().filter((p) => !address || String(p.address).toLowerCase() === String(address).toLowerCase());
+  res.json({ payments, summary: authCaptureSummary(address) });
+});
+
+app.get("/api/authcapture/:id", (req, res) => {
+  const p = findAuthCapturePayment(req.params.id);
+  if (!p) return res.status(404).json({ error: "not found" });
+  res.json(p);
 });
 
 // Request integrity (server/integrity.js): bind an authorization to the exact

@@ -165,7 +165,8 @@ export async function checkPolicy(address, proposedPriceUSD, toolId, chain, cate
   // would let an agent sign ten $50 authorizations under a $60/hour cap and
   // break none of them. Open ceilings are held against the budget the way a
   // card pre-auth holds against a balance, and released on settlement or
-  // expiry (see server/upto.js).
+  // expiry (see server/upto.js). auth-capture escrows (server/authcapture.js)
+  // hold the same way until captured, voided or past their capture deadline.
   let heldUSD = 0;
   try {
     const held = await fetch(`http://localhost:${PORT}/api/upto/holds/${address}`).then((r) => r.json());
@@ -294,7 +295,7 @@ export async function checkPolicy(address, proposedPriceUSD, toolId, chain, cate
   }
   const committedUSD = recent.totalUSD + heldUSD;
   if (committedUSD + price > policy.maxPerHourUSD) {
-    const heldNote = heldUSD > 0 ? `, $${heldUSD.toFixed(4)} held by open upto authorizations` : "";
+    const heldNote = heldUSD > 0 ? `, $${heldUSD.toFixed(4)} held by open upto authorizations and auth-capture escrows` : "";
     return deny("hourly_usd_cap", `would exceed maxPerHourUSD $${policy.maxPerHourUSD} (spent $${recent.totalUSD.toFixed(4)} so far${heldNote})`,
       `only $${Math.max(0, policy.maxPerHourUSD - committedUSD).toFixed(4)} remains in this hour's budget — wait for the window to roll over${heldUSD > 0 ? ", settle or void an open authorization to release its hold" : ""}, or pick a cheaper tool`, { policy, recent, heldUSD });
   }

@@ -10,6 +10,7 @@ data/tools.json
 data/agents.json
 data/consents.json
 data/upto.json
+data/authcapture.json
 data/policy.json.bak
 data/sanctions/
 *.log

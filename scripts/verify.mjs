@@ -109,7 +109,7 @@ class McpStdio {
 }
 
 // Fresh state for a deterministic run.
-for (const f of ["data/ledger.json", "data/balances.json", "data/delegations.json", "data/children.json", "data/freezes.json", "data/waitlist.json", "data/tools.json", "data/agents.json", "data/shadow-policy.json", "data/shadow-log.json", "data/api-keys.json", "data/consents.json", "data/upto.json"]) {
+for (const f of ["data/ledger.json", "data/balances.json", "data/delegations.json", "data/children.json", "data/freezes.json", "data/waitlist.json", "data/tools.json", "data/agents.json", "data/shadow-policy.json", "data/shadow-log.json", "data/api-keys.json", "data/consents.json", "data/upto.json", "data/authcapture.json"]) {
   const p = `${ROOT}${f}`;
   if (existsSync(p)) unlinkSync(p);
 }
@@ -667,8 +667,9 @@ try {
   // --- Chains + waitlist: the hosted-platform funnel ---
   const { chains } = await fetch(`${BASE}/api/chains`).then((r) => r.json());
   check(
-    "chain registry lists 15 chains across eight signature families, Base Sepolia live",
-    chains.length === 15 && chains.find((c) => c.id === "base-sepolia")?.status === "live",
+    "chain registry lists 20 chains across eight signature families, six settling live by default",
+    chains.length === 20 && chains.find((c) => c.id === "base-sepolia")?.status === "live" &&
+      chains.filter((c) => c.status === "live").map((c) => c.id).sort().join(",") === "aptos-testnet,base-sepolia,hedera-testnet,solana-devnet,stellar-testnet,xrpl-testnet",
     chains.map((c) => c.id).join(", ")
   );
   check(
@@ -714,10 +715,38 @@ try {
     JSON.stringify(FALLBACK_CHAINS.map((c) => c.id).sort()) === JSON.stringify(chains.map((c) => c.id).sort()),
     `fallback=${FALLBACK_CHAINS.map((c) => c.id).join(",")}`
   );
+  // Until v0.26.0 this assertion pinned XRPL *mainnet* to "xrpl:1" — which
+  // @x402/xrpl defines as the TESTNET (mainnet is xrpl:0). The registry was
+  // wrong and this check enshrined it. Now both ids, and each network's RLUSD
+  // issuer, are read from the package itself rather than restated here.
+  const xrplPkg = await import("@x402/xrpl");
+  const xrplMain = chains.find((c) => c.id === "xrpl");
+  const xrplTest = chains.find((c) => c.id === "xrpl-testnet");
   check(
-    "XRPL is flagged as settling RLUSD on mainnet, not USDC on a testnet — the one chain here where that distinction is a safety property, not trivia",
-    chains.find((c) => c.id === "xrpl")?.stablecoin === "RLUSD" && chains.find((c) => c.id === "xrpl")?.caip2 === "xrpl:1",
-    JSON.stringify(chains.find((c) => c.id === "xrpl"))
+    "XRPL network ids and RLUSD issuers come from @x402/xrpl itself — mainnet xrpl:0 behind its own opt-in, testnet xrpl:1, never one network's issuer under the other's id",
+    xrplMain?.caip2 === xrplPkg.XRPL_MAINNET && xrplMain?.usdc === xrplPkg.RLUSD_MAINNET_ISSUER && xrplMain?.stablecoin === "RLUSD" && xrplMain?.status === "ready" && xrplMain?.mainnetOptIn === "SERVER_PAYOUT_ADDRESS_XRPL_MAINNET" &&
+      xrplTest?.caip2 === xrplPkg.XRPL_TESTNET && xrplTest?.usdc === xrplPkg.RLUSD_TESTNET_ISSUER && xrplTest?.status === "live",
+    JSON.stringify({ main: [xrplMain?.caip2, xrplMain?.usdc], test: [xrplTest?.caip2, xrplTest?.usdc] })
+  );
+  // Registry stablecoins vs x402's own default-asset table, for every EVM
+  // chain the installed @x402/evm covers — a typo'd token address here would
+  // price a chain in a contract nobody settles. (Live chain ids, EIP-3009
+  // support and EIP-712 domains are re-checked against RPC by
+  // `npm run check-chains`, which needs the network and so isn't in here.)
+  const { getDefaultAsset } = await import("@x402/evm");
+  const evmCovered = chains.filter((c) => !c.family).map((c) => { try { return [c, getDefaultAsset(c.caip2)]; } catch { return null; } }).filter(Boolean);
+  check(
+    "every EVM stablecoin the x402 package also knows matches its default asset exactly — including the new Monad and Stable mainnets",
+    evmCovered.length >= 6 && evmCovered.every(([c, a]) => a.address === c.usdc) && ["monad", "stable"].every((id) => evmCovered.some(([c]) => c.id === id)),
+    evmCovered.map(([c, a]) => `${c.id}:${a.address === c.usdc ? "ok" : a.address}`).join(" ")
+  );
+  const newMains = ["monad", "celo", "sei", "stable"].map((id) => chains.find((c) => c.id === id));
+  check(
+    "Monad, Celo, Sei and Stable are registered at their real chain ids, settlement-ready rather than claimed live, with Stable labelled as USDT0 not USDC",
+    newMains.every(Boolean) && newMains.map((c) => c.caip2).join(",") === "eip155:143,eip155:42220,eip155:1329,eip155:988" &&
+      newMains.every((c) => c.status === "ready" && parseInt(c.chainIdHex, 16) === Number(c.caip2.split(":")[1])) &&
+      newMains.find((c) => c.id === "stable").stablecoin === "USDT0" && newMains.filter((c) => c.id !== "stable").every((c) => !c.stablecoin),
+    newMains.map((c) => `${c?.id}:${c?.caip2}:${c?.chainIdHex}`).join(" ")
   );
   const arc = chains.find((c) => c.id === "arc-testnet");
   check(
@@ -2557,6 +2586,139 @@ try {
     oaOutput.slice(0, 60)
   );
 
+  // --- x402 `auth-capture`: refuse hostile routes, govern the maximum, hold the escrow, check the seller ---
+  // The scheme (x402 spec v1.1; TS SDK merged 2026-10-06) gives a payment a
+  // lifecycle — authorize into the commerce-payments escrow, then capture /
+  // void / refund driven by the seller, and reclaim by the buyer after the
+  // capture deadline. server/authcapture.js is the buyer's side of it.
+  writeFileSync(`${ROOT}data/policy.json`, JSON.stringify({ ...LOOSE_POLICY, maxPerCallUSD: 1, maxPerHourUSD: 1, maxCallsPerHour: 100, requireApprovalAboveUSD: 5, authCapture: { maxHoldSeconds: 86400, minRefundWindowSeconds: 3600 } }, null, 2));
+  const acPost = (path, body) =>
+    fetch(`${BASE}/api/authcapture/${path}`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) }).then(async (r) => ({ status: r.status, body: await r.json() }));
+  const nowS = () => Math.floor(Date.now() / 1000);
+  const AC_ZERO = "0x0000000000000000000000000000000000000000";
+  const acOperator = privateKeyToAccount(generatePrivateKey()).address;
+  const acPayee = privateKeyToAccount(generatePrivateKey()).address;
+  const acRoute = (extra = {}, top = {}) => ({
+    scheme: "auth-capture", network: "eip155:84532", amount: "250000", asset: "0x036CbD53842c5426634e7929541eC2318f3dCF7e", payTo: acPayee, maxTimeoutSeconds: 60,
+    extra: { name: "USDC", version: "2", captureAuthorizer: acOperator, receiverAuthorizer: acOperator, captureDeadline: nowS() + 3600, refundDeadline: nowS() + 3600 + 86400, feeRecipient: AC_ZERO, minFeeBps: 0, maxFeeBps: 0, ...extra },
+    ...top,
+  });
+  const acEval = (requirements, more = {}) => acPost("evaluate", { address: privateKeyToAccount(generatePrivateKey()).address, requirements, ...more });
+
+  const acSmall = await acEval(acRoute());
+  const acBig = await acEval(acRoute({}, { amount: "1500000" }));
+  check(
+    "an auth-capture route is governed on the maximum it authorizes — $0.25 allowed, $1.50 refused by the per-call cap before anything is signed",
+    acSmall.status === 200 && acSmall.body.evaluation?.maxUSD === 0.25 && acSmall.body.evaluation?.escrowVersion === "v1.1" &&
+      acBig.status === 403 && acBig.body.stage === "policy" && acBig.body.code === "per_call_cap",
+    `small=${acSmall.status}/${acSmall.body.evaluation?.maxUSD} big=${acBig.status}/${acBig.body.code}`
+  );
+  const acFakeEscrow = await acEval(acRoute({ authCaptureEscrow: privateKeyToAccount(generatePrivateKey()).address }));
+  const acWrongCollector = await acEval(acRoute(), { authorizationTo: "0x0E3dF9510de65469C4518D7843919c0b8C7A7757" });
+  const acRightCollector = await acEval(acRoute(), { authorizationTo: "0x8612dfdc421f80336cd14E8EF9cb1E765dB5ab88" });
+  check(
+    "refuses to sign into a non-canonical escrow, or a token authorization pointed at another deployment's collector — the matching v1.1 collector passes",
+    acFakeEscrow.body.code === "ac_escrow_not_canonical" && acWrongCollector.body.code === "ac_collector_mismatch" && acRightCollector.status === 200,
+    `${acFakeEscrow.body.code} ${acWrongCollector.body.code} ${acRightCollector.status}`
+  );
+  const acSolana = await acEval(acRoute({}, { network: "solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1" }));
+  const acOddToken = await acEval(acRoute({}, { asset: privateKeyToAccount(generatePrivateKey()).address }));
+  check(
+    "auth-capture is priced only on a registered EVM network in that chain's registry stablecoin — a non-EVM network or an unknown token is refused",
+    acSolana.body.code === "ac_network_unsupported" && acOddToken.body.code === "ac_asset_mismatch",
+    `${acSolana.body.code} ${acOddToken.body.code}`
+  );
+  const acBackwards = await acEval(acRoute({ captureDeadline: nowS() + 7200, refundDeadline: nowS() + 3600 }));
+  const acLongHold = await acEval(acRoute({ captureDeadline: nowS() + 2 * 86400, refundDeadline: nowS() + 3 * 86400 }));
+  const acShortRefund = await acEval(acRoute({ captureDeadline: nowS() + 3600, refundDeadline: nowS() + 3600 + 60 }));
+  check(
+    "deadlines are the buyer's terms: out-of-order deadlines, a hold past policy.authCapture.maxHoldSeconds, and a refund window under minRefundWindowSeconds are each refused",
+    acBackwards.body.code === "ac_deadline_order" && acLongHold.body.code === "ac_hold_too_long" && acShortRefund.body.code === "ac_refund_window_short",
+    `${acBackwards.body.code} ${acLongHold.body.code} ${acShortRefund.body.code}`
+  );
+  const acStrands = await acEval(acRoute({ operatorType: "custom", receiverAuthorizer: undefined }));
+  const acDeferred = await acEval(acRoute({ operatorType: "custom", receiverAuthorizer: undefined, captureMode: "deferred" }));
+  check(
+    "a collect-only route that defaults to sync capture is refused — the spec says it escrows the funds and strands them until the deadline; the same route publishing deferred capture passes",
+    acStrands.body.code === "ac_route_strands_funds" && acDeferred.status === 200,
+    `${acStrands.body.code} deferred=${acDeferred.status}`
+  );
+  const acOpenFee = await acEval(acRoute({ maxFeeBps: 100 }));
+  const acBoundFee = await acEval(acRoute({ minFeeBps: 100, maxFeeBps: 100, feeRecipient: acOperator }));
+  check(
+    "a fee range granted with no fee recipient is refused (the submitter could send the fee anywhere); an agreed fixed fee to a named recipient passes",
+    acOpenFee.body.code === "ac_fee_receiver_unbound" && acBoundFee.status === 200,
+    `${acOpenFee.body.code} bound=${acBoundFee.status}`
+  );
+
+  const acWallet = privateKeyToAccount(generatePrivateKey()).address;
+  const acHeld = await acPost("authorize", { address: acWallet, requirements: acRoute(), toolId: "review" });
+  const acHolds = await fetch(`${BASE}/api/upto/holds/${acWallet}`).then((r) => r.json());
+  const acLedger0 = await fetch(`${BASE}/api/ledger`).then((r) => r.json());
+  check(
+    "an authorized escrow holds its maximum against the hourly budget and books no spend until the seller captures",
+    acHeld.status === 201 && acHeld.body.payment?.status === "held" && acHolds.authCaptureUSD === 0.25 && acHolds.heldUSD >= 0.25 &&
+      !acLedger0.entries.some((e) => e.address === acWallet && e.status === "paid"),
+    `status=${acHeld.status} held=${JSON.stringify(acHolds)}`
+  );
+  const acSqueezed = await acPost("authorize", { address: acWallet, requirements: acRoute({}, { amount: "800000" }), toolId: "review" });
+  check(
+    "the open escrow squeezes the budget: a second $0.80 maximum under a $1/hour cap is refused because $0.25 is already held",
+    acSqueezed.status === 403 && acSqueezed.body.code === "hourly_usd_cap" && /auth-capture escrows/.test(acSqueezed.body.reason || ""),
+    `${acSqueezed.status} ${acSqueezed.body.code}`
+  );
+  const acId = acHeld.body.payment.id;
+  const acCap1 = await acPost(`${acId}/capture`, { amountUSD: 0.1 });
+  const acCapOver = await acPost(`${acId}/capture`, { amountUSD: 0.2 });
+  const acLedger1 = await fetch(`${BASE}/api/ledger`).then((r) => r.json());
+  const acPaid = acLedger1.entries.filter((e) => e.address === acWallet && e.status === "paid");
+  check(
+    "a partial capture books exactly what was captured as spend; a capture past the remaining hold is refused as over-capture",
+    acCap1.status === 200 && acCap1.body.remainingUSD === 0.15 && acCapOver.status === 409 && acCapOver.body.code === "ac_over_capture" &&
+      acPaid.length === 1 && acPaid[0].amount === 0.1 && acPaid[0].mode === "auth-capture" && acPaid[0].maxUSD === 0.25,
+    `cap=${acCap1.body.remainingUSD} over=${acCapOver.body.code} paid=${JSON.stringify(acPaid.map((e) => e.amount))}`
+  );
+  const acRefund = await acPost(`${acId}/refund`, { amountUSD: 0.05 });
+  const acRefundOver = await acPost(`${acId}/refund`, { amountUSD: 0.1 });
+  check(
+    "refunds return captured money and never more: $0.05 of $0.10 captured is refundable, a further $0.10 is refused",
+    acRefund.status === 200 && acRefund.body.refundableUSD === 0.05 && acRefundOver.body.code === "ac_over_refund",
+    `${acRefund.body.refundableUSD} ${acRefundOver.body.code}`
+  );
+  const acVoid = await acPost(`${acId}/void`, {});
+  const acHoldsAfterVoid = await fetch(`${BASE}/api/upto/holds/${acWallet}`).then((r) => r.json());
+  const acVoidAgain = await acPost(`${acId}/void`, {});
+  check(
+    "void releases exactly the uncaptured remainder back to the budget, and there is nothing left to void a second time",
+    acVoid.status === 200 && acVoid.body.releasedUSD === 0.15 && acHoldsAfterVoid.authCaptureUSD === 0 && acVoidAgain.body.code === "ac_not_held",
+    `released=${acVoid.body.releasedUSD} held=${acHoldsAfterVoid.authCaptureUSD} again=${acVoidAgain.body.code}`
+  );
+  const acAuthWallet = privateKeyToAccount(generatePrivateKey()).address;
+  const acAuthFlow = await acPost("authorize", { address: acAuthWallet, requirements: acRoute({ paymentFlow: "authorization" }) });
+  const acCharge = await acPost(`${acAuthFlow.body.payment?.id}/charge`, { amountUSD: 0.2 });
+  const acCharge2 = await acPost(`${acAuthFlow.body.payment?.id}/charge`, { amountUSD: 0.01 });
+  const acAuthFlow2 = await acPost("authorize", { address: acAuthWallet, requirements: acRoute({ paymentFlow: "authorization" }) });
+  const acOverCharge = await acPost(`${acAuthFlow2.body.payment?.id}/charge`, { amountUSD: 0.3 });
+  check(
+    "the authorization flow charges once and never above the maximum: $0.20 of $0.25 charges and releases $0.05, a second charge is a replay, $0.30 is over-charge",
+    acAuthFlow.body.payment?.status === "authorized" && acCharge.body.releasedUSD === 0.05 && acCharge2.body.code === "ac_already_charged" && acOverCharge.body.code === "ac_over_charge",
+    `${acCharge.body.releasedUSD} ${acCharge2.body.code} ${acOverCharge.body.code}`
+  );
+  const acStrandWallet = privateKeyToAccount(generatePrivateKey()).address;
+  const acShort = await acPost("authorize", { address: acStrandWallet, requirements: acRoute({ captureDeadline: nowS() + 2, refundDeadline: nowS() + 2 + 3600 }) });
+  await sleep(3200);
+  const acLateCapture = await acPost(`${acShort.body.payment?.id}/capture`, { amountUSD: 0.1 });
+  const acReclaimable = await fetch(`${BASE}/api/authcapture/reclaimable?address=${acStrandWallet}`).then((r) => r.json());
+  const acStrandHolds = await fetch(`${BASE}/api/upto/holds/${acStrandWallet}`).then((r) => r.json());
+  const acReclaimed = await acPost(`${acShort.body.payment?.id}/reclaimed`, { txHash: "0xabc" });
+  const acReclaimableAfter = await fetch(`${BASE}/api/authcapture/reclaimable?address=${acStrandWallet}`).then((r) => r.json());
+  check(
+    "a hold the seller never captured by its deadline stops holding budget, can no longer be captured, and surfaces as money the buyer can reclaim — until reclaimed",
+    acShort.status === 201 && acLateCapture.body.code === "ac_capture_after_deadline" && acStrandHolds.authCaptureUSD === 0 &&
+      acReclaimable.reclaimableUSD === 0.25 && acReclaimable.count === 1 && acReclaimed.body.recoveredUSD === 0.25 && acReclaimableAfter.reclaimableUSD === 0,
+    `late=${acLateCapture.body.code} reclaimable=${acReclaimable.reclaimableUSD} holds=${acStrandHolds.authCaptureUSD} after=${acReclaimableAfter.reclaimableUSD}`
+  );
+
   // --- Multi-chain live settlement wiring (facilitator-adaptive) ---
   // In testnet mode the gate asks its facilitator (GET /supported) what it can
   // settle and brings every matching registry chain live: per-chain scheme
@@ -2564,7 +2726,7 @@ try {
   // is the facilitator's truth, not config bravado — proven both ways with a
   // mock facilitator: advertising every registry chain brings every signable
   // one live; advertising one brings exactly one.
-  const { CHAINS: REG_CHAINS } = await import("../shared-config.js");
+  const { CHAINS: REG_CHAINS, TOOLS } = await import("../shared-config.js");
   let mockSupportedCaip2 = REG_CHAINS.map((c) => c.caip2);
   mockFacil = createServer((req, res) => {
     if (req.url.startsWith("/supported")) {
@@ -2577,7 +2739,7 @@ try {
   });
   mockFacil.listen(8498);
 
-  const bootTestnet = async () => {
+  const bootTestnet = async (extraEnv = {}) => {
     const proc = spawn("node", ["server/index.js"], {
       cwd: ROOT,
       env: {
@@ -2596,6 +2758,10 @@ try {
         SERVER_PAYOUT_ADDRESS_STELLAR: "GA7QYNF7SOWQ3GLR2BGMZEHXAVIRZA4KVWLTJJFC7MGXUA74P7UJVSGZ",
         SERVER_PAYOUT_ADDRESS_HEDERA: "0.0.1111111",
         SERVER_PAYOUT_ADDRESS_XRPL: "rHb9CJAWyB4rj91VRWn96DkukG4bwdtyTh",
+        // Blanked, not omitted: dotenv skips keys already present, so a
+        // maintainer's .env.local can't switch XRPL mainnet on under the suite.
+        SERVER_PAYOUT_ADDRESS_XRPL_MAINNET: "",
+        ...extraEnv,
       },
       stdio: ["ignore", "pipe", "pipe"],
     });
@@ -2615,10 +2781,10 @@ try {
   testnetProc = await bootTestnet();
   const tnChains = await fetch("http://localhost:8401/api/chains").then((r) => r.json());
   check(
-    "testnet gate brings live every registry chain the facilitator settles AND this instance can sign — 13 of 15, with Algorand and Cardano deliberately left out",
-    tnChains.mode === "testnet" && tnChains.liveSettlementChains?.length === 13 &&
-      tnChains.chains.filter((c) => c.id !== "algorand-testnet" && c.id !== "cardano-preprod").every((c) => c.settlement === "live") &&
-      !tnChains.liveSettlementChains.includes("algorand-testnet") && !tnChains.liveSettlementChains.includes("cardano-preprod"),
+    "testnet gate brings live every registry chain the facilitator settles AND this instance can sign — 17 of 20, with Algorand, Cardano and opt-in-only XRPL mainnet left out",
+    tnChains.mode === "testnet" && tnChains.liveSettlementChains?.length === 17 &&
+      tnChains.chains.filter((c) => !["algorand-testnet", "cardano-preprod", "xrpl"].includes(c.id)).every((c) => c.settlement === "live") &&
+      ["algorand-testnet", "cardano-preprod", "xrpl"].every((id) => !tnChains.liveSettlementChains.includes(id)),
     `live=${tnChains.liveSettlementChains?.join(",")}`
   );
   const tn402 = await fetch("http://localhost:8401/api/agent/translate");
@@ -2626,9 +2792,23 @@ try {
   const decoded402 = tn402Text.includes("eip155") ? tn402Text : Buffer.from(tn402.headers.get("PAYMENT-REQUIRED") || "", "base64").toString("utf8") + " " + tn402Text;
   const advertised = REG_CHAINS.filter((c) => decoded402.includes(c.caip2)).map((c) => c.id);
   check(
-    "a real x402 v2 402 advertises one payment option per live chain — thirteen CAIP-2 networks in one challenge, and never a chain it cannot sign",
-    tn402.status === 402 && advertised.length === 13 && !advertised.includes("algorand-testnet") && !advertised.includes("cardano-preprod"),
+    "a real x402 v2 402 advertises one payment option per live chain — seventeen CAIP-2 networks in one challenge, and never a chain it cannot sign",
+    tn402.status === 402 && advertised.length === 17 && ["algorand-testnet", "cardano-preprod", "xrpl"].every((id) => !advertised.includes(id)),
     `status=${tn402.status} advertised=${advertised.join(",")}`
+  );
+  // Each EVM option must carry its OWN token's EIP-712 domain: an EIP-3009
+  // authorization signed against the wrong name is rejected by the token.
+  // Circle's mainnet USDC signs as "USD Coin", its testnet as "USDC" — a
+  // single hardcoded "USDC" (this gate until v0.26.0) broke every mainnet.
+  let tnChallenge = null;
+  try { tnChallenge = JSON.parse(Buffer.from(tn402.headers.get("PAYMENT-REQUIRED") || "", "base64").toString("utf8")); } catch {}
+  const optFor = (caip2) => tnChallenge?.accepts?.find((a) => a.network === caip2);
+  check(
+    "every EVM payment option in a live 402 carries its own token's EIP-712 domain — USD Coin on Base/Ethereum mainnet, USDC on Base Sepolia, USDT0 v1 on Stable",
+    optFor("eip155:8453")?.extra?.name === "USD Coin" && optFor("eip155:1")?.extra?.name === "USD Coin" &&
+      optFor("eip155:84532")?.extra?.name === "USDC" && optFor("eip155:988")?.extra?.name === "USDT0" && optFor("eip155:988")?.extra?.version === "1" &&
+      REG_CHAINS.filter((c) => !c.family).every((c) => optFor(c.caip2)?.extra?.name === c.eip712?.name && optFor(c.caip2)?.extra?.version === c.eip712?.version),
+    REG_CHAINS.filter((c) => !c.family).map((c) => `${c.id}=${optFor(c.caip2)?.extra?.name}/${optFor(c.caip2)?.extra?.version}`).join(" ")
   );
   // x402 upstream (#3542, Sep 2026) fixed paid routes being reachable unpaid
   // when the framework dispatches an encoded path the route matcher never
@@ -2649,19 +2829,62 @@ try {
     bypassCodes.every((c) => c === 402 || c === 404),
     bypassPaths.map((p, i) => `${p}=${bypassCodes[i]}`).join(" ")
   );
+  const rawStatus = (method, path) => new Promise((resolve) => {
+    const req = httpRequest({ host: "localhost", port: 8401, path, method }, (res) => { res.resume(); resolve(res.statusCode); });
+    req.on("error", () => resolve(0));
+    req.end();
+  });
+  // x402 #3796 (2026-10-13): HEAD reached paid GET handlers unpaid. Express
+  // answers HEAD with the GET handler, so this gate WAS exposed — HEAD got a
+  // 200 and the paid handler ran — until v0.26.0 gated HEAD explicitly.
+  const headProbes = [...TOOLS.map((t) => t.path), "/API/AGENT/TRANSLATE", "/api/agent/translate/"];
+  const headCodes = [];
+  for (const p of headProbes) headCodes.push(await rawStatus("HEAD", p));
+  check(
+    "a HEAD request never runs a paid handler unpaid — every paid route, and its re-cased and trailing-slash spellings, answers HEAD with the 402 challenge",
+    headCodes.every((c) => c === 402 || c === 404) && headCodes.slice(0, TOOLS.length).every((c) => c === 402),
+    headProbes.map((p, i) => `HEAD ${p}=${headCodes[i]}`).join(" ")
+  );
+  // x402 #3577 (2026-10-02): an absolute-form request target
+  // (GET http://other.host/paid HTTP/1.1) slipped past a matcher that read the
+  // raw target while the router stripped the authority. Not exposed here
+  // (Express parses the path) — pinned so it stays that way.
+  const absoluteProbes = [["GET", "http://evil.example/api/agent/translate"], ["GET", "https://localhost:8401/api/agent/review"], ["HEAD", "http://evil.example/api/agent/summarize"]];
+  const absoluteCodes = [];
+  for (const [m, p] of absoluteProbes) absoluteCodes.push(await rawStatus(m, p));
+  check(
+    "an absolute-form request target naming another host is gated exactly like the plain path — never served unpaid",
+    absoluteCodes.every((c) => c === 402),
+    absoluteProbes.map(([m, p], i) => `${m} ${p}=${absoluteCodes[i]}`).join(" ")
+  );
   testnetProc.proc.kill();
   await sleep(300);
 
   // Adaptive the other way: the facilitator now claims only base-sepolia, so
-  // only base-sepolia may go live — the other fourteen report settlement-ready.
+  // only base-sepolia may go live — the other nineteen report settlement-ready.
   mockSupportedCaip2 = [REG_CHAINS.find((c) => c.id === "base-sepolia").caip2];
   testnetProc = await bootTestnet();
   const tnChains2 = await fetch("http://localhost:8401/api/chains").then((r) => r.json());
   check(
-    "the live set is the facilitator's truth: a facilitator supporting one chain yields exactly one live + fourteen settlement-ready",
+    "the live set is the facilitator's truth: a facilitator supporting one chain yields exactly one live + nineteen settlement-ready",
     tnChains2.liveSettlementChains?.length === 1 && tnChains2.liveSettlementChains[0] === "base-sepolia" &&
-      tnChains2.chains.filter((c) => c.settlement === "ready").length === 14,
+      tnChains2.chains.filter((c) => c.settlement === "ready").length === 19,
     `live=${tnChains2.liveSettlementChains?.join(",")} ready=${tnChains2.chains.filter((c) => c.settlement === "ready").length}`
+  );
+  testnetProc.proc.kill();
+  await sleep(300);
+
+  // XRPL mainnet is real money, so it has its own opt-in variable: with the
+  // facilitator claiming every network and the TESTNET payout set, mainnet
+  // stayed out above; set its own variable and it — and only then — goes live.
+  mockSupportedCaip2 = REG_CHAINS.map((c) => c.caip2);
+  testnetProc = await bootTestnet({ SERVER_PAYOUT_ADDRESS_XRPL_MAINNET: "rHb9CJAWyB4rj91VRWn96DkukG4bwdtyTh" });
+  const tnChains3 = await fetch("http://localhost:8401/api/chains").then((r) => r.json());
+  check(
+    "XRPL mainnet goes live only through its own SERVER_PAYOUT_ADDRESS_XRPL_MAINNET opt-in — enabling the XRPL testnet can never switch real money on",
+    tnChains3.liveSettlementChains?.includes("xrpl") && tnChains3.liveSettlementChains?.includes("xrpl-testnet") && tnChains3.liveSettlementChains?.length === 18 &&
+      !tnChains.liveSettlementChains.includes("xrpl") && tnChains.liveSettlementChains.includes("xrpl-testnet"),
+    `with opt-in: ${tnChains3.liveSettlementChains?.length} live, xrpl=${tnChains3.liveSettlementChains?.includes("xrpl")}`
   );
   testnetProc.proc.kill();
   testnetProc = null;

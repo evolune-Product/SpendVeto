@@ -7,22 +7,30 @@ export const MODE = process.env.SPENDVETO_MODE === "testnet" ? "testnet" : "simu
 // The governance layer is chain-agnostic and chain-AWARE: every payment
 // carries its chain in the signed message, settles against that chain's own
 // balance, and is governed by chain allowlists (policy-level and per-grant).
-// On-chain settlement is live on Base Sepolia via x402 today; every other
+// On-chain settlement is live by default on the six chains marked "live"
+// (whatever the configured facilitator's /supported names); every other
 // registered chain works end-to-end in simulate mode (per-chain ledger +
-// real signatures), with its canonical USDC contract wired for the adapter.
+// real signatures), with its canonical stablecoin wired for the adapter.
 export const CHAINS = [
-  { id: "base-sepolia", caip2: "eip155:84532", name: "Base Sepolia", chainIdHex: "0x14a34", status: "live", usdc: "0x036CbD53842c5426634e7929541eC2318f3dCF7e", rpc: "https://sepolia.base.org", note: "x402 settlement via the public facilitator" },
+  // eip712 is the stablecoin contract's own EIP-712 domain (name, version) —
+  // what an EIP-3009 transferWithAuthorization signature is bound to, and
+  // what each 402's accepts.extra must carry. It is NOT the same everywhere:
+  // Circle's mainnet USDC deployments sign as "USD Coin", its testnet and
+  // newer-chain ones as "USDC". Every value below was checked against the
+  // live contract (DOMAIN_SEPARATOR() recomputed and matched) on 2026-10-15
+  // — `npm run check-chains` re-runs that check.
+  { id: "base-sepolia", eip712: { name: "USDC", version: "2" }, caip2: "eip155:84532", name: "Base Sepolia", chainIdHex: "0x14a34", status: "live", usdc: "0x036CbD53842c5426634e7929541eC2318f3dCF7e", rpc: "https://sepolia.base.org", note: "x402 settlement via the public facilitator" },
   // status "ready" = full x402 v2 wiring in place (CAIP-2 id, canonical USDC,
   // scheme registration, multi-accepts 402s) — the chain goes LIVE the moment
   // the configured facilitator's /supported names it (CDP key for mainnets)
   // and a funded wallet exists. No code changes required; simulate mode
   // settles every one of these locally today.
-  { id: "base", caip2: "eip155:8453", name: "Base", chainIdHex: "0x2105", status: "ready", usdc: "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913", rpc: "https://mainnet.base.org", note: "mainnet settlement — facilitator key + funded wallet flips it live" },
-  { id: "ethereum", caip2: "eip155:1", name: "Ethereum", chainIdHex: "0x1", status: "ready", usdc: "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48", rpc: "https://ethereum-rpc.publicnode.com", note: "" },
-  { id: "polygon", caip2: "eip155:137", name: "Polygon", chainIdHex: "0x89", status: "ready", usdc: "0x3c499c542cEF5E3811e1192ce70d8cC03d5c3359", rpc: "https://polygon-rpc.com", note: "" },
-  { id: "arbitrum", caip2: "eip155:42161", name: "Arbitrum", chainIdHex: "0xa4b1", status: "ready", usdc: "0xaf88d065e77c8cC2239327C5EDb3A432268e5831", rpc: "https://arb1.arbitrum.io/rpc", note: "" },
-  { id: "optimism", caip2: "eip155:10", name: "Optimism", chainIdHex: "0xa", status: "ready", usdc: "0x0b2C639c533813f4Aa9D7837CAf62653d097Ff85", rpc: "https://mainnet.optimism.io", note: "" },
-  { id: "avalanche", caip2: "eip155:43114", name: "Avalanche", chainIdHex: "0xa86a", status: "ready", usdc: "0xB97EF9Ef8734C71904D8002F8b6Bc66Dd9c48a6E", rpc: "https://api.avax.network/ext/bc/C/rpc", note: "" },
+  { id: "base", eip712: { name: "USD Coin", version: "2" }, caip2: "eip155:8453", name: "Base", chainIdHex: "0x2105", status: "ready", usdc: "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913", rpc: "https://mainnet.base.org", note: "mainnet settlement — facilitator key + funded wallet flips it live" },
+  { id: "ethereum", eip712: { name: "USD Coin", version: "2" }, caip2: "eip155:1", name: "Ethereum", chainIdHex: "0x1", status: "ready", usdc: "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48", rpc: "https://ethereum-rpc.publicnode.com", note: "" },
+  { id: "polygon", eip712: { name: "USD Coin", version: "2" }, caip2: "eip155:137", name: "Polygon", chainIdHex: "0x89", status: "ready", usdc: "0x3c499c542cEF5E3811e1192ce70d8cC03d5c3359", rpc: "https://polygon-bor-rpc.publicnode.com", note: "" },
+  { id: "arbitrum", eip712: { name: "USD Coin", version: "2" }, caip2: "eip155:42161", name: "Arbitrum", chainIdHex: "0xa4b1", status: "ready", usdc: "0xaf88d065e77c8cC2239327C5EDb3A432268e5831", rpc: "https://arb1.arbitrum.io/rpc", note: "" },
+  { id: "optimism", eip712: { name: "USD Coin", version: "2" }, caip2: "eip155:10", name: "Optimism", chainIdHex: "0xa", status: "ready", usdc: "0x0b2C639c533813f4Aa9D7837CAf62653d097Ff85", rpc: "https://mainnet.optimism.io", note: "" },
+  { id: "avalanche", eip712: { name: "USD Coin", version: "2" }, caip2: "eip155:43114", name: "Avalanche", chainIdHex: "0xa86a", status: "ready", usdc: "0xB97EF9Ef8734C71904D8002F8b6Bc66Dd9c48a6E", rpc: "https://api.avax.network/ext/bc/C/rpc", note: "" },
   // Circle's own USDC-native L1. Registered as an EVM chain because it is one
   // (chain id 5042002, verified live against its RPC), but it inverts an
   // assumption the rest of this list shares: USDC is the GAS token, not an
@@ -30,7 +38,20 @@ export const CHAINS = [
   // interface over that native balance — 6 decimals, while the native gas
   // balance underneath uses 18. Everything here prices in the 6-decimal view,
   // which is the one an x402 AssetAmount is denominated in.
-  { id: "arc-testnet", caip2: "eip155:5042002", name: "Arc Testnet", chainIdHex: "0x4cef52", status: "ready", usdc: "0x3600000000000000000000000000000000000000", rpc: "https://rpc.testnet.arc.network", note: "Circle's USDC-native L1 — USDC is the gas token; this address is its ERC-20 interface (6 decimals over an 18-decimal native balance). Full v2 wiring; goes live when a configured facilitator names eip155:5042002" },
+  { id: "arc-testnet", eip712: { name: "USDC", version: "2" }, caip2: "eip155:5042002", name: "Arc Testnet", chainIdHex: "0x4cef52", status: "ready", usdc: "0x3600000000000000000000000000000000000000", rpc: "https://rpc.testnet.arc.network", note: "Circle's USDC-native L1 — USDC is the gas token; this address is its ERC-20 interface (6 decimals over an 18-decimal native balance). Full v2 wiring; goes live when a configured facilitator names eip155:5042002" },
+  // Four EVM mainnets added 2026-10-15, each taken from x402's own
+  // default-asset table (x402-foundation/x402 typescript/packages/mechanisms/
+  // evm/src/defaultAssets.ts) and then checked live, not copied: chain id
+  // from eth_chainId, token symbol/decimals, EIP-3009 support
+  // (authorizationState), and the EIP-712 domain. None is on the public
+  // facilitator, so all four are "ready" — a facilitator that names them
+  // brings them live with no code change. Stable is a USDT-gas chain and
+  // prices in USDT0, not USDC (the registry's `usdc` field holds whatever
+  // stablecoin the chain settles in, labelled by `stablecoin`, as for XRPL).
+  { id: "monad", eip712: { name: "USDC", version: "2" }, caip2: "eip155:143", name: "Monad", chainIdHex: "0x8f", status: "ready", usdc: "0x754704Bc059F8C67012fEd69BC8A327a5aafb603", rpc: "https://rpc.monad.xyz", note: "mainnet, native USDC (EIP-3009) — settlement-ready, goes live when a configured facilitator names eip155:143" },
+  { id: "celo", eip712: { name: "USDC", version: "2" }, caip2: "eip155:42220", name: "Celo", chainIdHex: "0xa4ec", status: "ready", usdc: "0xcebA9300f2b948710d2653dD7B07f33A8B32118C", rpc: "https://forno.celo.org", note: "mainnet, native USDC (EIP-3009) — the mobile-first stablecoin chain (MiniPay); settlement-ready, goes live when a configured facilitator names eip155:42220" },
+  { id: "sei", eip712: { name: "USDC", version: "2" }, caip2: "eip155:1329", name: "Sei", chainIdHex: "0x531", status: "ready", usdc: "0xe15fC38F6D8c56aF07bbCBe3BAf5708A2Bf42392", rpc: "https://evm-rpc.sei-apis.com", note: "mainnet, native USDC (EIP-3009) — settlement-ready, goes live when a configured facilitator names eip155:1329" },
+  { id: "stable", eip712: { name: "USDT0", version: "1" }, caip2: "eip155:988", name: "Stable", chainIdHex: "0x3dc", status: "ready", usdc: "0x779Ded0c9e1022225f8E0630b35a9b54bE713736", stablecoin: "USDT0", rpc: "https://rpc.stable.xyz", note: "mainnet USDT-gas chain; prices in USDT0 (EIP-3009, domain \"USDT0\" v1) — settlement-ready, goes live when a configured facilitator names eip155:988" },
   // Solana is a different signature family (ed25519, base58 addresses) from
   // every chain above (secp256k1, 0x addresses) — simulate mode's signing
   // path is EVM-specific (see server/simulate.js), so this chain is real x402
@@ -56,7 +77,17 @@ export const CHAINS = [
   // schemeFor throws rather than quietly signing it with the EVM scheme.
   // USDC on Algorand is an ASA, addressed by integer asset id, not a contract.
   { id: "algorand-testnet", caip2: "algorand:SGO1GKSzyE7IEPItTxCByw9x8FmnrCDe", name: "Algorand Testnet", family: "algorand", status: "ready", usdc: "10458941", rpc: "https://testnet-api.algonode.cloud", note: "the public facilitator settles this network and sponsors the fee, but no @x402/algorand client scheme package is published yet — governed here, not signable here" },
-  { id: "xrpl", caip2: "xrpl:1", name: "XRPL", family: "xrpl", status: "ready", usdc: "rMxCKbEDwqr76QuheSUMdEGf4B9xJ8m5De", stablecoin: "RLUSD", rpc: "https://s1.ripple.com:51234", note: "x402 v2 wiring is real, but mainnet settlement is DISABLED by default — simulate mode (the default) never touches it, and testnet mode requires an operator to explicitly set SERVER_PAYOUT_ADDRESS_XRPL to enable it. This is real mainnet, real money, RLUSD not USDC (XRPL has no canonical USDC deployment) — an operator who enables it does so entirely at their own risk; we do not run, control, or monitor anyone's deployment" },
+  // XRPL network ids follow @x402/xrpl's own constants: xrpl:0 is MAINNET,
+  // xrpl:1 is TESTNET (xrpl:2 devnet). Until v0.26.0 this registry carried a
+  // single "XRPL" entry that described mainnet (mainnet RPC, mainnet RLUSD
+  // issuer, "real money") under the TESTNET id — so it could not have settled
+  // on either network as written. Split into two honest entries: testnet is
+  // live on the public facilitator (it lists xrpl:1 in /supported, checked
+  // 2026-10-15) and enabled by SERVER_PAYOUT_ADDRESS_XRPL; mainnet keeps its
+  // explicit opt-in, now under its own variable so turning on the testnet can
+  // never turn on real money by accident.
+  { id: "xrpl-testnet", caip2: "xrpl:1", name: "XRPL Testnet", family: "xrpl", status: "live", usdc: "rQhWct2fv4Vc4KRjRgMrxa8xPN9Zx9iLKV", stablecoin: "RLUSD", rpc: "https://s.altnet.rippletest.net:51234", note: "x402 settlement via the public facilitator (xrpl:1) — RLUSD from the testnet issuer, enabled by SERVER_PAYOUT_ADDRESS_XRPL" },
+  { id: "xrpl", caip2: "xrpl:0", name: "XRPL", family: "xrpl", status: "ready", mainnetOptIn: "SERVER_PAYOUT_ADDRESS_XRPL_MAINNET", usdc: "rMxCKbEDwqr76QuheSUMdEGf4B9xJ8m5De", stablecoin: "RLUSD", rpc: "https://s1.ripple.com:51234", note: "x402 v2 wiring is real, but mainnet settlement is DISABLED by default — simulate mode (the default) never touches it, and testnet mode requires an operator to explicitly set SERVER_PAYOUT_ADDRESS_XRPL_MAINNET (separate from the testnet's variable) to enable it. This is real mainnet, real money, RLUSD not USDC (XRPL has no canonical USDC deployment) — an operator who enables it does so entirely at their own risk; we do not run, control, or monitor anyone's deployment" },
   // Cardano is the newest network the x402 spec itself added — merged into
   // the x402 Foundation's TypeScript packages 2026-09-09, checked directly
   // against their repo. Registered honestly, one step earlier than Algorand:

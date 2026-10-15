@@ -92,14 +92,19 @@ export const FALLBACK_CHAINS = [
   { id: "optimism", name: "Optimism", status: "ready" },
   { id: "avalanche", name: "Avalanche", status: "ready" },
   { id: "arc-testnet", name: "Arc Testnet", status: "ready" },
+  { id: "monad", name: "Monad", status: "ready" },
+  { id: "celo", name: "Celo", status: "ready" },
+  { id: "sei", name: "Sei", status: "ready" },
+  { id: "stable", name: "Stable", status: "ready" },
   { id: "solana-devnet", name: "Solana Devnet", status: "live" },
   { id: "aptos-testnet", name: "Aptos Testnet", status: "live" },
   { id: "stellar-testnet", name: "Stellar Testnet", status: "live" },
   { id: "hedera-testnet", name: "Hedera Testnet", status: "live" },
   { id: "algorand-testnet", name: "Algorand Testnet", status: "ready" },
   { id: "cardano-preprod", name: "Cardano Preprod", status: "ready" },
-  // "ready", matching the registry: XRPL settlement is real mainnet and is
-  // disabled unless an operator explicitly opts in (see shared-config.js).
+  { id: "xrpl-testnet", name: "XRPL Testnet", status: "live" },
+  // "ready", matching the registry: XRPL mainnet settlement is real money and
+  // is disabled unless an operator explicitly opts in (see shared-config.js).
   { id: "xrpl", name: "XRPL", status: "ready" },
 ];
 
