@@ -2,6 +2,14 @@
 
 Every feature listed here is exercised by the end-to-end suite (`npm run verify`) — the suite grew from 33 assertions at the first public cut to **114** at v0.7.0. If a claim isn't an assertion, it doesn't ship.
 
+## 0.26.1 — 2026-10-16
+
+- **x402 packages 2.18 → 2.28** (`@x402/core`, `express`, `evm`, `fetch`, `svm`, `aptos`, `stellar`, `hedera`, `xrpl`). Picks up upstream's released payment-bypass fixes since 2.18 — wildcard routes matched across encoded newlines (2.21), a backslash in a route parameter (2.22), and matching against both the escaped path and the framework's decoded view (2.27) — none of which this gate's probes had found open, plus Cache-Control `no-store` on 402s and facilitator request timeouts. The `HEAD` fix (#3796) is still unreleased; v0.26.0's own HEAD gating covers it. Every existing assertion passed unchanged on the new packages except one that read the old default-asset shape (`address` → `asset`).
+- **Stronger registry cross-check.** x402's 2.28 default-asset table now covers 11 of the registry's 12 EVM chains (all but Optimism) and agrees with it on every one — stablecoin address **and** EIP-712 domain, including Monad's "USDC", which the 2.18 table had as "USD Coin". The assertion now checks both, offline.
+- **auth-capture escrows pinned to the package.** `server/authcapture.js`'s canonical escrow and collector addresses (taken from the spec) are now asserted equal to the constants `@x402/evm` ships, so an upstream redeploy can't leave the gate approving an escrow nobody uses.
+- **Docker image on Node 22.** Node 20 reached end-of-life in April 2026, and `@x402/stellar` 2.28 declares `node >=22`. The suite still passes on Node 20.
+- Verify: 402 (+1; 405 with `../prediction-copilot` alongside).
+
 ## 0.26.0 — 2026-10-15
 
 Upstream re-scan of `x402-foundation/x402` (27 commits since 2026-09-29) and the live facilitator's `/supported`, plus a first live-chain check of the registry. One real payment bypass, two payment-correctness bugs, one new scheme, five new chains.

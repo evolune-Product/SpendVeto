@@ -1,7 +1,9 @@
 # SpendVeto — self-host image. Simulate mode by default (zero setup, real
 # ECDSA, local settlement); set SPENDVETO_MODE=testnet + the wallet env vars
 # for real x402 on Base Sepolia. Runs the API + dashboard on :8402.
-FROM node:20-slim
+# Node 22: Node 20 reached end-of-life in April 2026, and @x402/stellar ≥2.28
+# declares node >=22.
+FROM node:22-slim
 
 WORKDIR /app
 

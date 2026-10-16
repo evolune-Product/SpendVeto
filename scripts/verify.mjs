@@ -735,10 +735,13 @@ try {
   // `npm run check-chains`, which needs the network and so isn't in here.)
   const { getDefaultAsset } = await import("@x402/evm");
   const evmCovered = chains.filter((c) => !c.family).map((c) => { try { return [c, getDefaultAsset(c.caip2)]; } catch { return null; } }).filter(Boolean);
+  // @x402/evm ≥2.23 returns { asset, name, version }; older tables used `address`.
+  const assetAddr = (a) => a.asset ?? a.address;
   check(
-    "every EVM stablecoin the x402 package also knows matches its default asset exactly — including the new Monad and Stable mainnets",
-    evmCovered.length >= 6 && evmCovered.every(([c, a]) => a.address === c.usdc) && ["monad", "stable"].every((id) => evmCovered.some(([c]) => c.id === id)),
-    evmCovered.map(([c, a]) => `${c.id}:${a.address === c.usdc ? "ok" : a.address}`).join(" ")
+    "every EVM chain x402's own default-asset table covers matches it exactly — stablecoin address AND EIP-712 domain (11 of 12; Optimism isn't in the table)",
+    evmCovered.length >= 11 && evmCovered.every(([c, a]) => assetAddr(a) === c.usdc && a.name === c.eip712?.name && a.version === c.eip712?.version) &&
+      ["monad", "celo", "sei", "stable"].every((id) => evmCovered.some(([c]) => c.id === id)),
+    evmCovered.map(([c, a]) => `${c.id}:${assetAddr(a) === c.usdc && a.name === c.eip712?.name ? "ok" : `${assetAddr(a)}/${a.name}`}`).join(" ")
   );
   const newMains = ["monad", "celo", "sei", "stable"].map((id) => chains.find((c) => c.id === id));
   check(
@@ -2605,6 +2608,18 @@ try {
   });
   const acEval = (requirements, more = {}) => acPost("evaluate", { address: privateKeyToAccount(generatePrivateKey()).address, requirements, ...more });
 
+  // The canonical escrow/collector set is restated in server/authcapture.js
+  // from the spec; pin it to the addresses @x402/evm itself ships, so a
+  // redeploy upstream can't leave this gate approving an escrow nobody uses.
+  const evmPkg = await import("@x402/evm");
+  const { ESCROW_DEPLOYMENTS } = await import("../server/authcapture.js");
+  check(
+    "auth-capture's canonical escrows and collectors are exactly the ones @x402/evm ships — v1.1 escrow, EIP-3009, Permit2 and refund collectors, and the v1.0 escrow and collector",
+    ESCROW_DEPLOYMENTS["v1.1"].escrow === evmPkg.AUTH_CAPTURE_ESCROW_V1_1_ADDRESS && ESCROW_DEPLOYMENTS["v1.1"].eip3009Collector === evmPkg.EIP3009_TOKEN_COLLECTOR_ADDRESS &&
+      ESCROW_DEPLOYMENTS["v1.1"].permit2Collector === evmPkg.PERMIT2_TOKEN_COLLECTOR_ADDRESS && ESCROW_DEPLOYMENTS["v1.1"].operatorRefundCollector === evmPkg.OPERATOR_REFUND_COLLECTOR_ADDRESS &&
+      ESCROW_DEPLOYMENTS["v1.0"].escrow === evmPkg.AUTH_CAPTURE_ESCROW_V1_0_ADDRESS && ESCROW_DEPLOYMENTS["v1.0"].eip3009Collector === evmPkg.EIP3009_TOKEN_COLLECTOR_V1_0_ADDRESS,
+    JSON.stringify({ v11: evmPkg.AUTH_CAPTURE_ESCROW_V1_1_ADDRESS, v10: evmPkg.AUTH_CAPTURE_ESCROW_V1_0_ADDRESS })
+  );
   const acSmall = await acEval(acRoute());
   const acBig = await acEval(acRoute({}, { amount: "1500000" }));
   check(
