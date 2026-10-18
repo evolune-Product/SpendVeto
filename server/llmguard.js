@@ -41,6 +41,7 @@
 import express from "express";
 import { createHash, randomUUID } from "node:crypto";
 import { estimateRequest, costOf, PRICES_AS_OF, lookupPrice } from "./llm-pricing.js";
+import { parseTags } from "./finops.js";
 
 export const LLM_DEFAULTS = {
   // "enforce" blocks; "observe" decides and records what it WOULD have
@@ -63,11 +64,14 @@ export const LLM_DEFAULTS = {
   passthroughUnknown: false,
   prices: {},
   unknownModelRates: null,
+  // Budgets on a tag rather than an identity — a team, a customer, a feature —
+  // across every agent that carries it: { "customer=cus_123": { dailyUSD: 5 } }.
+  tagBudgets: {},
 };
 
 export function llmSettings(policy) {
   const p = policy?.llm || {};
-  return { ...LLM_DEFAULTS, ...p, loop: { ...LLM_DEFAULTS.loop, ...(p.loop || {}) }, prices: { ...(p.prices || {}) } };
+  return { ...LLM_DEFAULTS, ...p, loop: { ...LLM_DEFAULTS.loop, ...(p.loop || {}) }, prices: { ...(p.prices || {}) }, tagBudgets: { ...(p.tagBudgets || {}) } };
 }
 
 // Pseudo-addresses: a stable 0x-shaped identifier per identity, so the
@@ -192,6 +196,7 @@ export function createLlmGuard(deps) {
     getApproval,
     readAgents,
     childAddress,
+    onCharge,
   } = deps;
   const upstreamFor = (provider) =>
     (provider === "anthropic" ? process.env.SPENDVETO_ANTHROPIC_UPSTREAM || "https://api.anthropic.com" : process.env.SPENDVETO_OPENAI_UPSTREAM || "https://api.openai.com").replace(/\/+$/, "");
@@ -205,7 +210,9 @@ export function createLlmGuard(deps) {
   const loopSeen = new Map(); // address -> Map(fingerprint -> [ms])
   const labels = new Map(); // address -> { label, kind }
   let spend = null; // address -> [{ t, usd, session }]
+  let tagSpend = null; // "key=value" -> [{ t, usd }]
   const locks = new Map();
+  let lastRebill = Promise.resolve(null); // the most recent rebilling call — awaitable in tests
 
   const DAY = 24 * 3600e3;
   function spendLog() {
@@ -222,6 +229,30 @@ export function createLlmGuard(deps) {
       if (e.agent && !labels.has(key)) labels.set(key, { label: e.agent, kind: e.identityKind || "label" });
     }
     return spend;
+  }
+  function tagLog() {
+    if (tagSpend) return tagSpend;
+    tagSpend = new Map();
+    const cutoff = Date.now() - DAY;
+    for (const e of getLedger()) {
+      if (e.category !== "llm" || e.status !== "paid" || !e.tags || !(Date.parse(e.ts) >= cutoff)) continue;
+      for (const [k, v] of Object.entries(e.tags)) {
+        const key = `${k}=${v}`;
+        if (!tagSpend.has(key)) tagSpend.set(key, []);
+        tagSpend.get(key).push({ t: Date.parse(e.ts), usd: Number(e.amount) || 0 });
+      }
+    }
+    return tagSpend;
+  }
+  function tagWindowUSD(key, ms) {
+    const rows = (tagLog().get(key) || []).filter((r) => r.t >= Date.now() - DAY);
+    tagLog().set(key, rows);
+    return round6(rows.filter((r) => r.t >= Date.now() - ms).reduce((s, r) => s + r.usd, 0));
+  }
+  function tagHeldUSD(key) {
+    let total = 0;
+    for (const h of holds.values()) if (h.tags && Date.now() - h.at <= 15 * 60e3 && h.tags.includes(key)) total += h.usd;
+    return round6(total);
   }
   function windowUSD(address, ms, session) {
     const now = Date.now();
@@ -277,8 +308,11 @@ export function createLlmGuard(deps) {
 
   function record(entry) {
     try {
-      appendLedgerEntry({ chain: "api", category: "llm", mode: "llm-guard", policyHash: policyHash(), ...entry });
-    } catch {}
+      const ledger = appendLedgerEntry({ chain: "api", category: "llm", mode: "llm-guard", policyHash: policyHash(), ...entry });
+      return Array.isArray(ledger) ? ledger[ledger.length - 1] : null;
+    } catch {
+      return null;
+    }
   }
 
   // The decision. Everything synchronous up to the hold reservation runs
@@ -332,6 +366,17 @@ export function createLlmGuard(deps) {
       const s = windowUSD(identity.address, DAY, identity.session) + heldUSD(identity.address, identity.session);
       if (s + estimate.usd > Number(settings.sessionBudgetUSD)) {
         return deny("llm_session_budget", `would exceed the per-session budget $${settings.sessionBudgetUSD} ($${s.toFixed(4)} used by this session)`, "start a new session deliberately, or have a human raise policy.llm.sessionBudgetUSD");
+      }
+    }
+    for (const [key, budget] of Object.entries(settings.tagBudgets || {})) {
+      if (!ctx.tagKeys.includes(key)) continue;
+      for (const [field, ms, label] of [["hourlyUSD", 3600e3, "hourly"], ["dailyUSD", DAY, "daily"]]) {
+        const cap = Number(budget?.[field]);
+        if (!(cap > 0)) continue;
+        const used = tagWindowUSD(key, ms) + tagHeldUSD(key);
+        if (used + estimate.usd > cap) {
+          return deny("llm_tag_budget", `would exceed the ${label} budget $${cap} for ${key} ($${used.toFixed(4)} used across every agent carrying it)`, `this ${key.split("=")[0]}'s budget resets on a rolling window — or a human can raise policy.llm.tagBudgets["${key}"]`, 402, { tag: key });
+        }
       }
     }
     // The shared policy engine — only when it can change the answer: a
@@ -508,12 +553,14 @@ export function createLlmGuard(deps) {
     }
     const estimate = estimateRequest(r.provider, body, { outputCapTokens: settings.outputEstimateCapTokens, overrides: settings.prices });
     const fingerprint = settings.loop.enabled ? loopFingerprint(r.provider, body) : null;
+    const tags = parseTags(req.headers);
+    const tagKeys = tags ? Object.entries(tags).map(([k, v]) => `${k}=${v}`) : [];
 
     const holdId = randomUUID();
     const decision = await withLock(identity.address, async () => {
-      const d = await decide({ settings, policy, identity, estimate, model, fingerprint });
+      const d = await decide({ settings, policy, identity, estimate, model, fingerprint, tagKeys });
       if (d.allow || settings.mode === "observe") {
-        holds.set(holdId, { address: identity.address, session: identity.session, usd: estimate.usd, at: Date.now() });
+        holds.set(holdId, { address: identity.address, session: identity.session, usd: estimate.usd, at: Date.now(), tags: tagKeys });
         const list = (requestsAt.get(identity.address) || []).filter((t) => t >= Date.now() - 60e3);
         list.push(Date.now());
         requestsAt.set(identity.address, list);
@@ -521,7 +568,7 @@ export function createLlmGuard(deps) {
       return d;
     });
 
-    const base = { address: identity.address, agent: identity.label, identityKind: identity.kind, resource: `llm:${estimate.model}`, provider: r.provider, model, session: identity.session || undefined, subagent: identity.subagent || undefined, estimateUSD: estimate.usd };
+    const base = { address: identity.address, agent: identity.label, identityKind: identity.kind, resource: `llm:${estimate.model}`, provider: r.provider, model, session: identity.session || undefined, subagent: identity.subagent || undefined, ...(tags ? { tags } : {}), estimateUSD: estimate.usd };
     if (!decision.allow && settings.mode === "enforce") {
       record({ ...base, amount: estimate.usd, status: "blocked", reason: decision.reason, code: decision.code });
       const out = { "x-should-retry": decision.status === 429 ? "true" : "false" };
@@ -565,19 +612,24 @@ export function createLlmGuard(deps) {
         const key = identity.address;
         if (!spendLog().has(key)) spendLog().set(key, []);
         spendLog().get(key).push({ t: Date.now(), usd, session: identity.session || null });
+        for (const tk of tagKeys) {
+          if (!tagLog().has(tk)) tagLog().set(tk, []);
+          tagLog().get(tk).push({ t: Date.now(), usd });
+        }
       }
       if (ok && fingerprint && !aborted) {
         if (!loopSeen.has(identity.address)) loopSeen.set(identity.address, new Map());
         const m = loopSeen.get(identity.address);
         m.set(fingerprint, [...(m.get(fingerprint) || []).filter((t) => t >= Date.now() - settings.loop.windowSeconds * 1000), Date.now()]);
       }
-      record({
+      const bookedEntry = record({
         ...base,
         amount: usd,
         status: ok || usd > 0 ? "paid" : "failed",
         ...(ok ? {} : { reason: error || `upstream returned ${status}` }),
         upstreamStatus: status,
         usage: cost?.usage || undefined,
+        ...(cost?.breakdown ? { costBreakdown: cost.breakdown } : {}),
         priceSource,
         ...(cost?.unknownModel ? { unknownModel: true } : {}),
         streamed,
@@ -585,6 +637,7 @@ export function createLlmGuard(deps) {
         durationMs,
         ...(wouldBlock ? { wouldBlock } : {}),
       });
+      if (bookedEntry && bookedEntry.status === "paid" && onCharge) lastRebill = Promise.resolve(onCharge(bookedEntry)).catch(() => null);
       return { costUSD: usd };
     };
     return forward(req, res, { ...r, body: sendBody, headers, onDone, extraHeaders });
@@ -654,5 +707,5 @@ export function createLlmGuard(deps) {
     };
   }
 
-  return { router, summary, heldUSD: (address) => heldUSD(String(address || "")), settings: () => llmSettings(loadPolicy()) };
+  return { router, summary, heldUSD: (address) => heldUSD(String(address || "")), settings: () => llmSettings(loadPolicy()), lastRebill: () => lastRebill };
 }

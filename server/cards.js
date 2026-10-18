@@ -101,7 +101,7 @@ export function createCardRouter(deps) {
     const mapped = readCards().find((c) => c.cardId === cardId);
     const label = mapped?.label || metadataLabel || `card ${last4 ? "…" + last4 : String(cardId).slice(-6)}`;
     const bound = mapped?.child ? childAddress(mapped.child) : null;
-    return { address: (bound || pseudoAddress(`card:${rail}:${cardId}`)).toLowerCase(), label, registered: Boolean(mapped) };
+    return { address: (bound || pseudoAddress(`card:${rail}:${cardId}`)).toLowerCase(), label, registered: Boolean(mapped), tags: mapped?.tags || null };
   }
 
   function spentDayUSD(address) {
@@ -161,6 +161,7 @@ export function createCardRouter(deps) {
         mcc: auth.mcc || undefined,
         merchant: auth.merchant || undefined,
         decisionId,
+        ...(auth.identity.tags ? { tags: auth.identity.tags } : {}),
         ...(decision.approved ? {} : { reason: decision.reason, code: decision.code }),
         policyHash: policyHash(),
       });

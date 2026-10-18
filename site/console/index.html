@@ -8,13 +8,15 @@
 <link rel="stylesheet" href="./style.css" />
 </head>
 <body>
-<div class="demo-banner">Demo console — real decisions captured from a local SpendVeto run (simulate-mode payments; model traffic from a local test provider), no server behind this page. Clicks change this tab only. <a href="/playground.html">Playground</a> · <a href="/docs.html">Run your own</a></div>
+<div class="demo-banner">Demo console — real decisions captured from a local SpendVeto run (simulate-mode crypto; model, payout and billing calls answered by local test providers), no server behind this page. Clicks change this tab only. <a href="/playground.html">Playground</a> · <a href="/docs.html">Run your own</a></div>
 <div class="shell">
   <aside class="side">
     <div class="brand">SPENDVETO<span> console</span></div>
     <nav>
       <a href="#overview" data-nav="overview">Overview</a>
       <a href="#ai" data-nav="ai">AI spend <b class="badge" id="nav-ai-badge" hidden>0</b></a>
+      <a href="#costs" data-nav="costs">Costs</a>
+      <a href="#payouts" data-nav="payouts">Payouts</a>
       <a href="#approvals" data-nav="approvals">Approvals <b class="badge" id="nav-approvals-badge" hidden>0</b></a>
       <a href="#budgets" data-nav="budgets">Budgets</a>
       <a href="#ledger" data-nav="ledger">Ledger</a>
@@ -69,6 +71,23 @@
       </div>
       <div class="card"><h2>Agents <span class="hint">last 24 hours</span></h2><table class="tbl"><thead><tr><th>agent</th><th>spent 24h</th><th>last hour</th><th>left today</th><th>requests</th><th>mostly</th><th>status</th><th></th></tr></thead><tbody id="ai-agents"></tbody></table></div>
       <div class="card"><h2>Recent decisions <span class="hint">blocks, and what observe mode would have blocked</span></h2><table class="tbl"><thead><tr><th>time</th><th>agent</th><th>model</th><th>code</th><th>reason</th></tr></thead><tbody id="ai-decisions"></tbody></table></div>
+    </section>
+
+    <section data-page="costs" hidden>
+      <header><h1>Costs</h1><p>Every rail in one view — model tokens, x402 tools, cards, fiat payouts — allocated by team, customer, agent or model. Model spend exports as FOCUS v1.4 for your FinOps tools.</p></header>
+      <div class="stat-row" id="costs-stats"></div>
+      <div class="card">
+        <h2>Spend by <select id="costs-group"><option value="rail">rail</option><option value="team">team</option><option value="customer">customer</option><option value="agent">agent</option><option value="model">model</option><option value="provider">provider</option></select> <span class="hint">last 30 days · tag requests with <code>x-spendveto-tags: team=…,customer=…</code></span> <a class="btn ghost mini" id="focus-link" href="/api/costs/focus.csv">Download FOCUS CSV</a></h2>
+        <table class="tbl"><thead><tr><th>key</th><th>cost</th><th>count</th><th>blocked</th></tr></thead><tbody id="costs-rows"></tbody></table>
+      </div>
+      <div class="card"><h2>Rebilling <span class="hint">customer-tagged model spend → Stripe Billing meter events, at your markup</span></h2><div id="rebill-settings" class="hint"></div><table class="tbl"><thead><tr><th>customer</th><th>cost</th><th>billed</th><th>margin</th><th>events</th></tr></thead><tbody id="rebill-rows"></tbody></table></div>
+    </section>
+
+    <section data-page="payouts" hidden>
+      <header><h1>Payouts</h1><p>Agents paying people and vendors in real money — Stripe, RazorpayX (UPI / IMPS / NEFT / RTGS), PayPal, Modern Treasury (ACH / RTP / wire). New payees and large amounts wait in Approvals.</p></header>
+      <div class="stat-row" id="payouts-stats"></div>
+      <div class="card"><h2>Providers</h2><table class="tbl"><thead><tr><th>provider</th><th>status</th><th>needs</th></tr></thead><tbody id="payout-providers"></tbody></table></div>
+      <div class="card"><h2>Recent payouts</h2><table class="tbl"><thead><tr><th>when</th><th>agent</th><th>provider</th><th>payee</th><th>amount</th><th>USD</th><th>status</th><th>provider ref</th></tr></thead><tbody id="payout-rows"></tbody></table></div>
     </section>
 
     <section data-page="approvals" hidden>

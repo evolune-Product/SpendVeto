@@ -163,9 +163,19 @@ export function costOf(provider, model, usage, overrides = {}) {
   const promptTokens = u.input + u.cacheRead + u.cacheWrite5m + u.cacheWrite1h;
   const price = base.long && base.longThreshold && promptTokens > base.longThreshold ? base.long : base;
   const cacheRead = price.cacheRead ?? price.input * 0.1;
+  // Per-component lines (what a FOCUS export and an invoice need): tokens,
+  // the $/MTok rate applied, and the cost of that component alone.
+  const line = (tokens, ratePerM) => ({ tokens, ratePerM: round6(ratePerM), usd: round6((tokens * ratePerM) / 1e6) });
+  const breakdown = {
+    input: line(u.input, price.input),
+    cacheRead: line(u.cacheRead, cacheRead),
+    cacheWrite5m: line(u.cacheWrite5m, price.input * 1.25),
+    cacheWrite1h: line(u.cacheWrite1h, price.input * 2),
+    output: line(u.output, price.output),
+  };
   const usd =
     (u.input * price.input + u.cacheRead * cacheRead + u.cacheWrite5m * price.input * 1.25 + u.cacheWrite1h * price.input * 2 + u.output * price.output) / 1e6;
-  return { usd: round6(usd), priceSource: unknown ? "unknown-model-fallback" : source, usage: u, unknownModel: Boolean(unknown), longContext: price !== base };
+  return { usd: round6(usd), priceSource: unknown ? "unknown-model-fallback" : source, usage: u, breakdown, unknownModel: Boolean(unknown), longContext: price !== base };
 }
 
 // The pre-request estimate the guard decides and reserves on. Input is sized

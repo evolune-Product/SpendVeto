@@ -112,7 +112,7 @@ class McpStdio {
 }
 
 // Fresh state for a deterministic run.
-for (const f of ["data/ledger.json", "data/balances.json", "data/delegations.json", "data/children.json", "data/freezes.json", "data/waitlist.json", "data/tools.json", "data/agents.json", "data/shadow-policy.json", "data/shadow-log.json", "data/api-keys.json", "data/consents.json", "data/upto.json", "data/authcapture.json", "data/cards.json"]) {
+for (const f of ["data/ledger.json", "data/balances.json", "data/delegations.json", "data/children.json", "data/freezes.json", "data/waitlist.json", "data/tools.json", "data/agents.json", "data/shadow-policy.json", "data/shadow-log.json", "data/api-keys.json", "data/consents.json", "data/upto.json", "data/authcapture.json", "data/cards.json", "data/payouts.json", "data/rebilling.json"]) {
   const p = `${ROOT}${f}`;
   if (existsSync(p)) unlinkSync(p);
 }
@@ -169,6 +169,21 @@ const server = spawn("node", ["server/index.js"], {
     STRIPE_ISSUING_WEBHOOK_SECRET: "whsec_verify_stripe_secret",
     LITHIC_ASA_SECRET: "whsec_" + Buffer.from("verify-lithic-asa-secret-key").toString("base64"),
     SPENDVETO_DATA_DIR: "",
+    // Fiat payout providers + Stripe Billing → a local mock that speaks their
+    // documented formats (port 8496), with test-only credentials.
+    STRIPE_SECRET_KEY: "sk_test_verify_only",
+    STRIPE_API_BASE: "http://localhost:8496",
+    RAZORPAYX_KEY_ID: "rzp_test_verify",
+    RAZORPAYX_KEY_SECRET: "rzp_verify_secret",
+    RAZORPAYX_ACCOUNT_NUMBER: "7878780080316316",
+    RAZORPAY_API_BASE: "http://localhost:8496",
+    PAYPAL_CLIENT_ID: "paypal_verify_id",
+    PAYPAL_CLIENT_SECRET: "paypal_verify_secret",
+    PAYPAL_API_BASE: "http://localhost:8496",
+    MODERN_TREASURY_ORG_ID: "org_verify",
+    MODERN_TREASURY_API_KEY: "mt_verify_key",
+    MODERN_TREASURY_ORIGINATING_ACCOUNT_ID: "0b0b0b0b-0000-4000-8000-000000000000",
+    MODERN_TREASURY_API_BASE: "http://localhost:8496",
   },
   stdio: ["ignore", "pipe", "pipe"],
 });
@@ -3083,6 +3098,179 @@ try {
     cardReg.status === 201 && delegateCard.body.approved === false && delegateCard.body.metadata?.spendveto_code === "delegation_cap",
     `reg=${cardReg.status} code=${delegateCard.body.metadata?.spendveto_code}`
   );
+
+  // --- Payments beyond crypto: governed fiat payouts (server/payouts.js) ---
+  // Four real providers' documented request formats, against a local mock —
+  // Stripe Connect transfers, RazorpayX payouts, PayPal Payouts, Modern
+  // Treasury payment orders — plus Stripe Billing meter events for rebilling.
+  const fiatSeen = [];
+  const fiatMock = createServer((req, res) => {
+    let body = "";
+    req.on("data", (d) => (body += d));
+    req.on("end", () => {
+      fiatSeen.push({ url: req.url, headers: req.headers, body });
+      const json = (code, obj) => { res.writeHead(code, { "content-type": "application/json" }); res.end(JSON.stringify(obj)); };
+      if (req.url === "/v1/transfers") { const f = new URLSearchParams(body); return json(200, { id: `tr_${fiatSeen.length}`, object: "transfer", amount: Number(f.get("amount")), currency: f.get("currency"), destination: f.get("destination"), reversed: false }); }
+      if (req.url === "/v1/billing/meter_events") { const f = new URLSearchParams(body); return json(200, { object: "billing.meter_event", event_name: f.get("event_name"), identifier: f.get("identifier"), payload: { stripe_customer_id: f.get("payload[stripe_customer_id]"), value: f.get("payload[value]") } }); }
+      if (req.url === "/v1/payouts") { const b = JSON.parse(body || "{}"); return json(200, { id: "pout_verify1", entity: "payout", amount: b.amount, currency: b.currency, status: "processing", mode: b.mode }); }
+      if (req.url === "/v1/oauth2/token") return json(200, { access_token: "A21AA_verify_token", token_type: "Bearer", expires_in: 32400 });
+      if (req.url === "/v1/payments/payouts") { const b = JSON.parse(body || "{}"); const denied = b.items?.[0]?.receiver === "denied@example.com"; return json(201, { batch_header: { payout_batch_id: `PB_${fiatSeen.length}`, batch_status: denied ? "DENIED" : "PENDING" } }); }
+      if (req.url === "/api/payment_orders") { const b = JSON.parse(body || "{}"); return json(200, { id: "6f1c0b1e-0000-4000-8000-0000000000aa", type: b.type, amount: b.amount, direction: b.direction, status: "approved" }); }
+      res.writeHead(404);
+      res.end();
+    });
+  });
+  fiatMock.listen(8496);
+  const MT_PAYEE = "6f1c0b1e-aaaa-4000-8000-000000000002";
+  const FIAT_POLICY = {
+    ...LOOSE_POLICY,
+    payouts: { maxPerPayoutUSD: 1000, dailyBudgetUSD: 5000, requireApprovalAboveUSD: 500, allowedPayees: ["acct_1Vendor", "fa_00000000000001", "vendor@example.com", "denied@example.com", MT_PAYEE], fxRates: { INR: 0.012 } },
+    llm: { dailyBudgetUSD: 100, hourlyBudgetUSD: 100, maxRequestUSD: 50, maxRequestsPerMinute: 1000, tagBudgets: { "customer=cus_Small": { dailyUSD: 0.02 } } },
+    rebilling: { enabled: true, markupPct: 25, eventName: "spendveto_ai_usage", customerTag: "customer" },
+  };
+  writeFileSync(`${ROOT}data/policy.json`, JSON.stringify(FIAT_POLICY, null, 2));
+  const apAgent = await fetch(`${PROXY}/proxy/agents`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ label: "ap-agent" }) }).then((r) => r.json());
+  const payout = (body, token = apAgent.token) =>
+    fetch(`${BASE}/api/payouts`, { method: "POST", headers: { "Content-Type": "application/json", ...(token ? { Authorization: `Bearer ${token}` } : {}) }, body: JSON.stringify(body) }).then(async (r) => ({ status: r.status, body: await r.json() }));
+  const fiatCalls = (url) => fiatSeen.filter((x) => x.url === url);
+
+  const stripePay = await payout({ provider: "stripe", amount: 25.5, currency: "USD", payee: "acct_1Vendor", purpose: "vendor bill", idempotencyKey: "inv-1001", tags: { team: "ops" } });
+  const stripeReq = fiatCalls("/v1/transfers")[0];
+  const stripeForm = new URLSearchParams(stripeReq?.body || "");
+  check(
+    "a governed payout executes on Stripe in Stripe's own format — amount in cents, lowercase currency, the connected account as destination, Bearer auth, an Idempotency-Key — and is booked as committed spend",
+    stripePay.status === 201 && stripePay.body.payout?.status === "executed" && stripeForm.get("amount") === "2550" && stripeForm.get("currency") === "usd" && stripeForm.get("destination") === "acct_1Vendor" &&
+      stripeReq.headers.authorization === "Bearer sk_test_verify_only" && stripeReq.headers["idempotency-key"] === "inv-1001",
+    `status=${stripePay.status} amount=${stripeForm.get("amount")} key=${stripeReq?.headers["idempotency-key"]}`
+  );
+  const stripeReplay = await payout({ provider: "stripe", amount: 25.5, currency: "USD", payee: "acct_1Vendor", purpose: "vendor bill", idempotencyKey: "inv-1001" });
+  check(
+    "an agent retrying with the same idempotencyKey gets the same payout back — the provider is called once, nobody is paid twice",
+    stripeReplay.status === 200 && stripeReplay.body.decision === "replayed" && stripeReplay.body.payout?.id === stripePay.body.payout?.id && fiatCalls("/v1/transfers").length === 1,
+    `decision=${stripeReplay.body.decision} transfers=${fiatCalls("/v1/transfers").length}`
+  );
+  const upiPay = await payout({ provider: "razorpayx", amount: 1500, currency: "INR", payee: "fa_00000000000001", method: "UPI", purpose: "vendor bill", idempotencyKey: "rzp-verify-1" });
+  const upiReq = fiatCalls("/v1/payouts")[0];
+  const upiBody = upiReq ? JSON.parse(upiReq.body) : {};
+  check(
+    "a RazorpayX UPI payout goes out in RazorpayX's format — paise, mode UPI, the business's RazorpayX account, X-Payout-Idempotency, basic auth — and its INR counts against USD budgets only at the operator-declared rate ($18.00)",
+    upiPay.status === 201 && upiBody.amount === 150000 && upiBody.mode === "UPI" && upiBody.currency === "INR" && upiBody.account_number === "7878780080316316" && upiBody.purpose === "vendor bill" &&
+      upiReq.headers["x-payout-idempotency"] === "rzp-verify-1" && upiReq.headers.authorization === `Basic ${Buffer.from("rzp_test_verify:rzp_verify_secret").toString("base64")}` && upiPay.body.payout?.amountUSD === 18,
+    `status=${upiPay.status} paise=${upiBody.amount} usd=${upiPay.body.payout?.amountUSD}`
+  );
+  const eurPay = await payout({ provider: "stripe", amount: 50, currency: "EUR", payee: "acct_1Vendor", purpose: "vendor bill" });
+  check(
+    "a payout in a currency with no operator-declared rate is refused — SpendVeto never guesses an exchange rate for money leaving the business",
+    eurPay.status === 403 && eurPay.body.code === "payout_fx_rate_missing" && fiatCalls("/v1/transfers").length === 1,
+    `${eurPay.status} ${eurPay.body.code}`
+  );
+  const ppPay = await payout({ provider: "paypal", amount: 40, currency: "USD", payee: "vendor@example.com", purpose: "contractor payment", idempotencyKey: "pp-verify-1" });
+  const ppToken = fiatCalls("/v1/oauth2/token")[0];
+  const ppReq = fiatCalls("/v1/payments/payouts")[0];
+  const ppBody = ppReq ? JSON.parse(ppReq.body) : {};
+  const ppDenied = await payout({ provider: "paypal", amount: 10, currency: "USD", payee: "denied@example.com", purpose: "contractor payment" });
+  check(
+    "PayPal: a client-credentials OAuth token, then a batch payout with PayPal-Request-Id and a decimal-string amount; a DENIED batch is booked as failed at $0",
+    ppPay.status === 201 && ppToken?.body === "grant_type=client_credentials" && ppReq.headers["paypal-request-id"] === "pp-verify-1" && ppReq.headers.authorization === "Bearer A21AA_verify_token" &&
+      ppBody.items?.[0]?.amount?.value === "40.00" && ppBody.items?.[0]?.recipient_type === "EMAIL" && ppDenied.status === 502 && ppDenied.body.payout?.status === "failed",
+    `status=${ppPay.status} value=${ppBody.items?.[0]?.amount?.value} denied=${ppDenied.body.payout?.status}`
+  );
+  const mtPay = await payout({ provider: "moderntreasury", amount: 300, currency: "USD", payee: MT_PAYEE, method: "ach", purpose: "vendor bill" });
+  const mtReq = fiatCalls("/api/payment_orders")[0];
+  const mtBody = mtReq ? JSON.parse(mtReq.body) : {};
+  check(
+    "Modern Treasury: an ACH credit payment order in cents, from the configured originating account to the receiving account, with basic auth (organization ID : API key)",
+    mtPay.status === 201 && mtBody.type === "ach" && mtBody.amount === 30000 && mtBody.direction === "credit" && mtBody.originating_account_id === "0b0b0b0b-0000-4000-8000-000000000000" && mtBody.receiving_account_id === MT_PAYEE &&
+      mtReq.headers.authorization === `Basic ${Buffer.from("org_verify:mt_verify_key").toString("base64")}`,
+    `status=${mtPay.status} type=${mtBody.type} amount=${mtBody.amount}`
+  );
+  const transfersBefore = fiatCalls("/v1/transfers").length;
+  const strangerPay = await payout({ provider: "stripe", amount: 80, currency: "USD", payee: "acct_9Stranger", purpose: "vendor bill" });
+  const transfersWhileWaiting = fiatCalls("/v1/transfers").length;
+  const approvedPayout = await fetch(`${BASE}/api/approvals/${strangerPay.body.approvalId}/decide`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ decision: "approved" }) }).then((r) => r.json());
+  const deniedWait = await payout({ provider: "stripe", amount: 60, currency: "USD", payee: "acct_9Other", purpose: "vendor bill" });
+  const deniedPayout = await fetch(`${BASE}/api/approvals/${deniedWait.body.approvalId}/decide`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ decision: "denied" }) }).then((r) => r.json());
+  const oneClick = await payout({ provider: "stripe", amount: 70, currency: "USD", payee: "acct_9Third", purpose: "vendor bill" });
+  const oneClickRes = await fetch(`${BASE}/api/approvals/${oneClick.body.approvalId}/decide?decision=approved`);
+  check(
+    "a payee not on the allowlist waits for a human: 202, nothing reaches the provider until a human approves in the Console, then it executes; a denied one never pays; an unauthenticated one-click link can't approve real money",
+    strangerPay.status === 202 && strangerPay.body.code === "payout_requires_approval" && transfersWhileWaiting === transfersBefore && approvedPayout.payout?.status === "executed" &&
+      fiatCalls("/v1/transfers").length === transfersBefore + 1 && deniedPayout.payout?.status === "denied" && oneClickRes.status === 403,
+    `wait=${strangerPay.status} approved=${approvedPayout.payout?.status} denied=${deniedPayout.payout?.status} oneClick=${oneClickRes.status}`
+  );
+  const overCapPay = await payout({ provider: "stripe", amount: 1500, currency: "USD", payee: "acct_1Vendor", purpose: "vendor bill" });
+  const noTokenPay = await payout({ provider: "stripe", amount: 5, currency: "USD", payee: "acct_1Vendor", purpose: "vendor bill" }, null);
+  const providers = await fetch(`${BASE}/api/payouts`).then((r) => r.json());
+  check(
+    "a payout over maxPerPayoutUSD and one without an accountable agent token are both refused before any provider is called; the four providers report as configured",
+    overCapPay.status === 403 && overCapPay.body.code === "payout_cap" && noTokenPay.status === 401 && noTokenPay.body.code === "agent_token_required" &&
+      providers.providers.length === 4 && providers.providers.every((x) => x.configured),
+    `${overCapPay.body.code} / ${noTokenPay.body.code} / providers=${providers.providers.map((x) => x.id).join(",")}`
+  );
+
+  // --- AI FinOps: tags, tag budgets, one cost view, FOCUS export; rebilling ---
+  const finLlm = createServer((req, res) => {
+    let body = "";
+    req.on("data", (d) => (body += d));
+    req.on("end", () => {
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end(JSON.stringify({ id: "msg_fin", type: "message", role: "assistant", content: [{ type: "text", text: "ok" }], usage: { input_tokens: 1200, cache_read_input_tokens: 3000, cache_creation_input_tokens: 500, output_tokens: 400 } }));
+    });
+  });
+  finLlm.listen(8497);
+  const taggedCall = (tags) =>
+    fetch(`${BASE}/v1/messages`, { method: "POST", headers: { "content-type": "application/json", "x-api-key": "sk-ant-client", "anthropic-version": "2023-06-01", "x-spendveto-agent": "finops-bot", "x-spendveto-tags": tags }, body: JSON.stringify({ model: "claude-opus-5-5", max_tokens: 100, messages: [{ role: "user", content: "q" }] }) }).then(async (r) => ({ status: r.status, body: await r.json() }));
+  const bigCalls = [await taggedCall("team=search,customer=cus_Big"), await taggedCall("team=search,customer=cus_Big")];
+  const smallCalls = [await taggedCall("team=support,customer=cus_Small"), await taggedCall("team=support,customer=cus_Small"), await taggedCall("team=support,customer=cus_Small")];
+  await taggedCall("team=search,customer=not-a-stripe-id");
+  await taggedCall("team=search");
+  await sleep(300);
+  check(
+    "a tag budget caps a customer's model spend across every agent carrying the tag: cus_Small's $0.02/day stops its third request with llm_tag_budget",
+    bigCalls.every((c) => c.status === 200) && smallCalls.map((c) => c.status).join(",") === "200,200,402" && smallCalls[2].body.spendveto?.code === "llm_tag_budget",
+    `small=${smallCalls.map((c) => c.status).join(",")} code=${smallCalls[2].body.spendveto?.code}`
+  );
+  const byRail = await fetch(`${BASE}/api/costs?groupBy=rail&days=1`).then((r) => r.json());
+  const byCustomer = await fetch(`${BASE}/api/costs?groupBy=customer&days=1`).then((r) => r.json());
+  const byTeam = await fetch(`${BASE}/api/costs?groupBy=team&days=1`).then((r) => r.json());
+  const railCost = Object.fromEntries(byRail.rows.map((r) => [r.key, r.costUSD]));
+  const custCost = Object.fromEntries(byCustomer.rows.map((r) => [r.key, r.costUSD]));
+  check(
+    "one cost view across every rail: model tokens, fiat payouts (the INR payout at its declared rate) and cards side by side, and model spend allocated by customer and team from the request tags",
+    railCost["fiat payouts"] >= 463.5 && railCost["model tokens"] > 0 && railCost["cards"] > 0 && custCost["cus_Big"] === 0.0318 && custCost["cus_Small"] === 0.0318 &&
+      byTeam.rows.some((r) => r.key === "search" && r.costUSD >= 0.0636) && byTeam.rows.some((r) => r.key === "ops" && r.costUSD === 25.5),
+    JSON.stringify({ rails: railCost, big: custCost["cus_Big"], small: custCost["cus_Small"] })
+  );
+  const focusCsv = await fetch(`${BASE}/api/costs/focus.csv?days=1`).then((r) => r.text());
+  const focusLines = focusCsv.trim().split("\n");
+  const focusHeader = focusLines[0].split(",");
+  const MANDATORY_FOCUS = ["BilledCost", "BillingAccountId", "BillingAccountName", "BillingCurrency", "BillingPeriodEnd", "BillingPeriodStart", "ChargeCategory", "ChargeClass", "ChargeDescription", "ChargePeriodEnd", "ChargePeriodStart", "ContractedCost", "EffectiveCost", "HostProviderName", "InvoiceIssuerName", "ListCost", "PricingQuantity", "PricingUnit", "ServiceCategory", "ServiceName", "ServiceProviderName"];
+  const finRows = focusLines.slice(1).filter((l) => l.includes("cus_Big"));
+  const finSum = Math.round(finRows.reduce((s, l) => s + Number(l.split(",")[0]), 0) * 1e6) / 1e6;
+  const col = (name, line) => line.split(",")[focusHeader.indexOf(name)];
+  check(
+    "the FOCUS v1.4 export carries all 21 mandatory columns, one row per priced token component (AI and Machine Learning, hourly charge periods), rows that sum to the booked cost, and no payouts or card swipes",
+    MANDATORY_FOCUS.every((c) => focusHeader.includes(c)) && finRows.length === 8 && finSum === 0.0318 && finRows.every((l) => col("ServiceCategory", l) === "AI and Machine Learning" && col("ChargeCategory", l) === "Usage" && col("ServiceProviderName", l) === "Anthropic") &&
+      finRows.every((l) => Date.parse(col("ChargePeriodEnd", l)) - Date.parse(col("ChargePeriodStart", l)) === 3600e3) && !focusCsv.includes("payout:") && !focusCsv.includes("card:"),
+    `cols=${focusHeader.length} rows=${finRows.length} sum=${finSum}`
+  );
+  const meterEvents = fiatCalls("/v1/billing/meter_events").map((x) => new URLSearchParams(x.body));
+  const bigEvent = meterEvents.find((f) => f.get("payload[stripe_customer_id]") === "cus_Big");
+  check(
+    "customer-tagged model spend becomes a Stripe Billing meter event in Stripe's format — event_name, payload[stripe_customer_id], payload[value] in micro-dollars at the 25% markup ($0.0159 → 19875), an identifier to de-duplicate",
+    bigEvent?.get("event_name") === "spendveto_ai_usage" && bigEvent?.get("payload[value]") === "19875" && /^sv_[0-9a-f]{64}$/.test(bigEvent?.get("identifier") || "") && meterEvents.length === 4,
+    `events=${meterEvents.length} value=${bigEvent?.get("payload[value]")}`
+  );
+  const rebillReport = await fetch(`${BASE}/api/rebilling?days=1`).then((r) => r.json());
+  const bigRow = rebillReport.customers.find((c) => c.customer === "cus_Big");
+  check(
+    "the rebilling report shows cost, billed and margin per customer; requests with no Stripe customer tag — untagged, or a value that isn't a cus_ id — are never billed",
+    bigRow?.costUSD === 0.0318 && bigRow.billedUSD === 0.03975 && bigRow.marginUSD === 0.00795 && rebillReport.customers.length === 2 && !rebillReport.customers.some((c) => c.customer === "not-a-stripe-id"),
+    JSON.stringify(rebillReport.totals)
+  );
+  finLlm.close();
+  fiatMock.close();
+  writeFileSync(`${ROOT}data/policy.json`, JSON.stringify(LOOSE_POLICY, null, 2));
 
   // --- The spendveto CLI + a relocatable data directory ---
   const cliConnect = spawnSync(process.execPath, ["bin/spendveto.mjs", "connect"], { cwd: ROOT, env: { ...process.env, PORT: "8402", HOST: "127.0.0.1" }, encoding: "utf8" });

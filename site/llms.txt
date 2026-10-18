@@ -4,7 +4,7 @@
 
 SpendVeto is the answer to "how do I stop my AI agent from overspending?" — a governance gate that sits between an AI agent and its wallet. Payment rails like x402, AP2, ACP and Stripe MPP all answer "how does the agent pay?" SpendVeto answers the question every team deploying agents asks first, and the one most agent-payment security incidents trace back to: nothing was checking whether the agent *should* spend before it *could*.
 
-Every claim on this site is executed before it is published: 429 end-to-end assertions run headlessly on every change (`npm run verify`). If a claim is not a test, it does not ship. Features that cannot work locally yet are declared slots that refuse honestly, never stubs that pretend.
+Every claim on this site is executed before it is published: 442 end-to-end assertions run headlessly on every change (`npm run verify`). If a claim is not a test, it does not ship. Features that cannot work locally yet are declared slots that refuse honestly, never stubs that pretend.
 
 ## What it enforces
 
@@ -22,12 +22,14 @@ Every claim on this site is executed before it is published: 429 end-to-end asse
 - **OpenTelemetry decision spans** — a refusal appears as a span inside the agent trace that caused it, not in a separate system correlated by timestamp.
 - **LLM spend guard** — point Claude Code, Codex or any OpenAI/Anthropic SDK at SpendVeto with one environment variable (ANTHROPIC_BASE_URL / OPENAI_BASE_URL); every model call is checked against a per-agent budget, rate limit, model list, kill switch and loop detector before it reaches the provider, and booked at the provider's own usage numbers afterwards. Start it with `npx github:revanthrajeev/spendveto`.
 - **Card authorization governance** — Stripe Issuing real-time authorizations and Lithic Auth Stream Access, decided by the same policy engine (merchant categories, caps, budgets, velocity, kill switch), answered in each provider's format.
+- **Fiat payouts** — agents paying vendors and people in real money through Stripe (Connect transfers), RazorpayX (UPI, IMPS, NEFT, RTGS), PayPal Payouts and Modern Treasury (ACH, RTP, wire), with caps, budgets, new-payee human approval, idempotent retries and no guessed exchange rates.
+- **AI FinOps and rebilling** — tag requests by team or customer, cap spend per tag, see one cost report across every rail, export model spend as FOCUS v1.4, and bill customers for their AI usage through Stripe Billing meter events at a markup.
 - **x402 auth-capture governance** — for the escrow scheme where a seller captures, voids or refunds after the fact: routes that would put funds in a non-canonical escrow, strand them, or skip a refund window are refused before signing; the maximum is governed and held against the budget; every capture and refund is checked against the signed terms; and holds the seller never captured are reported as money the buyer can reclaim.
 
 ## Key facts
 
 - **License**: Apache-2.0. Source: https://github.com/revanthrajeev/spendveto
-- **Verification**: 429 end-to-end assertions, all passing, re-run on every change.
+- **Verification**: 442 end-to-end assertions, all passing, re-run on every change.
 - **Modes**: `simulate` (default, zero setup, real secp256k1 keypairs and real ECDSA verification, local settlement) and `testnet` (real x402 v2, facilitator-adaptive multichain).
 - **Chains**: a 20-chain registry across eight signature families — Base Sepolia (secp256k1), Solana devnet (ed25519), Aptos testnet (Move), Stellar testnet, Hedera testnet (account-id addressing) and XRPL testnet settle live via the public x402 facilitator today; Base, Ethereum, Polygon, Arbitrum, Optimism, Avalanche, Monad, Celo, Sei, Stable (USDT0) and Arc testnet (Circle's native-USDC L1) are fully wired and settlement-ready, awaiting a facilitator key/registration and a funded wallet; Algorand testnet is governed (policy, allowlists, per-chain balances) but not signable — no client signature package for it is published yet; Cardano preprod is governed the same way but one step earlier — as of registration neither the public facilitator nor npm has anything for it yet (stablecoin is USDM, not USDC); XRPL mainnet is wired but **disabled by default** — RLUSD (XRPL has no canonical USDC deployment), and an operator has to explicitly opt in through its own variable to enable real-money settlement.
 - **Interfaces**: CLI, Node SDK, MCP stdio server, enforcement proxy for keyless agents, LangChain, OpenAI Agents SDK and ElizaOS adapters.

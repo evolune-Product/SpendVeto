@@ -10,7 +10,7 @@ const S = { entries: [], balances: {}, mode: "…", stats: null, tools: [], appr
 const frozenSet = () => new Set(S.freezes.filter((f) => !f.unfrozen).map((f) => f.address.toLowerCase()));
 
 /* ---------- router ---------- */
-const PAGES = ["overview", "ai", "approvals", "budgets", "ledger", "chains", "analytics", "trust", "policy", "agents", "report"];
+const PAGES = ["overview", "ai", "costs", "payouts", "approvals", "budgets", "ledger", "chains", "analytics", "trust", "policy", "agents", "report"];
 const PROXY_BASE = "http://localhost:8404";
 function route() {
   const page = PAGES.includes(location.hash.slice(1)) ? location.hash.slice(1) : "overview";
@@ -326,11 +326,46 @@ $("ai-form").addEventListener("submit", async (ev) => {
   refresh();
 });
 
+/* ---------- Costs (FinOps) + Payouts ---------- */
+function renderCosts() {
+  const c = S.costs;
+  if (c && c.rows) {
+    const byRail = Object.fromEntries((S.costsRail?.rows || []).map((r) => [r.key, r.costUSD]));
+    $("costs-stats").innerHTML = [
+      ["Total (30d)", money(S.costsRail?.totalCostUSD), "green"],
+      ["Model tokens", money(byRail["model tokens"]), ""],
+      ["x402 / tools", money(byRail["x402 / tools"]), ""],
+      ["Cards", money(byRail["cards"]), ""],
+      ["Fiat payouts", money(byRail["fiat payouts"]), ""],
+      ["Blocked", money(S.costsRail?.totalBlockedUSD), "copper"],
+    ].map(([k, v, cl]) => `<div class="stat"><div class="k">${k}</div><div class="v ${cl}">${v}</div></div>`).join("");
+    $("costs-rows").innerHTML = c.rows.map((r) => `<tr><td>${esc(r.key)}</td><td class="num">${money(r.costUSD)}</td><td class="num">${r.count}</td><td class="num">${r.blockedCount ? `${money(r.blockedUSD)} · ${r.blockedCount}` : "—"}</td></tr>`).join("") || `<tr><td colspan="4" class="empty">No spend in the last 30 days.</td></tr>`;
+  }
+  const rb = S.rebilling;
+  if (rb && rb.settings) {
+    $("rebill-settings").textContent = rb.settings.enabled ? `on · markup ${rb.settings.markupPct}% · meter "${rb.settings.eventName}" · customer tag "${rb.settings.customerTag}"` : "off — enable with PUT /api/rebilling { enabled: true, markupPct } and STRIPE_SECRET_KEY";
+    $("rebill-rows").innerHTML = (rb.customers || []).map((x) => `<tr><td>${esc(x.customer)}</td><td class="num">${money(x.costUSD)}</td><td class="num">${money(x.billedUSD)}</td><td class="num">${money(x.marginUSD)}</td><td class="num">${x.events}${x.failed ? ` · ${x.failed} failed` : ""}</td></tr>`).join("") || `<tr><td colspan="5" class="empty">Nothing rebilled yet.</td></tr>`;
+  }
+}
+function renderPayouts() {
+  const p = S.payouts;
+  if (!p || !p.providers) return;
+  $("payouts-stats").innerHTML = [
+    ["Paid out", money(p.totals.executedUSD), "green"],
+    ["Awaiting approval", p.totals.awaitingApproval, p.totals.awaitingApproval ? "copper" : ""],
+    ["Failed", p.totals.failed, p.totals.failed ? "rust" : ""],
+    ["Denied", p.totals.denied, ""],
+  ].map(([k, v, cl]) => `<div class="stat"><div class="k">${k}</div><div class="v ${cl}">${v}</div></div>`).join("");
+  $("payout-providers").innerHTML = p.providers.map((x) => `<tr><td>${esc(x.label)}</td><td>${x.configured ? '<span class="tag green">configured</span>' : '<span class="tag">not configured</span>'}</td><td class="hint">${esc(x.needs)}</td></tr>`).join("");
+  $("payout-rows").innerHTML = (p.payouts || []).map((x) => `<tr><td>${when(x.createdAt)}</td><td>${esc(x.agent)}</td><td>${esc(x.provider)}</td><td class="addr">${esc(x.payee)}</td><td class="num">${esc(x.amount)} ${esc(x.currency)}</td><td class="num">${money(x.amountUSD)}</td><td class="status-${x.status === "executed" ? "paid" : x.status === "failed" || x.status === "denied" ? "blocked" : "pending"}">${esc(x.status)}${x.providerStatus ? ` <span class="hint">${esc(x.providerStatus)}</span>` : ""}</td><td class="hint">${esc(x.providerId || x.approvalReason || "")}</td></tr>`).join("") || `<tr><td colspan="8" class="empty">No payouts yet.</td></tr>`;
+}
+$("costs-group").addEventListener("change", () => refresh());
+
 /* ---------- refresh loop ---------- */
 let trustTick = 0;
 async function refresh() {
   try {
-    const [ledger, stats, catalog, approvals, delegations, freezes, chains, analytics, policy, packs, rails, llm] = await Promise.all([
+    const [ledger, stats, catalog, approvals, delegations, freezes, chains, analytics, policy, packs, rails, llm, costs, costsRail, rebilling, payoutsSummary] = await Promise.all([
       fetch("/api/ledger").then((r) => r.json()),
       fetch("/api/stats").then((r) => r.json()),
       fetch("/api/catalog").then((r) => r.json()),
@@ -343,10 +378,14 @@ async function refresh() {
       fetch("/api/policy-packs").then((r) => r.json()),
       fetch("/api/rails").then((r) => r.json()),
       fetch("/api/llm/summary").then((r) => r.json()).catch(() => null),
+      fetch(`/api/costs?groupBy=${encodeURIComponent($("costs-group").value)}&days=30`).then((r) => r.json()).catch(() => null),
+      fetch("/api/costs?groupBy=rail&days=30").then((r) => r.json()).catch(() => null),
+      fetch("/api/rebilling").then((r) => r.json()).catch(() => null),
+      fetch("/api/payouts").then((r) => r.json()).catch(() => null),
     ]);
-    Object.assign(S, { entries: ledger.entries || [], balances: ledger.balances || {}, mode: ledger.mode, stats, tools: catalog.tools || [], approvals: approvals.approvals || [], delegations: delegations.delegations || [], freezes: freezes.freezes || [], chains: chains.chains || [], analytics, policy, packs: packs.packs || [], rails: rails.rails || [], llm });
+    Object.assign(S, { entries: ledger.entries || [], balances: ledger.balances || {}, mode: ledger.mode, stats, tools: catalog.tools || [], approvals: approvals.approvals || [], delegations: delegations.delegations || [], freezes: freezes.freezes || [], chains: chains.chains || [], analytics, policy, packs: packs.packs || [], rails: rails.rails || [], llm, costs, costsRail, rebilling, payouts: payoutsSummary });
     $("mode-badge").textContent = S.mode;
-    renderOverview(); renderAi(); renderApprovals(); renderBudgets(); renderLedger(); renderChains(); renderAnalytics(); fillPolicyForm(false); renderReport();
+    renderOverview(); renderAi(); renderCosts(); renderPayouts(); renderApprovals(); renderBudgets(); renderLedger(); renderChains(); renderAnalytics(); fillPolicyForm(false); renderReport();
     if (trustTick++ % 3 === 0) { renderTrustList(); renderAgentsList(); }
   } catch (err) {
     console.error("console refresh failed", err);

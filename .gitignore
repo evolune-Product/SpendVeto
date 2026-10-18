@@ -12,6 +12,8 @@ data/consents.json
 data/upto.json
 data/authcapture.json
 data/cards.json
+data/payouts.json
+data/rebilling.json
 data/policy.json.bak
 data/sanctions/
 *.log

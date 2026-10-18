@@ -653,7 +653,7 @@
           "name": "Is this a real product or a demo?",
           "acceptedAnswer": {
             "@type": "Answer",
-            "text": "Real and open source (Apache-2.0). It runs on your machine today: real ECDSA signatures, real x402 settlement on Base Sepolia, and a 429-assertion end-to-end suite (npm run verify) that exercises every claim on this page. The hosted platform — managed custody, orgs, SSO — is a waitlist today, not yet a live product."
+            "text": "Real and open source (Apache-2.0). It runs on your machine today: real ECDSA signatures, real x402 settlement on Base Sepolia, and a 442-assertion end-to-end suite (npm run verify) that exercises every claim on this page. The hosted platform — managed custody, orgs, SSO — is a waitlist today, not yet a live product."
           }
         },
         {
@@ -739,7 +739,7 @@
   <canvas id="bg" aria-hidden="true"></canvas>
   <img class="hero-grip" src="./assets/hero-grip.jpg" alt="" aria-hidden="true" />
   <div class="hero-inner">
-    <div class="live-chip"><i></i><span id="live-stats">429 end-to-end checks · verified build</span></div>
+    <div class="live-chip"><i></i><span id="live-stats">442 end-to-end checks · verified build</span></div>
     <h1>Your agents can spend.<br /><span class="accent">SpendVeto decides.</span></h1>
     <p class="hero-sub">
       AI agents now spend money on their own — model tokens, paid APIs, other agents, card checkouts — at machine speed.
@@ -851,7 +851,7 @@
   <div class="shell" data-num="02">
     <p class="counter reveal"><b>02 / 06</b> Product — working today, not a roadmap</p>
     <h2 class="reveal">Eight controls between your agent and its money.</h2>
-    <p class="lede reveal">Every one of them is exercised by a 429-assertion end-to-end verification suite on every change — real payments, real signatures, real JSON-RPC. Nothing below is a mockup.</p>
+    <p class="lede reveal">Every one of them is exercised by a 442-assertion end-to-end verification suite on every change — real payments, real signatures, real JSON-RPC. Nothing below is a mockup.</p>
     <div class="grid8">
       <div class="cell reveal">
         <span class="mini-chip">PRE-PAYMENT</span>
@@ -1079,7 +1079,20 @@
       <span class="chain-chip">Sei <b>READY</b></span>
       <span class="chain-chip">Stable <b>READY (USDT0)</b></span>
     </div>
-    <p class="reveal" style="color: var(--dim); max-width: 58ch; line-height: 1.7; font-size: 0.95rem;">The chain rides <em>inside</em> every signed authorization — a payment signed for Polygon cannot settle anywhere else — and every wallet keeps a separate balance per chain. Policies and delegated grants pin which chains an agent may settle on. On-chain settlement is live today on five testnets across five signature schemes: Base Sepolia (secp256k1), Solana devnet (ed25519), Aptos testnet (Move), Stellar testnet, and Hedera testnet (account-id addressing). <b>XRPL mainnet</b> is fully wired but <b>disabled by default</b> — real money, in RLUSD rather than USDC — an operator has to explicitly opt in to enable it, entirely at their own risk; we don't run or control anyone's deployment. <b>Arc testnet</b> is registry-wired (Circle's native-USDC L1) and settlement-ready, awaiting a facilitator that names it. <b>Algorand testnet</b> is governed here — policy, allowlists, per-chain balances all apply — but not signable, since no client signature package for it is published yet; the registry says so per chain. <b>Cardano preprod</b> is governed the same way, one step earlier — the x402 spec added Cardano support 2026-09-09, but as of registration neither the public facilitator nor npm has anything for it yet, so it's not signable or settleable anywhere. The remaining EVM chains are <em>settlement-ready</em>: the gate asks its configured facilitator what it can settle at boot and brings every supported chain live automatically — multi-chain 402s, per-chain scheme registration, canonical stablecoin addresses all wired (tested against a mock facilitator advertising all fifteen). Pointing at a CDP facilitator with an API key and a funded wallet flips its EVM mainnets on with zero code changes, at that operator's own discretion.</p>
+    <p class="reveal" style="color: var(--dim); max-width: 58ch; line-height: 1.7; font-size: 0.95rem;">The chain rides <em>inside</em> every signed authorization — a payment signed for Polygon cannot settle anywhere else — and every wallet keeps a separate balance per chain. Policies and delegated grants pin which chains an agent may settle on. On-chain settlement is live today on six testnets across six signature schemes: Base Sepolia (secp256k1), Solana devnet (ed25519), Aptos testnet (Move), Stellar testnet, Hedera testnet (account-id addressing) and XRPL testnet. <b>XRPL mainnet</b> is fully wired but <b>disabled by default</b> — real money, in RLUSD rather than USDC — an operator has to explicitly opt in to enable it, entirely at their own risk; we don't run or control anyone's deployment. <b>Arc testnet</b> is registry-wired (Circle's native-USDC L1) and settlement-ready, awaiting a facilitator that names it. <b>Algorand testnet</b> is governed here — policy, allowlists, per-chain balances all apply — but not signable, since no client signature package for it is published yet; the registry says so per chain. <b>Cardano preprod</b> is governed the same way, one step earlier — the x402 spec added Cardano support 2026-09-09, but as of registration neither the public facilitator nor npm has anything for it yet, so it's not signable or settleable anywhere. The remaining EVM chains are <em>settlement-ready</em>: the gate asks its configured facilitator what it can settle at boot and brings every supported chain live automatically — multi-chain 402s, per-chain scheme registration, canonical stablecoin addresses all wired (tested against a mock facilitator advertising all twenty). Pointing at a CDP facilitator with an API key and a funded wallet flips its EVM mainnets on with zero code changes, at that operator's own discretion.</p>
+  </div>
+</section>
+
+<section id="beyond" style="border-top: 1px solid var(--line);">
+  <div class="shell" style="padding-top: 4.5rem; padding-bottom: 4.5rem;">
+    <p class="counter reveal"><b>BEYOND CRYPTO</b> Tokens, cards, bank rails — one budget per agent</p>
+    <h2 class="reveal">Every way an agent spends, decided before it's spent.</h2>
+    <div class="reveal" style="display:grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 1rem; margin-top: 1.6rem;">
+      <div style="border:1px solid var(--line); border-radius:14px; padding:1.3rem 1.4rem; background:rgba(12,17,14,0.6);"><b style="color:#eef3ed">Model tokens</b><p style="color:var(--dim); line-height:1.65; font-size:0.92rem; margin-top:0.5rem;">One environment variable puts Claude Code, Codex or any OpenAI/Anthropic SDK behind a budget, a loop detector and a kill switch. <a href="./ai-spend.html" style="color:var(--green)">How →</a></p></div>
+      <div style="border:1px solid var(--line); border-radius:14px; padding:1.3rem 1.4rem; background:rgba(12,17,14,0.6);"><b style="color:#eef3ed">Fiat payouts</b><p style="color:var(--dim); line-height:1.65; font-size:0.92rem; margin-top:0.5rem;">Agents paying vendors and people through Stripe, RazorpayX (UPI, IMPS, NEFT, RTGS), PayPal and ACH / RTP / wire — caps, budgets, and a human approves every new payee.</p></div>
+      <div style="border:1px solid var(--line); border-radius:14px; padding:1.3rem 1.4rem; background:rgba(12,17,14,0.6);"><b style="color:#eef3ed">Agent cards</b><p style="color:var(--dim); line-height:1.65; font-size:0.92rem; margin-top:0.5rem;">Stripe Issuing and Lithic ask SpendVeto in real time: merchant categories, caps, budgets and the kill switch decide every swipe.</p></div>
+      <div style="border:1px solid var(--line); border-radius:14px; padding:1.3rem 1.4rem; background:rgba(12,17,14,0.6);"><b style="color:#eef3ed">AI FinOps &amp; rebilling</b><p style="color:var(--dim); line-height:1.65; font-size:0.92rem; margin-top:0.5rem;">Tag spend by team or customer, cap it per tag, export it as FOCUS v1.4 for your FinOps tools — and bill customers for their AI usage through Stripe Billing at your markup.</p></div>
+    </div>
   </div>
 </section>
 
@@ -1111,7 +1124,7 @@
       <div><span class="p">$</span> npm run call -- summarize &nbsp;<span class="c"># go approve it</span></div>
       <div><span class="p">$</span> npm run delegate -- 0.03 "intern" --tools translate --chains base-sepolia</div>
       <div><span class="p">$</span> claude mcp add spendveto -- node mcp/server.js</div>
-      <div><span class="p">$</span> npm run verify &nbsp;<span class="c"># 429 assertions, end to end</span></div>
+      <div><span class="p">$</span> npm run verify &nbsp;<span class="c"># 442 assertions, end to end</span></div>
     </div>
   </div>
 </section>
@@ -1121,7 +1134,7 @@
     <p class="counter reveal"><b>FAQ</b> Straight answers</p>
     <h2 class="reveal">Asked before you had to ask.</h2>
     <div class="faq" style="margin-top: 1.5rem;">
-      <details class="reveal"><summary>Is this a real product or a demo?</summary><p>Real and open source (Apache-2.0). It runs on your machine today: real ECDSA signatures, real x402 settlement on Base Sepolia, and a <b>429-assertion end-to-end suite</b> (<span class="mono">npm run verify</span>) that exercises every claim on this page. The hosted platform — managed custody, orgs, SSO — is a waitlist today, not yet a live product.</p></details>
+      <details class="reveal"><summary>Is this a real product or a demo?</summary><p>Real and open source (Apache-2.0). It runs on your machine today: real ECDSA signatures, real x402 settlement on Base Sepolia, and a <b>442-assertion end-to-end suite</b> (<span class="mono">npm run verify</span>) that exercises every claim on this page. The hosted platform — managed custody, orgs, SSO — is a waitlist today, not yet a live product.</p></details>
       <details class="reveal"><summary>Does SpendVeto hold my keys?</summary><p>Your choice of two trust models, both self-hosted. <b>Library mode:</b> agents hold their own wallets and the governance pipeline runs inside their own call path. <b>Enforcement proxy:</b> agents are keyless — they POST spending intents, and the proxy’s custody wallet signs only after freeze, policy, caps, scopes, and approvals all pass. Keys never leave your machine either way.</p></details>
       <details class="reveal"><summary>Which chains work today?</summary><p>All eight registered chains run the full governed pipeline end to end — chain-scoped signatures, per-chain balances, chain allowlists — with settlement simulated locally. <b>On-chain settlement is live on Base Sepolia</b> via x402’s public facilitator; per-chain facilitator adapters are the next funded milestone. Every chain’s canonical USDC contract is already in the registry.</p></details>
       <details class="reveal"><summary>What happens when an agent goes rogue?</summary><p>The burst detector freezes it <b>mid-loop</b> — by default, ten payment attempts inside ten seconds trips the freeze automatically. Every wallet also has a one-click manual kill switch. A frozen wallet is refused even when it presents a correctly signed payment (403, not a fresh challenge), and its trust score collapses to an F.</p></details>

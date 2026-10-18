@@ -52,6 +52,8 @@ import { buildEvidencePack, checkEvidencePack } from "./disputes.js";
 import { decisionSpans, toOtlpPayload, exportSpans } from "./otel.js";
 import { createLlmGuard, pseudoAddress } from "./llmguard.js";
 import { createCardRouter, cardSettings } from "./cards.js";
+import { createPayouts } from "./payouts.js";
+import { costReport, focusRows, toFocusCsv, createRebiller, rebillingSettings } from "./finops.js";
 
 dotenv.config({ path: fileURLToPath(new URL("../.env.local", import.meta.url)), quiet: true });
 
@@ -79,6 +81,8 @@ const childAddressFor = (label) => {
   const child = readJsonFile(dataPath("children.json"), []).find((c) => c.label === label || String(c.address).toLowerCase() === String(label).toLowerCase());
   return child ? child.address : null;
 };
+// Rebilling (server/finops.js): customer-tagged model spend → Stripe Billing meter events.
+const rebiller = createRebiller({ dataPath, loadPolicy: () => readJsonFile(dataPath("policy.json"), {}) });
 const llmGuard = createLlmGuard({
   loadPolicy: () => readJsonFile(dataPath("policy.json"), {}),
   checkPolicy,
@@ -93,6 +97,7 @@ const llmGuard = createLlmGuard({
   getApproval,
   readAgents: () => readJsonFile(dataPath("agents.json"), []),
   childAddress: (label) => childAddressFor(label),
+  onCharge: (entry) => rebiller.onCharge(entry),
 });
 app.use(llmGuard.router);
 
@@ -888,6 +893,9 @@ app.get("/api/approvals/:id", (req, res) => {
 app.get("/api/approvals/:id/decide", (req, res) => {
   const decision = req.query.decision;
   if (decision !== "approved" && decision !== "denied") return res.status(400).send("decision must be 'approved' or 'denied'");
+  // Real-money payouts are never decided by an unauthenticated link: they go
+  // through the authenticated POST (approver role, World ID when required).
+  if (String(getApproval(req.params.id)?.resource || "").startsWith("payout:")) return res.status(403).send("payout approvals must be decided in the SpendVeto Console");
   const record = decideApproval(req.params.id, decision, readPolicyRequiredApprovals());
   if (!record) return res.status(409).send("not pending (already decided, or unknown id)");
   res.send(`<body style="font-family:system-ui;background:#0b0f0c;color:#eef3ed;display:grid;place-items:center;height:100vh"><div style="text-align:center"><h2>${decision === "approved" ? "✅ Approved" : "⛔ Denied"}</h2><p style="color:#93a094">${record.resource} · $${record.price} — recorded. You can close this tab.</p></div></body>`);
@@ -921,7 +929,9 @@ app.post("/api/approvals/:id/decide", requireAuth("approver"), async (req, res) 
   }
   const record = decideApproval(req.params.id, decision, readPolicyRequiredApprovals());
   if (!record) return res.status(409).json({ error: "not pending (already decided, or unknown id)" });
-  res.json(record);
+  // A payout waiting on this approval executes (or closes) right here.
+  const payout = record.status === "approved" || record.status === "denied" ? await payouts.onApprovalDecided(record.id, record.status) : null;
+  res.json(payout ? { ...record, payout } : record);
 });
 
 // Budget delegation: a parent wallet grants a child agent wallet a capped
@@ -1389,6 +1399,75 @@ app.get("/api/upto/holds/:address", (req, res) => {
   res.json({ address: req.params.address, heldUSD: Math.round((uptoUSD + authCaptureUSD + llmUSD) * 1e6) / 1e6, uptoUSD, authCaptureUSD, llmUSD });
 });
 
+// ---- AI FinOps (server/finops.js): one cost view across every rail, FOCUS export, rebilling ----
+app.get("/api/costs", (req, res) => {
+  const groupBy = /^[a-z][a-z0-9_-]{0,31}$/.test(req.query.groupBy || "") ? req.query.groupBy : "category";
+  const days = Math.min(366, Math.max(1, Number(req.query.days) || 30));
+  res.json(costReport(getLedger(), { groupBy, days }));
+});
+app.get("/api/costs/focus.csv", (req, res) => {
+  const days = Math.min(366, Math.max(1, Number(req.query.days) || 30));
+  const finops = readJsonFile(POLICY_FILE, {}).finops || {};
+  const rows = focusRows(getLedger(), { days, billingAccountId: finops.billingAccountId || "spendveto", billingAccountName: finops.billingAccountName || "SpendVeto" });
+  res.set({ "Content-Type": "text/csv; charset=utf-8", "Content-Disposition": `attachment; filename="spendveto-focus-${new Date().toISOString().slice(0, 10)}.csv"` });
+  res.send(toFocusCsv(rows));
+});
+app.get("/api/rebilling", (req, res) => {
+  res.json(rebiller.summary({ days: Math.min(366, Math.max(1, Number(req.query.days) || 30)) }));
+});
+app.put("/api/rebilling", requireAuth("admin"), (req, res) => {
+  const b = req.body || {};
+  const policy = readJsonFile(POLICY_FILE, {});
+  const r = { ...(policy.rebilling || {}) };
+  if (typeof b.enabled === "boolean") r.enabled = b.enabled;
+  if (b.markupPct != null) {
+    if (!(Number(b.markupPct) >= 0 && Number(b.markupPct) <= 1000)) return res.status(400).json({ error: "markupPct must be between 0 and 1000" });
+    r.markupPct = Number(b.markupPct);
+  }
+  if (b.eventName != null) {
+    if (!/^[A-Za-z0-9_.-]{1,100}$/.test(String(b.eventName))) return res.status(400).json({ error: "eventName must be 1-100 chars of letters, digits, _ . -" });
+    r.eventName = String(b.eventName);
+  }
+  if (b.customerTag != null) {
+    if (!/^[a-z][a-z0-9_-]{0,31}$/.test(String(b.customerTag))) return res.status(400).json({ error: "customerTag must be a lowercase tag key" });
+    r.customerTag = String(b.customerTag);
+  }
+  policy.rebilling = r;
+  writeFileSync(POLICY_FILE, JSON.stringify(policy, null, 2));
+  res.json({ settings: rebillingSettings(policy) });
+});
+
+// ---- Governed fiat payouts (server/payouts.js): Stripe, RazorpayX, PayPal, Modern Treasury ----
+const payouts = createPayouts({
+  dataPath,
+  loadPolicy: () => readJsonFile(POLICY_FILE, {}),
+  checkPolicy,
+  policyHash: () => policyHash(),
+  appendLedgerEntry,
+  getLedger,
+  findActiveFreeze,
+  listDelegations,
+  createApproval,
+  getApproval,
+  readAgents: () => readJsonFile(dataPath("agents.json"), []),
+  childAddress: childAddressFor,
+  pseudoAddress,
+});
+app.post("/api/payouts", async (req, res) => {
+  const out = await payouts.create(req, req.body || {});
+  res.status(out.status).json(out.json);
+});
+app.get("/api/payouts", (req, res) => {
+  res.json(payouts.summary());
+});
+// Your own webhook glue reports a later provider status (a RazorpayX payout
+// reversing, an ACH credit returning) — recorded, not re-decided.
+app.post("/api/payouts/:id/status", requireAuth("admin"), (req, res) => {
+  const row = payouts.recordStatus(req.params.id, req.body?.status, req.body?.note);
+  if (!row) return res.status(404).json({ error: "not found" });
+  res.json(row);
+});
+
 // ---- Card authorization governance: registry + decisions (server/cards.js) ----
 // Map a card to an agent label (and optionally a delegated child wallet, so
 // the card shares that agent's cascading budget with its x402 and LLM spend).
@@ -1396,12 +1475,13 @@ app.get("/api/cards", (req, res) => {
   res.json({ cards: readJsonFile(dataPath("cards.json"), []), settings: cardSettings(readJsonFile(POLICY_FILE, {})), configured: { stripe: Boolean(process.env.STRIPE_ISSUING_WEBHOOK_SECRET), lithic: Boolean(process.env.LITHIC_ASA_SECRET) } });
 });
 app.post("/api/cards", requireAuth("admin"), (req, res) => {
-  const { cardId, label, rail, child } = req.body || {};
+  const { cardId, label, rail, child, tags } = req.body || {};
   if (!cardId || typeof cardId !== "string") return res.status(400).json({ error: "cardId is required (Stripe ic_… or Lithic card token)" });
   if (!label || typeof label !== "string") return res.status(400).json({ error: "label is required" });
   if (child && !childAddressFor(child)) return res.status(404).json({ error: `no delegated child wallet matching "${child}"` });
   const cards = readJsonFile(dataPath("cards.json"), []).filter((c) => c.cardId !== cardId);
-  const record = { cardId, label: label.slice(0, 60), rail: rail === "lithic" ? "lithic" : "stripe", child: child || null, createdAt: new Date().toISOString() };
+  const cleanTags = tags && typeof tags === "object" ? Object.fromEntries(Object.entries(tags).slice(0, 10).filter(([k]) => /^[a-z][a-z0-9_-]{0,31}$/.test(k)).map(([k, v]) => [k, String(v).slice(0, 64)])) : null;
+  const record = { cardId, label: label.slice(0, 60), rail: rail === "lithic" ? "lithic" : "stripe", child: child || null, ...(cleanTags && Object.keys(cleanTags).length ? { tags: cleanTags } : {}), createdAt: new Date().toISOString() };
   cards.push(record);
   writeFileSync(dataPath("cards.json"), JSON.stringify(cards, null, 2));
   res.status(201).json(record);
@@ -1470,6 +1550,16 @@ app.put("/api/llm/settings", requireAuth("admin"), (req, res) => {
     llm.loop = loop;
   }
   for (const k of ["requireAgentToken", "passthroughUnknown"]) if (typeof b[k] === "boolean") llm[k] = b[k];
+  if (b.tagBudgets && typeof b.tagBudgets === "object") {
+    const tb = { ...(llm.tagBudgets || {}) };
+    for (const [key, v] of Object.entries(b.tagBudgets)) {
+      if (!/^[a-z][a-z0-9_-]{0,31}=[\w .:@/-]{1,64}$/.test(key)) return res.status(400).json({ error: `tag budget key "${key}" must look like team=search or customer=cus_123` });
+      if (v === null) delete tb[key];
+      else if (v && (Number(v.dailyUSD) > 0 || Number(v.hourlyUSD) > 0)) tb[key] = { ...(Number(v.dailyUSD) > 0 ? { dailyUSD: Number(v.dailyUSD) } : {}), ...(Number(v.hourlyUSD) > 0 ? { hourlyUSD: Number(v.hourlyUSD) } : {}) };
+      else return res.status(400).json({ error: `tag budget for ${key} needs a positive dailyUSD and/or hourlyUSD` });
+    }
+    llm.tagBudgets = tb;
+  }
   if (b.identityFrom !== undefined) {
     if (!["local", "credential"].includes(b.identityFrom)) return res.status(400).json({ error: 'identityFrom must be "local" or "credential"' });
     llm.identityFrom = b.identityFrom;

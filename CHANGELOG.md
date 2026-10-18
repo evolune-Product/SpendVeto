@@ -2,6 +2,16 @@
 
 Every feature listed here is exercised by the end-to-end suite (`npm run verify`) — the suite grew from 33 assertions at the first public cut to **114** at v0.7.0. If a claim isn't an assertion, it doesn't ship.
 
+## 0.28.0 — 2026-10-18
+
+Beyond crypto, beyond governance: real fiat payouts, and the ledger as a cost and billing system.
+
+- **Governed fiat payouts** (`server/payouts.js`, `POST /api/payouts`) on four real providers, each in its documented request format (checked 2026-10-18): **Stripe** Connect transfers (`/v1/transfers`, cents, `Idempotency-Key`), **RazorpayX** payouts over UPI / IMPS / NEFT / RTGS (`/v1/payouts`, paise, `X-Payout-Idempotency`, basic auth), **PayPal** Payouts (client-credentials OAuth, `/v1/payments/payouts`, decimal-string amounts, `PayPal-Request-Id`), **Modern Treasury** payment orders over ACH / RTP / wire / book (`/api/payment_orders`, cents, basic auth org-ID:API-key). Before any money moves: a registered agent token by default (`policy.payouts.requireAgentToken`), kill switch, per-payout cap, rolling daily budget, hourly velocity, purpose allowlist, delegation caps — and a new payee or a large amount waits for a human (202; executes when approved in the Console, never when denied; unauthenticated one-click links can't approve payouts). Idempotency keys replay instead of paying twice. Non-USD money counts against USD budgets only at an operator-declared rate; no rate, no payout. Unconfigured providers refuse honestly. Not yet: asynchronous provider status webhooks.
+- **AI FinOps** (`server/finops.js`) — request tags (`x-spendveto-tags: team=…,customer=…`) attribute model spend; **tag budgets** cap a team or customer across every agent; `GET /api/costs` groups spend across all rails (model tokens, x402 tools, cards, payouts) by rail, tag, agent, model or provider; `GET /api/costs/focus.csv` exports model spend in **FOCUS v1.4** (FinOps Foundation, June 2026) with all 21 mandatory columns, one row per priced token component, hourly charge periods. Ledger entries now carry a per-component cost breakdown.
+- **Rebilling to Stripe Billing** — customer-tagged model spend becomes a Stripe Billing meter event (`/v1/billing/meter_events`: `event_name`, `payload[stripe_customer_id]`, `payload[value]` in micro-dollars at the operator's markup, an `identifier` for de-duplication); `GET /api/rebilling` reports cost, billed and margin per customer; `PUT /api/rebilling` configures it.
+- **Console**: new **Costs** (spend by rail / team / customer / agent / model, FOCUS download, rebilling margins) and **Payouts** (providers, recent payouts, statuses) pages. Cards registered with tags carry them onto their decisions.
+- Verify: 442 (+13: 8 payouts, 3 FinOps, 2 rebilling; 445 with `../prediction-copilot` alongside).
+
 ## 0.27.0 — 2026-10-18
 
 The adoption release. Investors keep asking "who is using it?", and the honest answer was: nobody could, without running x402 — a market that is real but small today. The money AI agents actually spend right now is model tokens, and the failure people actually hit is a runaway agent (one developer reported ~$6,000 of Claude usage gone overnight; a LangChain agent made 14,000 redundant tool calls; a red-team case study cites ~$50,000 in under an hour). So SpendVeto now governs that spend, for anyone, with one environment variable.
