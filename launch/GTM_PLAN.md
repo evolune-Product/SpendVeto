@@ -12,7 +12,7 @@
 
 **One line:** *A budget, a loop detector and a kill switch in front of every dollar your AI agents spend — model tokens first, then payments and cards. Free, open source, one environment variable.*
 
-**Why us, not an LLM gateway (LiteLLM, Portkey) or an observability tool (Helicone, Langfuse):** gateways give per-key budgets inside one rail; observability tools watch. SpendVeto is the agent's **one** budget across tokens, x402 payments and card swipes, with loop detection that freezes the agent, delegated budgets for sub-agents, human approval, and an audit-grade hash-chained ledger. Say this plainly; don't claim gateways have no budgets — they do.
+**Why us, not an LLM gateway (LiteLLM, Portkey) or an observability tool (Helicone, Langfuse):** gateways budget model spend per key or team; observability tools watch. SpendVeto is the agent's **one** budget across tokens, x402 payments and card swipes, with a loop detector that freezes the agent, delegated budgets that cascade across all three, human approval, and an audit-grade hash-chained ledger. Say this plainly; don't claim gateways have no budgets — they do — and don't claim what they lack unless you've checked.
 
 ## Ideal customers, in the order to pursue them
 
