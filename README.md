@@ -14,6 +14,8 @@ What *isn't* true yet is stated just as plainly: no external security audit, no 
 npx github:revanthrajeev/spendveto        # or: git clone … && npm install && npm start
 ```
 
+First run installs dependencies (about two minutes); Node 22+ recommended (Node 20.18 runs it, with npm engine warnings).
+
 Then point the agent at it — one environment variable, your provider key passes straight through and is never stored:
 
 ```bash
