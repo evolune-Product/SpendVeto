@@ -19,9 +19,10 @@
 
 import { writeFileSync, mkdirSync } from "node:fs";
 import { fileURLToPath } from "node:url";
+import { dataPath } from "../shared-config.js";
 
 const SDN_URL = "https://sanctionslistservice.ofac.treas.gov/api/PublicationPreview/exports/SDN.XML";
-const OUT_PATH = fileURLToPath(new URL("../data/sanctions/ofac-digital-currency.json", import.meta.url));
+const OUT_PATH = dataPath("sanctions", "ofac-digital-currency.json");
 
 // Classification is by the ADDRESS'S OWN FORMAT, not OFAC's chain tag — verified necessary during
 // development, not a design preference: the real list's "USDT" tag mixes genuine EVM (0x...)
@@ -135,7 +136,7 @@ async function main() {
     addresses, // canonicalized address (EVM: lowercased; base58/other: original case) -> array of { token, sdnUid, name, sdnType, programs }
   };
 
-  mkdirSync(fileURLToPath(new URL("../data/sanctions", import.meta.url)), { recursive: true });
+  mkdirSync(dataPath("sanctions"), { recursive: true });
   writeFileSync(OUT_PATH, JSON.stringify(cache, null, 2));
   console.log(`Wrote ${OUT_PATH} (${Object.keys(addresses).length} unique addresses).`);
 }

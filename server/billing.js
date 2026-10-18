@@ -1,8 +1,9 @@
 import { readFileSync, existsSync } from "node:fs";
 import { createHmac } from "node:crypto";
 import { fileURLToPath } from "node:url";
+import { dataPath } from "../shared-config.js";
 
-const POLICY_PATH = fileURLToPath(new URL("../data/policy.json", import.meta.url));
+const POLICY_PATH = dataPath("policy.json");
 
 function billingConfig() {
   try {

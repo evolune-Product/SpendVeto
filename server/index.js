@@ -1,5 +1,6 @@
 import dotenv from "dotenv";
 import { fileURLToPath } from "node:url";
+import { join } from "node:path";
 import { readFileSync } from "node:fs";
 import express from "express";
 import { paymentMiddleware, x402ResourceServer } from "@x402/express";
@@ -10,7 +11,7 @@ import { ExactStellarScheme } from "@x402/stellar/exact/server";
 import { ExactHederaScheme } from "@x402/hedera/exact/server";
 import { ExactXrplScheme } from "@x402/xrpl/exact/server";
 import { HTTPFacilitatorClient } from "@x402/core/server";
-import { MODE, PORT, TOOLS, CHAINS, FACILITATOR_URL, findChain, DEFAULT_CHAIN } from "../shared-config.js";
+import { MODE, PORT, TOOLS, CHAINS, FACILITATOR_URL, findChain, DEFAULT_CHAIN, dataPath, PACKAGE_DATA_DIR } from "../shared-config.js";
 import { randomUUID } from "node:crypto";
 import { writeFileSync } from "node:fs";
 import { createSimulateGate, receiptMessage, signDecision, signUpiDecision, signEuDecision, signUkDecision, signBrDecision, signUsDecision, consentMessage } from "./simulate.js";
@@ -49,6 +50,8 @@ import { bindAuthorization, verifyBinding, getBinding, requestDigest } from "./i
 import { evaluateRequirements as evaluateAuthCapture, recordCollect, capturePayment, chargePayment, voidPayment, refundPayment, markReclaimed, reclaimable, authCaptureHoldUSD, authCaptureSummary, getPayments as getAuthCapturePayments, findPayment as findAuthCapturePayment } from "./authcapture.js";
 import { buildEvidencePack, checkEvidencePack } from "./disputes.js";
 import { decisionSpans, toOtlpPayload, exportSpans } from "./otel.js";
+import { createLlmGuard, pseudoAddress } from "./llmguard.js";
+import { createCardRouter, cardSettings } from "./cards.js";
 
 dotenv.config({ path: fileURLToPath(new URL("../.env.local", import.meta.url)), quiet: true });
 
@@ -60,6 +63,54 @@ const app = express();
 // generates (discovery.js's Bazaar resource list, openapi.js's servers[].url)
 // and would advertise a scheme a real client can't necessarily reach.
 app.set("trust proxy", true);
+
+// The LLM spend guard (server/llmguard.js) is mounted BEFORE the JSON body
+// parser: it needs the raw request bytes — Anthropic bodies are forwarded
+// exactly as received, and Claude Code requests run to megabytes, far past
+// express.json()'s 100 KB default.
+const readJsonFile = (path, fallback) => {
+  try {
+    return JSON.parse(readFileSync(path, "utf8"));
+  } catch {
+    return fallback;
+  }
+};
+const childAddressFor = (label) => {
+  const child = readJsonFile(dataPath("children.json"), []).find((c) => c.label === label || String(c.address).toLowerCase() === String(label).toLowerCase());
+  return child ? child.address : null;
+};
+const llmGuard = createLlmGuard({
+  loadPolicy: () => readJsonFile(dataPath("policy.json"), {}),
+  checkPolicy,
+  policyHash: () => policyHash(),
+  appendLedgerEntry,
+  getLedger,
+  findActiveFreeze,
+  createFreeze,
+  listDelegations,
+  sendAlert,
+  createApproval,
+  getApproval,
+  readAgents: () => readJsonFile(dataPath("agents.json"), []),
+  childAddress: (label) => childAddressFor(label),
+});
+app.use(llmGuard.router);
+
+// Card authorization webhooks (server/cards.js) need raw bytes too — the
+// Stripe and Lithic signatures are computed over the exact body received.
+app.use(createCardRouter({
+  loadPolicy: () => readJsonFile(dataPath("policy.json"), {}),
+  checkPolicy,
+  policyHash: () => policyHash(),
+  appendLedgerEntry,
+  getLedger,
+  findActiveFreeze,
+  listDelegations,
+  readCards: () => readJsonFile(dataPath("cards.json"), []),
+  pseudoAddress,
+  childAddress: childAddressFor,
+}));
+
 app.use(express.json());
 // Local-tool CORS: lets the marketing site (:8403) show live governance stats.
 app.use((req, res, next) => {
@@ -244,7 +295,7 @@ if (MODE === "testnet") {
 // The tool marketplace: anyone can register a paid endpoint behind the same
 // governance gate — the catalog stops being a fixed demo and becomes supply.
 // Durable in data/tools.json (runtime state, gitignored).
-const DYN_TOOLS_PATH = fileURLToPath(new URL("../data/tools.json", import.meta.url));
+const DYN_TOOLS_PATH = dataPath("tools.json");
 function readDynTools() {
   try {
     return JSON.parse(readFileSync(DYN_TOOLS_PATH, "utf8"));
@@ -350,7 +401,7 @@ app.post("/api/receipts/verify", async (req, res) => {
 
 // Waitlist for the hosted platform. Durable, append-only; GET exposes only
 // the count — never the emails/addresses.
-const WAITLIST_PATH = fileURLToPath(new URL("../data/waitlist.json", import.meta.url));
+const WAITLIST_PATH = dataPath("waitlist.json");
 function readWaitlist() {
   try {
     return JSON.parse(readFileSync(WAITLIST_PATH, "utf8"));
@@ -553,7 +604,7 @@ app.post("/api/discovery/govern", (req, res) => {
   if (!Array.isArray(resources)) return res.status(400).json({ error: "resources must be an array of Bazaar listings" });
   let policy;
   try {
-    policy = JSON.parse(readFileSync(fileURLToPath(new URL("../data/policy.json", import.meta.url)), "utf8"));
+    policy = JSON.parse(readFileSync(dataPath("policy.json"), "utf8"));
   } catch {
     policy = { maxPerCallUSD: 0.05, maxPerHourUSD: 0.2, maxCallsPerHour: 10, requireApprovalAboveUSD: 0.015 };
   }
@@ -691,8 +742,8 @@ app.get("/metrics", (req, res) => {
 // Console write-APIs: the dashboard is a real control surface, not a viewer.
 // PUT /api/policy edits the live spend rules; the packs endpoints list and
 // apply the committed governance presets (current policy backed up to .bak).
-const POLICY_FILE = fileURLToPath(new URL("../data/policy.json", import.meta.url));
-const PACKS_DIR = fileURLToPath(new URL("../data/policy-packs", import.meta.url));
+const POLICY_FILE = dataPath("policy.json");
+const PACKS_DIR = join(PACKAGE_DATA_DIR, "policy-packs");
 app.put("/api/policy", requireAuth("admin"), (req, res) => {
   const b = req.body || {};
   const nums = ["maxPerCallUSD", "maxPerHourUSD", "maxCallsPerHour", "requireApprovalAboveUSD"];
@@ -754,7 +805,7 @@ app.post("/api/policy/apply", requireAuth("admin"), (req, res) => {
 // server-side (simulate-mode convenience — keys live in gitignored
 // children.json exactly as the delegate script writes them), stores the
 // grant, and returns the address so the CLI can spend as it immediately.
-const CHILDREN_FILE = fileURLToPath(new URL("../data/children.json", import.meta.url));
+const CHILDREN_FILE = dataPath("children.json");
 app.post("/api/delegations/wallet", requireAuth("admin"), async (req, res) => {
   const { capUSD, label, parent, allowedTools, allowedChains, allowedPayees, ttlSeconds, periodSeconds } = req.body || {};
   if (!(Number(capUSD) > 0)) return res.status(400).json({ error: "a positive capUSD is required" });
@@ -777,7 +828,7 @@ app.post("/api/delegations/wallet", requireAuth("admin"), async (req, res) => {
 
 app.get("/api/policy", (req, res) => {
   try {
-    const raw = readFileSync(fileURLToPath(new URL("../data/policy.json", import.meta.url)), "utf8");
+    const raw = readFileSync(dataPath("policy.json"), "utf8");
     res.json(JSON.parse(raw));
   } catch {
     res.json({ maxPerCallUSD: 0.05, maxPerHourUSD: 0.2, maxCallsPerHour: 10, requireApprovalAboveUSD: 0.015, source: "built-in default" });
@@ -1332,7 +1383,109 @@ app.post("/api/upto/void", (req, res) => {
 app.get("/api/upto/holds/:address", (req, res) => {
   const uptoUSD = openHoldUSD(req.params.address);
   const authCaptureUSD = authCaptureHoldUSD(req.params.address);
-  res.json({ address: req.params.address, heldUSD: Math.round((uptoUSD + authCaptureUSD) * 1e6) / 1e6, uptoUSD, authCaptureUSD });
+  // In-flight LLM requests reserve their estimate too (server/llmguard.js),
+  // so a payment racing a model call sees the money already committed.
+  const llmUSD = llmGuard.heldUSD(req.params.address);
+  res.json({ address: req.params.address, heldUSD: Math.round((uptoUSD + authCaptureUSD + llmUSD) * 1e6) / 1e6, uptoUSD, authCaptureUSD, llmUSD });
+});
+
+// ---- Card authorization governance: registry + decisions (server/cards.js) ----
+// Map a card to an agent label (and optionally a delegated child wallet, so
+// the card shares that agent's cascading budget with its x402 and LLM spend).
+app.get("/api/cards", (req, res) => {
+  res.json({ cards: readJsonFile(dataPath("cards.json"), []), settings: cardSettings(readJsonFile(POLICY_FILE, {})), configured: { stripe: Boolean(process.env.STRIPE_ISSUING_WEBHOOK_SECRET), lithic: Boolean(process.env.LITHIC_ASA_SECRET) } });
+});
+app.post("/api/cards", requireAuth("admin"), (req, res) => {
+  const { cardId, label, rail, child } = req.body || {};
+  if (!cardId || typeof cardId !== "string") return res.status(400).json({ error: "cardId is required (Stripe ic_… or Lithic card token)" });
+  if (!label || typeof label !== "string") return res.status(400).json({ error: "label is required" });
+  if (child && !childAddressFor(child)) return res.status(404).json({ error: `no delegated child wallet matching "${child}"` });
+  const cards = readJsonFile(dataPath("cards.json"), []).filter((c) => c.cardId !== cardId);
+  const record = { cardId, label: label.slice(0, 60), rail: rail === "lithic" ? "lithic" : "stripe", child: child || null, createdAt: new Date().toISOString() };
+  cards.push(record);
+  writeFileSync(dataPath("cards.json"), JSON.stringify(cards, null, 2));
+  res.status(201).json(record);
+});
+app.get("/api/cards/decisions", (req, res) => {
+  res.json({ decisions: getLedger().filter((e) => e.category === "card").slice(-50).reverse() });
+});
+
+// ---- LLM spend guard: read side + settings (server/llmguard.js) ----
+app.get("/api/llm/summary", (req, res) => {
+  res.json(llmGuard.summary());
+});
+
+// Copy-paste connection lines for every client the guard speaks to, built
+// from the address the caller reached this server on.
+app.get("/api/llm/connect", (req, res) => {
+  const base = `${req.protocol}://${req.get("host")}`;
+  res.json({
+    base,
+    clients: [
+      { name: "Claude Code", line: `ANTHROPIC_BASE_URL=${base} claude` },
+      { name: "Codex CLI", line: `OPENAI_BASE_URL=${base}/v1 codex` },
+      { name: "Anthropic SDK (Python / TypeScript)", line: `ANTHROPIC_BASE_URL=${base}` },
+      { name: "OpenAI SDK (Python / TypeScript)", line: `OPENAI_BASE_URL=${base}/v1` },
+      { name: "Any OpenAI-compatible tool (Cursor, LangChain, LiteLLM, Aider…)", line: `base URL: ${base}/v1` },
+    ],
+    note: "Your provider key passes straight through and is never stored. To give an agent a budget without giving it a key, register it on the Agents page and use its tg_… token instead.",
+  });
+});
+
+app.get("/api/llm/settings", (req, res) => {
+  res.json({ settings: llmGuard.settings() });
+});
+
+// Validated merge into policy.llm — numbers must be positive, lists are
+// trimmed, unknown keys are ignored rather than written to the policy file.
+app.put("/api/llm/settings", requireAuth("admin"), (req, res) => {
+  const b = req.body || {};
+  const policy = readJsonFile(POLICY_FILE, {});
+  const llm = { ...(policy.llm || {}) };
+  const positive = ["dailyBudgetUSD", "hourlyBudgetUSD", "maxRequestUSD", "maxRequestsPerMinute", "outputEstimateCapTokens", "approvalTimeoutMs"];
+  for (const k of positive) {
+    if (b[k] == null) continue;
+    if (!(Number(b[k]) > 0)) return res.status(400).json({ error: `${k} must be a positive number` });
+    llm[k] = Number(b[k]);
+  }
+  for (const k of ["sessionBudgetUSD", "approvalAboveUSD"]) {
+    if (b[k] === undefined) continue;
+    if (b[k] === null || b[k] === "") llm[k] = null;
+    else if (Number(b[k]) > 0) llm[k] = Number(b[k]);
+    else return res.status(400).json({ error: `${k} must be a positive number or null` });
+  }
+  if (b.mode !== undefined) {
+    if (!["enforce", "observe"].includes(b.mode)) return res.status(400).json({ error: 'mode must be "enforce" or "observe"' });
+    llm.mode = b.mode;
+  }
+  for (const k of ["allowedModels", "blockedModels"]) {
+    if (b[k] === undefined) continue;
+    llm[k] = Array.isArray(b[k]) && b[k].length ? b[k].map((m) => String(m).trim()).filter(Boolean).slice(0, 50) : k === "allowedModels" ? null : [];
+  }
+  if (b.loop && typeof b.loop === "object") {
+    const loop = { ...(llm.loop || {}) };
+    if (typeof b.loop.enabled === "boolean") loop.enabled = b.loop.enabled;
+    if (Number(b.loop.threshold) >= 2) loop.threshold = Math.floor(Number(b.loop.threshold));
+    if (Number(b.loop.windowSeconds) > 0) loop.windowSeconds = Number(b.loop.windowSeconds);
+    llm.loop = loop;
+  }
+  for (const k of ["requireAgentToken", "passthroughUnknown"]) if (typeof b[k] === "boolean") llm[k] = b[k];
+  if (b.identityFrom !== undefined) {
+    if (!["local", "credential"].includes(b.identityFrom)) return res.status(400).json({ error: 'identityFrom must be "local" or "credential"' });
+    llm.identityFrom = b.identityFrom;
+  }
+  if (b.prices && typeof b.prices === "object") {
+    const prices = { ...(llm.prices || {}) };
+    for (const [model, row] of Object.entries(b.prices)) {
+      if (row === null) delete prices[model];
+      else if (row && Number(row.inputPerM) >= 0 && Number(row.outputPerM) >= 0) prices[String(model).toLowerCase()] = { inputPerM: Number(row.inputPerM), outputPerM: Number(row.outputPerM), ...(row.cacheReadPerM != null ? { cacheReadPerM: Number(row.cacheReadPerM) } : {}) };
+      else return res.status(400).json({ error: `price for ${model} needs numeric inputPerM and outputPerM (USD per million tokens)` });
+    }
+    llm.prices = prices;
+  }
+  policy.llm = llm;
+  writeFileSync(POLICY_FILE, JSON.stringify(policy, null, 2));
+  res.json({ settings: llmGuard.settings() });
 });
 
 app.get("/api/upto", (req, res) => {
@@ -1498,7 +1651,7 @@ app.get("/api/otel/spans", async (req, res) => {
   res.json({ spanCount: spans.length, traceparent: req.get("traceparent") || null, exported, payload });
 });
 
-app.listen(PORT, () => {
+app.listen(PORT, process.env.HOST || undefined, () => {
   console.log(`SpendVeto server — mode: ${MODE}`);
   console.log(`Dashboard: http://localhost:${PORT}/`);
   console.log(`Catalog:   ${TOOLS.map((t) => `${t.path} ($${t.price})`).join(", ")}`);

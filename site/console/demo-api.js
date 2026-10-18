@@ -60,6 +60,15 @@
       if (d) d.revoked = now();
       return json({ ok: true });
     }
+    if (path === "/api/llm/settings" && method === "PUT") {
+      const sum = s["/api/llm/summary"];
+      if (sum) {
+        const { mode, loop, ...rest } = body;
+        Object.assign(sum.settings, rest, loop ? { loop: { ...sum.settings.loop, ...loop } } : {});
+        if (mode) sum.mode = mode;
+      }
+      return json({ settings: sum?.settings || {} });
+    }
     if (path === "/api/policy" && method === "PUT") {
       Object.assign(s["/api/policy"], body);
       return json(s["/api/policy"]);

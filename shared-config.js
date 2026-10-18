@@ -1,5 +1,21 @@
 // Config agreed by both server and client so no extra round trip is needed
 // to discover a tool's price before deciding whether policy allows a call.
+import { fileURLToPath } from "node:url";
+import { join, resolve } from "node:path";
+import { mkdirSync } from "node:fs";
+
+// Where runtime state lives (ledger, policy, freezes, agents, keys…).
+// Default: ./data beside this file — a git checkout keeps working exactly as
+// before. SPENDVETO_DATA_DIR moves it anywhere (the `spendveto` CLI uses
+// ~/.spendveto), so an installed package never writes into node_modules.
+// Shipped, read-only assets — policy packs, the sanctions list — always load
+// from PACKAGE_DATA_DIR.
+export const PACKAGE_DATA_DIR = fileURLToPath(new URL("./data", import.meta.url));
+export const DATA_DIR = process.env.SPENDVETO_DATA_DIR ? resolve(process.env.SPENDVETO_DATA_DIR) : PACKAGE_DATA_DIR;
+try {
+  mkdirSync(DATA_DIR, { recursive: true });
+} catch {}
+export const dataPath = (...parts) => join(DATA_DIR, ...parts);
 export const NETWORK = "base-sepolia";
 export const PORT = process.env.PORT || 8402;
 export const MODE = process.env.SPENDVETO_MODE === "testnet" ? "testnet" : "simulate";

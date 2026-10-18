@@ -2,8 +2,9 @@ import { readFileSync, existsSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { getLedger } from "./ledger.js";
 import { createFreeze, findActiveFreeze } from "./freezes.js";
+import { dataPath } from "../shared-config.js";
 
-const POLICY_PATH = fileURLToPath(new URL("../data/policy.json", import.meta.url));
+const POLICY_PATH = dataPath("policy.json");
 const DEFAULT_ANOMALY = { burstAttempts: 10, burstWindowSeconds: 10 };
 
 function anomalyConfig() {

@@ -5,7 +5,7 @@
 // signatures, per-chain balances, chain allowlists), runaway-burst auto-freeze
 // + the manual kill switch, the stats endpoint, and the MCP server over real
 // stdio JSON-RPC — no mocking.
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { createServer, request as httpRequest } from "node:http";
 import { verifyMessage } from "viem";
 import { generatePrivateKey, privateKeyToAccount } from "viem/accounts";
@@ -14,6 +14,9 @@ import { writeFileSync, readFileSync, readdirSync, existsSync, unlinkSync } from
 import { fileURLToPath } from "node:url";
 import { RAILS, getRail } from "../rails/index.js";
 import { createHmac } from "node:crypto";
+import { mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { checkPolicy } from "../client/policy.js";
 import { SpendVeto, SpendVetoDenialError } from "../sdk/index.js";
 import { evaluateUpiMandate } from "../server/upi.js";
@@ -109,7 +112,7 @@ class McpStdio {
 }
 
 // Fresh state for a deterministic run.
-for (const f of ["data/ledger.json", "data/balances.json", "data/delegations.json", "data/children.json", "data/freezes.json", "data/waitlist.json", "data/tools.json", "data/agents.json", "data/shadow-policy.json", "data/shadow-log.json", "data/api-keys.json", "data/consents.json", "data/upto.json", "data/authcapture.json"]) {
+for (const f of ["data/ledger.json", "data/balances.json", "data/delegations.json", "data/children.json", "data/freezes.json", "data/waitlist.json", "data/tools.json", "data/agents.json", "data/shadow-policy.json", "data/shadow-log.json", "data/api-keys.json", "data/consents.json", "data/upto.json", "data/authcapture.json", "data/cards.json"]) {
   const p = `${ROOT}${f}`;
   if (existsSync(p)) unlinkSync(p);
 }
@@ -150,7 +153,23 @@ writeFileSync(`${ROOT}data/policy.json`, JSON.stringify(LOOSE_POLICY, null, 2));
 // value straight through while an explicit "" does not.
 const server = spawn("node", ["server/index.js"], {
   cwd: ROOT,
-  env: { ...process.env, SPENDVETO_MODE: "simulate", WORLD_APP_ID: "", WORLD_RP_ID: "", WORLD_RP_SIGNING_KEY: "" },
+  env: {
+    ...process.env,
+    SPENDVETO_MODE: "simulate",
+    WORLD_APP_ID: "",
+    WORLD_RP_ID: "",
+    WORLD_RP_SIGNING_KEY: "",
+    // LLM spend guard → a local mock provider (never a real model API), and a
+    // server-side team key that exists only in this test run.
+    SPENDVETO_ANTHROPIC_UPSTREAM: "http://localhost:8497",
+    SPENDVETO_OPENAI_UPSTREAM: "http://localhost:8497",
+    SPENDVETO_ANTHROPIC_KEY: "sk-ant-verify-server-only-key",
+    SPENDVETO_OPENAI_KEY: "",
+    // Card authorization webhooks (server/cards.js), with test-only secrets.
+    STRIPE_ISSUING_WEBHOOK_SECRET: "whsec_verify_stripe_secret",
+    LITHIC_ASA_SECRET: "whsec_" + Buffer.from("verify-lithic-asa-secret-key").toString("base64"),
+    SPENDVETO_DATA_DIR: "",
+  },
   stdio: ["ignore", "pipe", "pipe"],
 });
 let serverOutput = "";
@@ -2733,6 +2752,362 @@ try {
       acReclaimable.reclaimableUSD === 0.25 && acReclaimable.count === 1 && acReclaimed.body.recoveredUSD === 0.25 && acReclaimableAfter.reclaimableUSD === 0,
     `late=${acLateCapture.body.code} reclaimable=${acReclaimable.reclaimableUSD} holds=${acStrandHolds.authCaptureUSD} after=${acReclaimableAfter.reclaimableUSD}`
   );
+
+  // --- LLM spend guard: a budget gateway any agent uses by changing one env var ---
+  // server/llmguard.js on the main server's own port. The provider behind it
+  // is a local mock speaking the real wire formats (Anthropic Messages JSON +
+  // SSE, OpenAI Chat Completions + Responses SSE) — never a real model API.
+  const llmSeen = [];
+  const LLM_USAGE_A = { input_tokens: 1200, cache_read_input_tokens: 3000, cache_creation_input_tokens: 500, output_tokens: 0 };
+  const llmMock = createServer((req, res) => {
+    let body = "";
+    req.on("data", (d) => (body += d));
+    req.on("end", async () => {
+      let json = {};
+      try { json = JSON.parse(body || "{}"); } catch {}
+      llmSeen.push({ url: req.url, headers: req.headers, body, json });
+      if (req.url.startsWith("/v1/messages/count_tokens")) { res.writeHead(200, { "content-type": "application/json" }); return res.end(JSON.stringify({ input_tokens: 42 })); }
+      if (req.url.startsWith("/v1/messages")) {
+        if (json.model === "fail-model") { res.writeHead(529, { "content-type": "application/json", "x-should-retry": "true" }); return res.end(JSON.stringify({ type: "error", error: { type: "overloaded_error", message: "Overloaded" } })); }
+        if (json.model === "slow-model") await sleep(1500);
+        if (json.stream) {
+          res.writeHead(200, { "content-type": "text/event-stream", "anthropic-ratelimit-unified-status": "allowed" });
+          const ev = (type, data) => res.write(`event: ${type}\ndata: ${JSON.stringify({ type, ...data })}\n\n`);
+          ev("message_start", { message: { id: "msg_1", type: "message", role: "assistant", model: json.model, usage: { ...LLM_USAGE_A, output_tokens: 1 } } });
+          ev("ping", {});
+          ev("content_block_start", { index: 0, content_block: { type: "text", text: "" } });
+          ev("content_block_delta", { index: 0, delta: { type: "text_delta", text: "Hello" } });
+          ev("content_block_stop", { index: 0 });
+          ev("message_delta", { delta: { stop_reason: "end_turn" }, usage: { output_tokens: 800 } });
+          ev("message_stop", {});
+          return res.end();
+        }
+        res.writeHead(200, { "content-type": "application/json" });
+        return res.end(JSON.stringify({ id: "msg_2", type: "message", role: "assistant", model: json.model, content: [{ type: "text", text: "Hi" }], stop_reason: "end_turn", usage: { ...LLM_USAGE_A, output_tokens: 400 } }));
+      }
+      if (req.url.startsWith("/v1/chat/completions")) {
+        const usage = { prompt_tokens: 2000, completion_tokens: 500, prompt_tokens_details: { cached_tokens: 1000 } };
+        res.writeHead(200, { "content-type": "text/event-stream" });
+        res.write(`data: ${JSON.stringify({ id: "c1", choices: [{ index: 0, delta: { content: "Hi" } }] })}\n\n`);
+        if (json.stream_options?.include_usage) res.write(`data: ${JSON.stringify({ id: "c1", choices: [], usage })}\n\n`);
+        res.write("data: [DONE]\n\n");
+        return res.end();
+      }
+      if (req.url.startsWith("/v1/responses")) {
+        res.writeHead(200, { "content-type": "text/event-stream" });
+        res.write(`event: response.completed\ndata: ${JSON.stringify({ type: "response.completed", response: { id: "r1", usage: { input_tokens: 3000, output_tokens: 700, input_tokens_details: { cached_tokens: 2000 } } } })}\n\n`);
+        return res.end();
+      }
+      res.writeHead(404);
+      res.end();
+    });
+  });
+  llmMock.listen(8497);
+  // Generous limits for the plumbing checks; each enforcement check below
+  // tightens exactly the limit it tests.
+  const LLM_BASE_POLICY = { ...LOOSE_POLICY, llm: { dailyBudgetUSD: 100, hourlyBudgetUSD: 100, maxRequestUSD: 50, maxRequestsPerMinute: 1000, loop: { enabled: true, threshold: 3, windowSeconds: 120 } } };
+  writeFileSync(`${ROOT}data/policy.json`, JSON.stringify(LLM_BASE_POLICY, null, 2));
+  const llmLedger = async () => (await fetch(`${BASE}/api/ledger`).then((r) => r.json())).entries.filter((e) => e.category === "llm");
+  const anthropicCall = (body, extra = {}, path = "/v1/messages?beta=true") =>
+    fetch(`${BASE}${path}`, { method: "POST", headers: { "content-type": "application/json", "x-api-key": "sk-ant-client-key-never-stored", "anthropic-version": "2023-06-01", "anthropic-beta": "context-1m-2025-08-07", "x-claude-code-session-id": "verify-session-1", ...extra }, body: JSON.stringify(body) });
+
+  const streamBody = { model: "claude-opus-5-5", max_tokens: 1024, stream: true, messages: [{ role: "user", content: "hello" }] };
+  const sres = await anthropicCall(streamBody, { "x-spendveto-agent": "stream-bot" });
+  const sText = await sres.text();
+  const sFwd = llmSeen[llmSeen.length - 1];
+  check(
+    "the guard relays an Anthropic stream event by event (pings included) and forwards the body byte-for-byte with every anthropic-* header and the ?beta=true query intact",
+    sres.status === 200 && sres.headers.get("content-type")?.includes("text/event-stream") && (sText.match(/event:/g) || []).length === 7 && sText.includes("event: ping") &&
+      sres.headers.get("anthropic-ratelimit-unified-status") === "allowed" && sFwd.url === "/v1/messages?beta=true" && sFwd.body === JSON.stringify(streamBody) &&
+      sFwd.headers["anthropic-beta"] === "context-1m-2025-08-07" && sFwd.headers["x-api-key"] === "sk-ant-client-key-never-stored",
+    `status=${sres.status} events=${(sText.match(/event:/g) || []).length} url=${sFwd.url} identical=${sFwd.body === JSON.stringify(streamBody)}`
+  );
+  await sleep(150);
+  const sEntry = (await llmLedger()).find((e) => e.agent === "stream-bot");
+  check(
+    "the cost booked is the provider's own usage at the price sheet — input, cache reads, 5-minute cache writes and output on Opus 5.5 = $0.0239, tagged with its source and session",
+    sEntry?.status === "paid" && sEntry.amount === 0.0239 && /anthropic price sheet/.test(sEntry.priceSource || "") && sEntry.session === "verify-session-1" && sEntry.usage?.cacheWrite5m === 500,
+    JSON.stringify({ amount: sEntry?.amount, src: sEntry?.priceSource, session: sEntry?.session })
+  );
+  const jres = await anthropicCall({ model: "claude-opus-5-5", max_tokens: 512, messages: [{ role: "user", content: "hi" }] }, { "x-spendveto-agent": "json-bot" });
+  const jBody = await jres.json();
+  check(
+    "a non-streamed response carries its booked cost back to the caller in x-spendveto-cost-usd",
+    jres.status === 200 && jres.headers.get("x-spendveto-cost-usd") === "0.0159" && jBody.content?.[0]?.text === "Hi",
+    `cost=${jres.headers.get("x-spendveto-cost-usd")}`
+  );
+  const cres = await fetch(`${BASE}/v1/chat/completions`, { method: "POST", headers: { "content-type": "application/json", authorization: "Bearer sk-openai-client-never-stored", "x-spendveto-agent": "openai-bot" }, body: JSON.stringify({ model: "gpt-5", stream: true, messages: [{ role: "user", content: "x" }] }) });
+  const cText = await cres.text();
+  const cFwd = llmSeen[llmSeen.length - 1];
+  const rres = await fetch(`${BASE}/v1/responses`, { method: "POST", headers: { "content-type": "application/json", authorization: "Bearer sk-openai-client-never-stored", "x-spendveto-agent": "openai-bot" }, body: JSON.stringify({ model: "gpt-5.1", stream: true, input: "x" }) });
+  await rres.text();
+  await sleep(150);
+  const oEntries = (await llmLedger()).filter((e) => e.agent === "openai-bot");
+  check(
+    "OpenAI streams are metered too: the guard asks for include_usage, and books gpt-5 Chat Completions ($0.006375) and gpt-5.1 Responses ($0.0085) from the reported usage, cached tokens at the cached rate",
+    cFwd.json.stream_options?.include_usage === true && cText.includes('"usage"') && oEntries.map((e) => e.amount).join(",") === "0.006375,0.0085",
+    `include_usage=${cFwd.json.stream_options?.include_usage} amounts=${oEntries.map((e) => e.amount).join(",")}`
+  );
+  const ledgerDump = JSON.stringify(await fetch(`${BASE}/api/ledger`).then((r) => r.json()));
+  check(
+    "the caller's provider key passes through to the provider and is never written anywhere SpendVeto keeps",
+    !ledgerDump.includes("sk-ant-client-key-never-stored") && !ledgerDump.includes("sk-openai-client-never-stored"),
+    "ledger scanned for both client keys"
+  );
+  const llmBefore = llmSeen.length;
+  const ctRes = await fetch(`${BASE}/v1/messages/count_tokens`, { method: "POST", headers: { "content-type": "application/json", "x-api-key": "k", "anthropic-version": "2023-06-01" }, body: JSON.stringify({ model: "claude-opus-5-5", messages: [] }) });
+  const ctBody = await ctRes.json();
+  const batchRes = await fetch(`${BASE}/v1/messages/batches`, { method: "POST", headers: { "content-type": "application/json", "x-api-key": "k", "anthropic-version": "2023-06-01" }, body: JSON.stringify({ requests: [] }) });
+  const batchBody = await batchRes.json();
+  check(
+    "free endpoints (count_tokens) pass straight through; an endpoint the guard can't meter (Message Batches) is refused rather than passed through ungoverned",
+    ctRes.status === 200 && ctBody.input_tokens === 42 && batchRes.status === 501 && batchBody.spendveto?.code === "llm_endpoint_not_governed" && llmSeen.length === llmBefore + 1,
+    `count_tokens=${ctRes.status} batches=${batchRes.status} upstreamCalls=${llmSeen.length - llmBefore}`
+  );
+  const failRes = await anthropicCall({ model: "fail-model", max_tokens: 10, messages: [{ role: "user", content: "x" }] }, { "x-spendveto-agent": "fail-bot" });
+  const failText = await failRes.text();
+  await sleep(100);
+  const failEntry = (await llmLedger()).find((e) => e.agent === "fail-bot");
+  check(
+    "an upstream error reaches the client unmodified — status, body and x-should-retry — and books $0 as failed",
+    failRes.status === 529 && failRes.headers.get("x-should-retry") === "true" && failText === JSON.stringify({ type: "error", error: { type: "overloaded_error", message: "Overloaded" } }) && failEntry?.status === "failed" && failEntry.amount === 0,
+    `status=${failRes.status} entry=${failEntry?.status}:${failEntry?.amount}`
+  );
+
+  // Enforcement.
+  writeFileSync(`${ROOT}data/policy.json`, JSON.stringify({ ...LLM_BASE_POLICY, llm: { ...LLM_BASE_POLICY.llm, dailyBudgetUSD: 0.04 } }, null, 2));
+  const budgetStatuses = [];
+  let budgetDenial = null;
+  const budgetUpstreamBefore = llmSeen.length;
+  for (let i = 0; i < 4; i++) {
+    const r = await anthropicCall({ model: "claude-opus-5-5", max_tokens: 100, messages: [{ role: "user", content: `q${i}` }] }, { "x-spendveto-agent": "budget-bot" });
+    budgetStatuses.push(r.status);
+    if (r.status !== 200) budgetDenial = { body: await r.json(), retry: r.headers.get("x-should-retry") };
+    else await r.text();
+    await sleep(60);
+  }
+  check(
+    "an exhausted daily budget refuses the next request BEFORE it reaches the provider — 402, x-should-retry: false, a machine-readable code",
+    budgetStatuses.join(",") === "200,200,200,402" && llmSeen.length - budgetUpstreamBefore === 3 && budgetDenial?.body?.spendveto?.code === "llm_daily_budget" && budgetDenial.retry === "false" && budgetDenial.body.type === "error",
+    `statuses=${budgetStatuses.join(",")} upstream=${llmSeen.length - budgetUpstreamBefore} code=${budgetDenial?.body?.spendveto?.code}`
+  );
+  writeFileSync(`${ROOT}data/policy.json`, JSON.stringify({ ...LLM_BASE_POLICY, llm: { ...LLM_BASE_POLICY.llm, maxRequestUSD: 1 } }, null, 2));
+  const capRes = await anthropicCall({ model: "claude-fable-5-1", max_tokens: 64000, messages: [{ role: "user", content: "x".repeat(60000) }] }, { "x-spendveto-agent": "cap-bot" });
+  const capBody = await capRes.json();
+  check(
+    "a single request whose worst case exceeds maxRequestUSD is refused on its estimate — Fable 5.1 with 60K characters of context and 64K max_tokens",
+    capRes.status === 402 && capBody.spendveto?.code === "llm_request_cap",
+    `${capRes.status} ${capBody.spendveto?.code}`
+  );
+  writeFileSync(`${ROOT}data/policy.json`, JSON.stringify(LLM_BASE_POLICY, null, 2));
+  const loopTurn = (n) => [
+    { role: "user", content: "make the tests pass" },
+    { role: "assistant", content: [{ type: "tool_use", id: `toolu_${n}`, name: "bash", input: { command: "npm test" } }] },
+    { role: "user", content: [{ type: "tool_result", tool_use_id: `toolu_${n}`, content: "1 failing", ...(n % 2 ? { cache_control: { type: "ephemeral" } } : {}) }] },
+  ];
+  const loopCodes = [];
+  for (let i = 0; i < 5; i++) {
+    const r = await anthropicCall({ model: "claude-haiku-4-5", max_tokens: 50, messages: loopTurn(i) }, { "x-spendveto-agent": "loop-bot" });
+    loopCodes.push(r.status === 200 ? (await r.text(), "ok") : (await r.json()).spendveto?.code);
+    await sleep(60);
+  }
+  const loopFreezes = (await fetch(`${BASE}/api/freezes`).then((r) => r.json())).freezes.filter((f) => f.source === "llm-loop" && !f.unfrozen);
+  check(
+    "an agent loop — the same tool call returning the same result — freezes the agent on the next repeat, despite changing tool ids and moving cache markers",
+    loopCodes.join(",") === "ok,ok,ok,llm_loop_detected,frozen" && loopFreezes.length === 1,
+    `codes=${loopCodes.join(",")} freezes=${loopFreezes.length}`
+  );
+  const retryCodes = [];
+  for (let i = 0; i < 5; i++) {
+    const r = await anthropicCall({ model: "fail-model", max_tokens: 10, messages: loopTurn(0) }, { "x-spendveto-agent": "retry-bot" });
+    retryCodes.push(r.status);
+    await r.text();
+  }
+  check(
+    "retrying a FAILED request is not a loop: five identical 529 retries pass through to the provider and freeze nothing",
+    retryCodes.every((c) => c === 529) && (await fetch(`${BASE}/api/freezes`).then((r) => r.json())).freezes.filter((f) => f.source === "llm-loop" && !f.unfrozen).length === 1,
+    `codes=${retryCodes.join(",")}`
+  );
+  writeFileSync(`${ROOT}data/policy.json`, JSON.stringify({ ...LLM_BASE_POLICY, llm: { ...LLM_BASE_POLICY.llm, maxRequestsPerMinute: 2 } }, null, 2));
+  const rateCodes = [];
+  let rateHeaders = null;
+  for (let i = 0; i < 3; i++) {
+    const r = await anthropicCall({ model: "claude-haiku-4-5", max_tokens: 20, messages: [{ role: "user", content: `r${i}` }] }, { "x-spendveto-agent": "rate-bot" });
+    rateCodes.push(r.status);
+    if (r.status === 429) rateHeaders = { retryAfter: r.headers.get("retry-after"), retry: r.headers.get("x-should-retry"), code: (await r.json()).spendveto?.code };
+    else await r.text();
+  }
+  check(
+    "a burst over maxRequestsPerMinute gets a 429 with an integer retry-after the client's own retry logic honours",
+    rateCodes.join(",") === "200,200,429" && /^\d+$/.test(rateHeaders?.retryAfter || "") && rateHeaders.retry === "true" && rateHeaders.code === "llm_rate_limited",
+    `codes=${rateCodes.join(",")} ${JSON.stringify(rateHeaders)}`
+  );
+  writeFileSync(`${ROOT}data/policy.json`, JSON.stringify({ ...LLM_BASE_POLICY, llm: { ...LLM_BASE_POLICY.llm, dailyBudgetUSD: 0.001, mode: "observe" } }, null, 2));
+  const obsRes = await anthropicCall({ model: "claude-opus-5-5", max_tokens: 100, messages: [{ role: "user", content: "observe" }] }, { "x-spendveto-agent": "observe-bot" });
+  await obsRes.text();
+  await sleep(100);
+  const obsEntry = (await llmLedger()).filter((e) => e.agent === "observe-bot").pop();
+  check(
+    "observe mode lets an over-budget request through and records exactly what enforce mode would have done",
+    obsRes.status === 200 && obsEntry?.status === "paid" && obsEntry.wouldBlock?.code === "llm_daily_budget",
+    `status=${obsRes.status} wouldBlock=${obsEntry?.wouldBlock?.code}`
+  );
+  writeFileSync(`${ROOT}data/policy.json`, JSON.stringify(LLM_BASE_POLICY, null, 2));
+  const unkRes = await anthropicCall({ model: "claude-future-9", max_tokens: 100, messages: [{ role: "user", content: "x" }] }, { "x-spendveto-agent": "unknown-bot" });
+  await unkRes.json();
+  await sleep(100);
+  const unkEntry = (await llmLedger()).find((e) => e.agent === "unknown-bot");
+  const { canonicalModel, lookupPrice: llmLookup, costOf: llmCost } = await import("../server/llm-pricing.js");
+  check(
+    "a model no price sheet knows is booked at the provider's flagship rate and flagged — never priced by a guessed prefix (gpt-5.6-terra is not gpt-5)",
+    unkEntry?.unknownModel === true && unkEntry.priceSource === "unknown-model-fallback" && unkEntry.amount === 0.039 &&
+      llmLookup("openai", "gpt-5.6-terra").unknown === true && canonicalModel("claude-haiku-4-5-20251001") === "claude-haiku-4-5" && llmLookup("openai", "gpt-4o-2024-08-06").model === "gpt-4o",
+    `amount=${unkEntry?.amount} src=${unkEntry?.priceSource}`
+  );
+  check(
+    "provider pricing details are honoured: Haiku 5.5 bills a >100K-token prompt at its long-context rate, a 1-hour cache write at 2x input, an upstream-reported cost (OpenRouter) wins over the sheet",
+    llmCost("anthropic", "claude-haiku-5-5", { input_tokens: 150000, output_tokens: 1000 }).usd === 0.0775 &&
+      llmCost("anthropic", "claude-sonnet-5-5", { input_tokens: 0, output_tokens: 0, cache_creation: { ephemeral_5m_input_tokens: 0, ephemeral_1h_input_tokens: 1000000 } }).usd === 4 &&
+      llmCost("openai", "gpt-5", { prompt_tokens: 10, completion_tokens: 10, cost: 0.123 }).usd === 0.123,
+    "haiku long / 1h cache write / reported cost"
+  );
+  // In-flight holds: a slow request's estimate is visible in the same holds
+  // number every payment check reads.
+  const slowPromise = anthropicCall({ model: "slow-model", max_tokens: 100, messages: [{ role: "user", content: "slow" }] }, { "x-spendveto-agent": "slow-bot" }).then((r) => r.text());
+  await sleep(500);
+  const { pseudoAddress: llmPseudo } = await import("../server/llmguard.js");
+  const slowHolds = await fetch(`${BASE}/api/upto/holds/${llmPseudo("label:slow-bot")}`).then((r) => r.json());
+  await slowPromise;
+  await sleep(100);
+  const slowAfter = await fetch(`${BASE}/api/upto/holds/${llmPseudo("label:slow-bot")}`).then((r) => r.json());
+  check(
+    "a model call in flight reserves its estimate in the shared holds number payments check, and releases it when the response finishes",
+    slowHolds.llmUSD > 0 && slowHolds.heldUSD === slowHolds.llmUSD && slowAfter.llmUSD === 0,
+    `during=${slowHolds.llmUSD} after=${slowAfter.llmUSD}`
+  );
+  // Team mode + unified budgets: an agent token bound to a delegated child
+  // wallet spends tokens against the SAME cascading cap as its payments.
+  const childGrant = await fetch(`${BASE}/api/delegations/wallet`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ capUSD: 0.03, label: "llm-delegate" }) }).then((r) => r.json());
+  const teamAgent = await fetch(`${PROXY}/proxy/agents`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ label: "llm-delegate-agent", child: "llm-delegate" }) }).then((r) => r.json());
+  const teamBefore = llmSeen.length;
+  const teamCodes = [];
+  for (let i = 0; i < 3; i++) {
+    const r = await fetch(`${BASE}/v1/messages`, { method: "POST", headers: { "content-type": "application/json", "x-api-key": teamAgent.token, "anthropic-version": "2023-06-01" }, body: JSON.stringify({ model: "claude-opus-5-5", max_tokens: 100, messages: [{ role: "user", content: `t${i}` }] }) });
+    teamCodes.push(r.status === 200 ? (await r.text(), "ok") : (await r.json()).spendveto?.code);
+    await sleep(80);
+  }
+  const teamFwd = llmSeen.slice(teamBefore);
+  check(
+    "team mode: an agent authenticates with its tg_ token, the guard swaps in a provider key only it holds, and the token never reaches the provider",
+    teamFwd.length >= 1 && teamFwd.every((x) => x.headers["x-api-key"] === "sk-ant-verify-server-only-key" && !JSON.stringify(x.headers).includes(teamAgent.token)),
+    `forwarded=${teamFwd.length} key=${teamFwd[0]?.headers["x-api-key"]?.slice(0, 12)}`
+  );
+  check(
+    "one budget across rails: the delegated wallet's $0.03 cap stops its MODEL spend with the same delegation_cap code that stops its payments",
+    teamCodes.join(",") === "ok,ok,delegation_cap" && childGrant.childAddress,
+    `codes=${teamCodes.join(",")}`
+  );
+  const llmSummary = await fetch(`${BASE}/api/llm/summary`).then((r) => r.json());
+  const loopRow = llmSummary.identities.find((i) => i.label === "loop-bot");
+  check(
+    "the AI-spend summary the Console and CLI read agrees with the ledger: per-agent spend, blocks, and the loop freeze",
+    llmSummary.totals.requestsDay >= 10 && llmSummary.totals.blockedDay >= 5 && llmSummary.totals.loopFreezesDay === 1 && loopRow?.frozen?.source === "llm-loop" &&
+      llmSummary.identities.find((i) => i.label === "stream-bot")?.spentDayUSD === 0.0239,
+    JSON.stringify(llmSummary.totals)
+  );
+  llmMock.close();
+
+  // --- Card authorization governance: Stripe Issuing + Lithic ASA (server/cards.js) ---
+  const STRIPE_SECRET = "whsec_verify_stripe_secret";
+  const LITHIC_SECRET = "whsec_" + Buffer.from("verify-lithic-asa-secret-key").toString("base64");
+  const stripeAuthEvent = (cents, mcc, cardId = "ic_verify_card") => ({ id: `evt_${cents}_${mcc}`, type: "issuing_authorization.request", data: { object: { id: `iauth_${Math.random().toString(36).slice(2)}`, object: "issuing_authorization", approved: false, amount: 0, currency: "usd", status: "pending", pending_request: { amount: cents, currency: "usd", merchant_amount: cents, merchant_currency: "usd", is_amount_controllable: false }, merchant_data: { category: "computer_software_stores", category_code: mcc, name: "SaaS Co", network_id: "1" }, card: { id: cardId, last4: "4242", metadata: {} } } } });
+  const signStripe = (body, t = Math.floor(Date.now() / 1000), secret = STRIPE_SECRET) => `t=${t},v1=${createHmac("sha256", secret).update(`${t}.${body}`).digest("hex")}`;
+  const stripePost = async (evt, sig) => {
+    const body = JSON.stringify(evt);
+    const r = await fetch(`${BASE}/api/cards/stripe/authorization`, { method: "POST", headers: { "content-type": "application/json", "stripe-signature": sig ?? signStripe(body) }, body });
+    return { status: r.status, version: r.headers.get("stripe-version"), body: await r.json() };
+  };
+  const lithicPost = async (asa) => {
+    const body = JSON.stringify(asa);
+    const id = `msg_${Math.random().toString(36).slice(2)}`;
+    const ts = Math.floor(Date.now() / 1000);
+    const sig = createHmac("sha256", Buffer.from(LITHIC_SECRET.replace(/^whsec_/, ""), "base64")).update(`${id}.${ts}.${body}`).digest("base64");
+    const r = await fetch(`${BASE}/api/cards/lithic/asa`, { method: "POST", headers: { "content-type": "application/json", "webhook-id": id, "webhook-timestamp": String(ts), "webhook-signature": `v1,${sig}` }, body });
+    return { status: r.status, body: await r.json() };
+  };
+  const stripeOk = await stripePost(stripeAuthEvent(1999, "5734"));
+  const cardDecisions = async () => (await fetch(`${BASE}/api/cards/decisions`).then((r) => r.json())).decisions;
+  const okEntry = (await cardDecisions()).find((d) => d.cardId === "ic_verify_card");
+  check(
+    "a signed Stripe Issuing authorization is answered synchronously in Stripe's format — 200, Stripe-Version, { approved: true } — and booked as committed card spend",
+    stripeOk.status === 200 && stripeOk.version && stripeOk.body.approved === true && okEntry?.status === "paid" && okEntry.amount === 19.99 && okEntry.chain === "card",
+    JSON.stringify({ status: stripeOk.status, v: stripeOk.version, approved: stripeOk.body.approved, amount: okEntry?.amount })
+  );
+  const cardTamperedSig = await stripePost(stripeAuthEvent(100, "5734"), signStripe("tampered body"));
+  const cardReplayBody = JSON.stringify(stripeAuthEvent(100, "5734"));
+  const cardReplaySig = await stripePost(stripeAuthEvent(100, "5734"), signStripe(cardReplayBody, Math.floor(Date.now() / 1000) - 3600));
+  check(
+    "a Stripe authorization with a forged signature, or a genuine one replayed an hour later, is rejected before any decision is made",
+    cardTamperedSig.status === 400 && /mismatch/.test(cardTamperedSig.body.error) && cardReplaySig.status === 400 && /tolerance/.test(cardReplaySig.body.error),
+    `${cardTamperedSig.status}:${cardTamperedSig.body.error} / ${cardReplaySig.status}`
+  );
+  const cardGambling = await stripePost(stripeAuthEvent(500, "7995"));
+  const cardOverCap = await stripePost(stripeAuthEvent(60000, "5734"));
+  check(
+    "card policy declines by merchant category and by size: gambling (MCC 7995) and a $600 authorization over the $500 cap, each with its reason in the Stripe metadata",
+    cardGambling.body.approved === false && cardGambling.body.metadata?.spendveto_code === "card_mcc_blocked" && cardOverCap.body.approved === false && cardOverCap.body.metadata?.spendveto_code === "card_authorization_cap",
+    `${cardGambling.body.metadata?.spendveto_code} / ${cardOverCap.body.metadata?.spendveto_code}`
+  );
+  const lithicOk = await lithicPost({ token: "txn_verify_1", card: { token: "card_verify_lithic", last_four: "1111" }, amounts: { cardholder: { amount: 1250, currency: "USD" } }, merchant: { mcc: "5734", descriptor: "SAAS CO", state: "NY" } });
+  const lithicQuasiCash = await lithicPost({ token: "txn_verify_2", card: { token: "card_verify_lithic" }, amounts: { cardholder: { amount: 1250, currency: "USD" } }, merchant: { mcc: "6051", descriptor: "CRYPTO EXCH" } });
+  const lithicEuro = await lithicPost({ token: "txn_verify_3", card: { token: "card_verify_lithic" }, amounts: { cardholder: { amount: 1250, currency: "EUR" } }, merchant: { mcc: "5734" } });
+  check(
+    "Lithic Auth Stream Access gets its own format and decline codes: APPROVED with the transaction token, UNAUTHORIZED_MERCHANT for quasi-cash, and a euro authorization declined rather than guessed into dollars",
+    lithicOk.status === 200 && lithicOk.body.result === "APPROVED" && lithicOk.body.token === "txn_verify_1" && lithicQuasiCash.body.result === "UNAUTHORIZED_MERCHANT" && lithicEuro.body.result === "UNAUTHORIZED_MERCHANT",
+    `${lithicOk.body.result} / ${lithicQuasiCash.body.result} / ${lithicEuro.body.result}`
+  );
+  await fetch(`${BASE}/api/freezes`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ address: okEntry.address, reason: "verify: kill switch on a card" }) });
+  const frozenStripe = await stripePost(stripeAuthEvent(100, "5734"));
+  const lithicCardAddr = (await cardDecisions()).find((d) => d.cardId === "card_verify_lithic").address;
+  await fetch(`${BASE}/api/freezes`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ address: lithicCardAddr, reason: "verify: kill switch on a card" }) });
+  const frozenLithic = await lithicPost({ token: "txn_verify_4", card: { token: "card_verify_lithic" }, amounts: { cardholder: { amount: 100, currency: "USD" } }, merchant: { mcc: "5734" } });
+  check(
+    "the kill switch reaches the card rail: a frozen card is declined on Stripe and paused (CARD_PAUSED) on Lithic",
+    frozenStripe.body.approved === false && frozenStripe.body.metadata?.spendveto_code === "frozen" && frozenLithic.body.result === "CARD_PAUSED",
+    `${frozenStripe.body.metadata?.spendveto_code} / ${frozenLithic.body.result}`
+  );
+  const cardReg = await fetch(`${BASE}/api/cards`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ cardId: "ic_delegate_card", label: "llm-delegate card", child: "llm-delegate" }) });
+  const delegateCard = await stripePost(stripeAuthEvent(500, "5734", "ic_delegate_card"));
+  check(
+    "a card registered to a delegated wallet shares that wallet's cascading cap: after its model spend, a $5 card authorization is declined with delegation_cap",
+    cardReg.status === 201 && delegateCard.body.approved === false && delegateCard.body.metadata?.spendveto_code === "delegation_cap",
+    `reg=${cardReg.status} code=${delegateCard.body.metadata?.spendveto_code}`
+  );
+
+  // --- The spendveto CLI + a relocatable data directory ---
+  const cliConnect = spawnSync(process.execPath, ["bin/spendveto.mjs", "connect"], { cwd: ROOT, env: { ...process.env, PORT: "8402", HOST: "127.0.0.1" }, encoding: "utf8" });
+  check(
+    "`spendveto connect` prints the one-line setup for Claude Code, Codex and the OpenAI/Anthropic SDKs",
+    cliConnect.status === 0 && cliConnect.stdout.includes("ANTHROPIC_BASE_URL=http://127.0.0.1:8402 claude") && cliConnect.stdout.includes("OPENAI_BASE_URL=http://127.0.0.1:8402/v1 codex"),
+    cliConnect.stdout.split("\n").filter(Boolean)[0] || cliConnect.stderr
+  );
+  const tmpData = mkdtempSync(join(tmpdir(), "spendveto-verify-"));
+  const cliBudget = spawnSync(process.execPath, ["bin/spendveto.mjs", "budget", "7"], { cwd: ROOT, env: { ...process.env, PORT: "8391", SPENDVETO_DATA_DIR: tmpData }, encoding: "utf8" });
+  const relocated = spawn("node", ["server/index.js"], { cwd: ROOT, env: { ...process.env, PORT: "8391", SPENDVETO_MODE: "simulate", SPENDVETO_DATA_DIR: tmpData, SPENDVETO_ANTHROPIC_UPSTREAM: "http://localhost:9" }, stdio: ["ignore", "pipe", "pipe"] });
+  for (let i = 0; i < 30; i++) {
+    await sleep(200);
+    try { if ((await fetch("http://localhost:8391/api/llm/settings")).ok) break; } catch {}
+  }
+  const relocatedSettings = await fetch("http://localhost:8391/api/llm/settings").then((r) => r.json()).catch(() => ({}));
+  await fetch("http://localhost:8391/api/freezes", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ address: "0x00000000000000000000000000000000000000aa", reason: "verify relocation" }) }).catch(() => {});
+  relocated.kill();
+  await sleep(200);
+  check(
+    "SPENDVETO_DATA_DIR relocates every runtime file: `spendveto budget 7` with no server running writes the policy there, and a server booted on it reads that budget and keeps its state there — an installed copy never writes into its own package",
+    cliBudget.status === 0 && JSON.parse(readFileSync(join(tmpData, "policy.json"), "utf8")).llm?.dailyBudgetUSD === 7 && relocatedSettings.settings?.dailyBudgetUSD === 7 && existsSync(join(tmpData, "freezes.json")),
+    `cli=${cliBudget.status} served=${relocatedSettings.settings?.dailyBudgetUSD} freezes=${existsSync(join(tmpData, "freezes.json"))}`
+  );
+  writeFileSync(`${ROOT}data/policy.json`, JSON.stringify(LOOSE_POLICY, null, 2));
 
   // --- Multi-chain live settlement wiring (facilitator-adaptive) ---
   // In testnet mode the gate asks its facilitator (GET /supported) what it can

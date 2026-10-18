@@ -4,15 +4,15 @@
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <meta name="color-scheme" content="dark" />
-<title>AI Spend Quickstart — Hard Budgets for Agent LLM Calls | SpendVeto</title>
-<meta name="description" content="Give an AI agent a hard dollar budget for LLM calls and watch the next call get refused before it reaches the model. One command, JavaScript and Python." />
+<title>Cap Your AI Agent's Spend in One Line — Claude Code, Codex, OpenAI &amp; Anthropic SDKs | SpendVeto</title>
+<meta name="description" content="A budget, loop detection and a kill switch in front of every model call your agents make. Point Claude Code, Codex or any OpenAI/Anthropic SDK at SpendVeto with one environment variable — your key passes through, never stored. Free and open source." />
 <link rel="canonical" href="https://spendveto.com/ai-spend.html" />
 <meta name="robots" content="index, follow, max-image-preview:large, max-snippet:-1" />
 <meta property="og:type" content="website" />
 <meta property="og:site_name" content="SpendVeto" />
 <meta property="og:url" content="https://spendveto.com/ai-spend.html" />
-<meta property="og:title" content="AI Spend Quickstart — Hard Budgets for Agent LLM Calls | SpendVeto" />
-<meta property="og:description" content="Give an AI agent a hard dollar budget for LLM calls and watch the next call get refused before it reaches the model. One command, JavaScript and Python." />
+<meta property="og:title" content="Cap your AI agent's spend in one line | SpendVeto" />
+<meta property="og:description" content="A budget, loop detection and a kill switch in front of every model call — Claude Code, Codex, OpenAI and Anthropic SDKs. Free and open source." />
 <meta property="og:image" content="https://spendveto.com/assets/generated/og-default.png" />
 <meta name="twitter:card" content="summary_large_image" />
 <link rel="icon" href="./assets/favicon.svg" />
@@ -66,51 +66,48 @@
 </nav>
 
 <div class="pg">
-<h1>Give every agent a hard dollar budget for LLM calls.</h1>
-<p class="lede">An agent in a loop can burn through an API budget in minutes. SpendVeto sits between the agent and the model: it estimates each call's worst-case cost, checks it against the agent's budget, and refuses <em>before</em> the model is called — with a machine-readable reason the agent can act on. One command shows it.</p>
+<h1>Cap your AI agent's spend in one line.</h1>
+<p class="lede">An agent in a loop can burn real money before anyone looks — one developer reported ~$6,000 of Claude usage gone overnight from a single command. SpendVeto sits between your agents and the model provider. Every request is checked against a budget <em>before</em> it reaches the model, loops freeze the agent, and the actual cost is booked from the provider's own usage numbers. Your API key passes straight through and is never stored.</p>
 
-<h2>Try it — one command</h2>
-<pre class="term">git clone https://github.com/revanthrajeev/spendveto &amp;&amp; cd spendveto &amp;&amp; npm install
-npm run quickstart:ai</pre>
-<p>It boots the server and proxy locally, gives a fresh agent a $0.0015 budget, and lets it call until the budget is gone. A real run:</p>
-<pre class="term">  call  1  ALLOWED  $0.000209   running total $0.000209
-  call  2  ALLOWED  $0.000209   running total $0.000418
-  ...
-  call  6  ALLOWED  $0.000209   running total $0.001254
-  call  7  BLOCKED  [delegation_cap] remaining budget on this line is $0.0002 — pick a cheaper
-                    tool that fits, or request a top-up grant from "quickstart-..."
-  call  8  BLOCKED  [delegation_cap] ...
+<h2>1 · Start it</h2>
+<pre class="term">npx github:revanthrajeev/spendveto
+#   Console   http://127.0.0.1:8402
+#   Budget    $25.00/day · $10.00/hour · $5.00/request per agent</pre>
+<p class="src">Or from a clone: <code>git clone https://github.com/revanthrajeev/spendveto &amp;&amp; cd spendveto &amp;&amp; npm install &amp;&amp; npm start</code>. Node 20.18+. State lives in <code>~/.spendveto</code>.</p>
 
-  6 calls allowed ($0.001254 of $0.0015), 2 refused before reaching the model.
-  audit ledger hash-chain intact: true</pre>
-<p class="src">Costs shown use the proxy's configured token rates (<code>LLM_RATE_IN_PER_M</code> / <code>LLM_RATE_OUT_PER_M</code>, default $1 per million tokens) — set them to your provider's price. With no <code>ANTHROPIC_API_KEY</code> the completions are simulated; governance and metering are real. Set the key for real model calls.</p>
+<h2>2 · Point your agent at it</h2>
+<pre class="term">ANTHROPIC_BASE_URL=http://127.0.0.1:8402 claude          # Claude Code
+OPENAI_BASE_URL=http://127.0.0.1:8402/v1 codex           # Codex CLI
+OPENAI_BASE_URL=http://127.0.0.1:8402/v1                 # OpenAI SDKs, Cursor, LangChain, Aider…
+ANTHROPIC_BASE_URL=http://127.0.0.1:8402                 # Anthropic SDKs</pre>
+<p>That's it. Set a different budget with <code>spendveto budget 10</code> ($10/day), watch spend with <code>spendveto status</code>, stop an agent with <code>spendveto freeze &lt;agent&gt;</code> — or use the <a href="./console/">Console</a>'s AI-spend page.</p>
+<div class="card"><b>Checked with the real client.</b> On 2026-10-18 Claude Code v2.1.300 ran through the guard with no other configuration: it answered, and the guard booked its main request at $0.012638 — Claude Code had written its 63,180-token system prompt to the one-hour prompt cache, which bills at 2× input, and that's what the guard charged, from the provider's own usage report. (A manual check against a live account, so it isn't in the automated suite; the suite exercises the same wire format against a local mock provider.)</div>
 
-<h2>Three lines in your agent</h2>
-<div class="grid3" style="grid-template-columns:repeat(2,1fr)">
-<div><p><b>JavaScript</b></p><pre class="term">import { SpendVeto } from "spendveto-sdk";
-const sv = new SpendVeto({ agentToken });
-const reply = await sv.chat(prompt);
-// throws SpendVetoDenialError
-// once the budget is gone</pre></div>
-<div><p><b>Python</b></p><pre class="term">from spendveto import SpendVeto
-sv = SpendVeto(agent_token=token)
-reply = sv.chat(prompt)
-# raises SpendVetoDenialError
-# once the budget is gone</pre></div>
-</div>
-<p class="src">The Python client is in <code>sdk-python/</code> (standard library only; install with <code>pip install ./sdk-python</code> — a PyPI release is pending).</p>
-
-<h2>What stands between the agent and your bill</h2>
+<h2>What it stops</h2>
 <div class="grid3">
-<div class="card"><b>Per-agent budget</b><p>Nested caps down a hierarchy of agents and sub-agents. A child can never out-spend its parent's grant.</p></div>
-<div class="card"><b>Fails closed</b><p>Over a cap, over a rate limit, frozen, or an unanswered human approval: the model is never called.</p></div>
-<div class="card"><b>Self-correcting refusals</b><p>Every denial carries a <code>code</code> and a concrete fix, so the agent picks a cheaper path instead of retry-looping.</p></div>
-<div class="card"><b>Kill switch</b><p>A runaway burst auto-freezes the agent mid-loop; a human unfreezes it after review.</p></div>
-<div class="card"><b>Human approval</b><p>Calls above a threshold pause for a real approve or deny.</p></div>
-<div class="card"><b>Tamper-evident audit</b><p>Every decision lands in a hash-chained ledger you can verify and export.</p></div>
+<div class="card"><b>Budgets that hold</b><p>Per agent: daily (rolling 24h), hourly, per request (worst case, estimated before the call) and per Claude Code session. Over budget → refused before the provider sees it, with a code the agent can read.</p></div>
+<div class="card"><b>Agent loops</b><p>The same tool call returning the same result, again and again, freezes the agent until a human looks. Retries of a <em>failed</em> request don't count — that's an SDK being careful, not a loop.</p></div>
+<div class="card"><b>Kill switch</b><p>Freeze any agent from the Console or the CLI; every request it makes is refused until you unfreeze it.</p></div>
+<div class="card"><b>Bursts</b><p>A per-minute request limit answers with a proper 429 and an integer <code>retry-after</code>, so the client's own retry logic slows down instead of hammering.</p></div>
+<div class="card"><b>Expensive models</b><p>Allow or block models per policy; optionally pause any request estimated above a threshold for a human's approval.</p></div>
+<div class="card"><b>Observe first</b><p>Observe mode records exactly what it <em>would</em> have blocked and blocks nothing — try a budget on real traffic with zero risk.</p></div>
 </div>
-<div class="card warn"><b>What this is not.</b> It meters spend at the rates you configure; it does not read your provider's invoice, and it is not a replacement for provider-side hard limits — it is the agent-aware layer in front of them. Self-hosted today; a hosted, multi-tenant version is the funded milestone.</div>
-<div class="row-btns"><a class="pill pill-primary" href="https://github.com/revanthrajeev/spendveto" target="_blank" rel="noopener">Get it on GitHub →</a><a class="pill pill-ghost" href="./playground.html">Open the playground</a></div>
+
+<h2>Built for the agents you already run</h2>
+<p>It speaks the Anthropic Messages and OpenAI Chat Completions / Responses formats and follows Claude Code's gateway compatibility guide to the letter: request bodies forwarded byte-for-byte, every <code>anthropic-*</code> header passed through, streams relayed event by event (keep-alive pings included), upstream errors returned unmodified. OpenAI streams are asked for their usage so the cost is the provider's number, not a guess. Prices for current Claude and OpenAI models are built in (as of 2026-10-18) and overridable; a model it doesn't know is priced at the provider's flagship rate and flagged, never guessed low.</p>
+
+<h2>For teams</h2>
+<div class="grid3">
+<div class="card"><b>Keys stay on the server</b><p>Register an agent and give it a <code>tg_…</code> token instead of a provider key. The guard swaps in a key only it holds; revoking the token revokes access.</p></div>
+<div class="card"><b>One budget across rails</b><p>An agent bound to a delegated budget spends tokens, x402 payments and card authorizations against the <em>same</em> cascading cap.</p></div>
+<div class="card"><b>Audit-grade record</b><p>Every request — allowed, blocked or observed — lands in the same hash-chained ledger as every payment, with model, usage, price source and session.</p></div>
+</div>
+
+<div class="card warn"><b>What to know.</b> The pre-check uses an estimate (input sized from the request, output from its <code>max_tokens</code>), so the last request allowed under a budget can overshoot it by that one request's difference — the hold exists so parallel requests can't do the same. Traffic on a Claude subscription is metered at API-equivalent prices. Message Batches and other endpoints it can't meter are refused rather than passed through ungoverned. Self-hosted today; a hosted, multi-tenant version is the funded milestone.</div>
+
+<h2>Prefer an SDK?</h2>
+<p>The <code>spendveto-sdk</code> client (and its Python twin in <code>sdk-python/</code>) governs calls through SpendVeto's enforcement proxy instead — <code>npm run quickstart:ai</code> shows an agent spending a $0.0015 budget down to a refusal.</p>
+<div class="row-btns"><a class="pill pill-primary" href="https://github.com/revanthrajeev/spendveto" target="_blank" rel="noopener">Get it on GitHub →</a><a class="pill pill-ghost" href="./console/">Open the console demo</a></div>
 </div>
 
 <footer>

@@ -4,6 +4,7 @@ import { fileURLToPath } from "node:url";
 import { dirname } from "node:path";
 import { signConsent } from "./simulate.js";
 import { sendAlert } from "./alerts.js";
+import { dataPath } from "../shared-config.js";
 
 // Visa's Trusted Agent Protocol separates a Verified Agent ID from a signed
 // CONSENT record the consumer (here: the delegating parent wallet) can point
@@ -16,7 +17,7 @@ import { sendAlert } from "./alerts.js";
 // Signed with the same server key that signs settlement receipts and AP2
 // verdicts (server/simulate.js) — one key, three kinds of portable evidence.
 
-const PATH = fileURLToPath(new URL("../data/consents.json", import.meta.url));
+const PATH = dataPath("consents.json");
 
 function read() {
   if (!existsSync(PATH)) return [];

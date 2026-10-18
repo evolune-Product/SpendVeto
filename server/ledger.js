@@ -2,8 +2,9 @@ import { readFileSync, writeFileSync, existsSync, mkdirSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { dirname } from "node:path";
 import { fileURLToPath } from "node:url";
+import { DATA_DIR as STATE_DIR } from "../shared-config.js";
 
-const DATA_DIR = fileURLToPath(new URL("../data", import.meta.url));
+const DATA_DIR = STATE_DIR;
 const LEDGER_PATH = `${DATA_DIR}/ledger.json`;
 const BALANCES_PATH = `${DATA_DIR}/balances.json`;
 const STARTING_SIM_BALANCE = 5.0;

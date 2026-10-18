@@ -11,6 +11,7 @@ import { createClientHederaSigner } from "@x402/hedera";
 import { PrivateKey as HederaPrivateKey } from "@hiero-ledger/sdk";
 import { createXrplWalletSigner } from "@x402/xrpl";
 import { Wallet as XrplWallet } from "xrpl";
+import { dataPath } from "../shared-config.js";
 
 // quiet: dotenv v17 prints an injection banner to stdout by default, which
 // would corrupt the MCP stdio protocol when this module is loaded by mcp/server.js.
@@ -101,7 +102,7 @@ export function getXrplSigner() {
   return xrplSignerPromise;
 }
 
-const CHILDREN_PATH = fileURLToPath(new URL("../data/children.json", import.meta.url));
+const CHILDREN_PATH = dataPath("children.json");
 
 // Child agent wallets created by `npm run delegate`. Keys live in a gitignored
 // JSON file — acceptable for simulate-mode demo money; a real product would

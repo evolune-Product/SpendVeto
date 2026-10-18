@@ -23,7 +23,7 @@ html = html
   )
   .replace(
     '<div class="shell">',
-    '<div class="demo-banner">Demo console — real data captured from a local SpendVeto run, no server behind this page. Clicks change this tab only. <a href="/playground.html">Playground</a> · <a href="/docs.html">Run your own</a></div>\n<div class="shell">',
+    '<div class="demo-banner">Demo console — real decisions captured from a local SpendVeto run (simulate-mode payments; model traffic from a local test provider), no server behind this page. Clicks change this tab only. <a href="/playground.html">Playground</a> · <a href="/docs.html">Run your own</a></div>\n<div class="shell">',
   );
 if (!html.includes("demo-api.js") || !html.includes("demo-banner")) throw new Error("dashboard/index.html changed shape — update build-console-demo.mjs");
 writeFileSync(new URL("index.html", out), html);

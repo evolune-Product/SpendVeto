@@ -3,12 +3,13 @@ import { readFileSync, writeFileSync, existsSync, mkdirSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname } from "node:path";
 import { sendAlert } from "./alerts.js";
+import { dataPath } from "../shared-config.js";
 
 // The kill switch. A freeze stops a wallet from spending — checked by the
 // client's own policy engine on every call AND by the simulate payment gate
 // as defense in depth. Durable like delegations: a frozen runaway agent must
 // stay frozen across a server restart.
-const PATH = fileURLToPath(new URL("../data/freezes.json", import.meta.url));
+const PATH = dataPath("freezes.json");
 
 function read() {
   if (!existsSync(PATH)) return [];
@@ -41,7 +42,7 @@ export function createFreeze({ address, reason, source }) {
     id: randomUUID(),
     address,
     reason: reason || "manually frozen from the dashboard",
-    source: source === "anomaly" ? "anomaly" : "manual",
+    source: ["anomaly", "llm-loop"].includes(source) ? source : "manual",
     createdAt: new Date().toISOString(),
     unfrozen: false,
   };

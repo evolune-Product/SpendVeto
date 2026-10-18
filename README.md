@@ -1,20 +1,42 @@
 # SpendVeto
 
-**The spend-governance layer for AI agents that pay for things.** Payment rails move an agent's money; SpendVeto decides whether the agent should be allowed to move it — policy checks, human approval, delegated budget caps, and a runaway-agent kill switch, enforced *before* any payment happens.
+**Spend controls for AI agents — model tokens, payments and cards.** Model providers and payment rails move an agent's money; SpendVeto decides whether the agent should be allowed to move it — budgets, loop detection, human approval, delegated caps and a kill switch, enforced *before* anything is spent.
 
 [**Live site + playground**](https://spendveto.com) · [**Docs**](https://spendveto.com/docs.html) · Apache-2.0 · x402 + MCP native
 
-**Every claim in this README is executed before it ships.** `npm run verify` runs **402 end-to-end assertions** from a clean clone — real secp256k1 keypairs, real ECDSA verification, a real MCP stdio JSON-RPC session, and a synthetic runaway agent frozen mid-burst. If a claim isn't a test, it doesn't ship; features that can't work locally yet are declared slots that refuse honestly, never stubs that pretend.
+**Every claim in this README is executed before it ships.** `npm run verify` runs **429 end-to-end assertions** from a clean clone — real secp256k1 keypairs, real ECDSA verification, a real MCP stdio JSON-RPC session, and a synthetic runaway agent frozen mid-burst. If a claim isn't a test, it doesn't ship; features that can't work locally yet are declared slots that refuse honestly, never stubs that pretend.
 
 What *isn't* true yet is stated just as plainly: no external security audit, no customers. Settlement is testnet and simulate only, by default, for every chain. XRPL mainnet settlement (real money, RLUSD) is fully wired but **disabled unless an operator explicitly opts in** — that's their decision and their risk; we don't run, monitor, or control anyone's deployment. Funding positioning and market numbers live in [`PITCH.md`](./PITCH.md).
 
-## Try it in 60 seconds: AI spend control
+## Cap your AI agent's spend in one line
 
 ```bash
-npm run quickstart:ai      # an agent gets a hard LLM budget, spends it, and the next call is refused before the model is called
+npx github:revanthrajeev/spendveto        # or: git clone … && npm install && npm start
 ```
 
-JavaScript (`spendveto-sdk`) and Python (`sdk-python/`, stdlib only) clients. See `site/ai-spend.html`.
+Then point the agent at it — one environment variable, your provider key passes straight through and is never stored:
+
+```bash
+ANTHROPIC_BASE_URL=http://127.0.0.1:8402 claude          # Claude Code
+OPENAI_BASE_URL=http://127.0.0.1:8402/v1 codex           # Codex CLI
+OPENAI_BASE_URL=http://127.0.0.1:8402/v1                 # OpenAI SDKs, Cursor, LangChain, Aider…
+ANTHROPIC_BASE_URL=http://127.0.0.1:8402                 # Anthropic SDKs
+```
+
+Every request is checked **before** it reaches the provider (`server/llmguard.js`): a per-agent daily, hourly, per-request and per-session budget; a requests-per-minute limit (a real `429` with `retry-after`); a model allow/block list; the kill switch; and **loop detection** — the same tool call returning the same result again and again freezes the agent until a human looks (retries of a *failed* request don't count). The actual cost is booked afterwards from the provider's own `usage` report — read out of the stream as it passes, cache reads and 5-minute/1-hour cache writes priced separately (`server/llm-pricing.js`, current Claude and OpenAI prices as of 2026-10-18, overridable; an unknown model is priced at the provider's flagship rate and flagged, never guessed low). **Observe mode** records what it would have blocked and blocks nothing. **Team mode**: give an agent a `tg_…` token instead of a provider key and the guard swaps in a key only it holds. An agent bound to a delegated budget spends tokens, x402 payments and card authorizations against the **same** cascading cap.
+
+It follows Claude Code's gateway compatibility guide: bodies forwarded byte-for-byte, every `anthropic-*` header passed through, streams relayed event by event with keep-alive pings, upstream errors unmodified. Checked by hand with the real client on 2026-10-18 — Claude Code v2.1.300 ran through the guard unconfigured and its main request was booked at $0.012638 (a 63,180-token system prompt written to the one-hour cache, billed at 2× input). The automated suite exercises the same wire format against a local mock provider.
+
+```bash
+spendveto budget 10        # $10/day per agent      spendveto status        # who spent what today
+spendveto observe          # watch-only             spendveto freeze bot-1  # the kill switch
+```
+
+Honest limits: the pre-check uses an estimate (input sized from the request, output from its `max_tokens`), so the last request allowed under a budget can overshoot it by that one request's difference; Claude-subscription traffic is metered at API-equivalent prices; Message Batches and other endpoints the guard can't meter are refused rather than passed through ungoverned. The older SDK route still works: `npm run quickstart:ai` (JavaScript `spendveto-sdk`, Python `sdk-python/`).
+
+## Card authorizations: Stripe Issuing and Lithic
+
+Point Stripe Issuing's real-time authorization webhook at `POST /api/cards/stripe/authorization` (secret: `STRIPE_ISSUING_WEBHOOK_SECRET`) or Lithic Auth Stream Access at `POST /api/cards/lithic/asa` (`LITHIC_ASA_SECRET`) and every swipe on an agent's card is decided by the same engine (`server/cards.js`): signature verified with replay protection, kill switch, per-authorization cap, rolling daily budget, hourly velocity, a merchant-category allow/block list (gambling, quasi-cash/crypto purchases, money transfer and stored-value loads blocked by default), and — for a card registered to a delegated wallet (`POST /api/cards`) — the cascading delegation caps. Answers in each provider's own format (`{ approved }` with `Stripe-Version`; `{ result: "APPROVED" | <decline code>, token }`). USD only: an authorization in another currency is declined rather than compared across currencies with a guessed rate. It decides authorizations; captures and refunds aren't consumed yet.
 
 ## India: UPI mandate governance
 
@@ -52,9 +74,9 @@ npm run call -- summarize      # $0.02 — above the approval line: go approve/d
 npm run call -- translate      # $0.005
 ```
 
-`npm run verify` runs the whole thing headlessly — **402 end-to-end assertions**: catalog, forged-signature rejection, hard policy blocks, all three approval outcomes (approved / denied / timed-out-fails-closed), delegation caps including the n-level cascade, tool + chain scoping, multichain settlement (chain-scoped signatures, per-chain balances, chain allowlists), runaway-burst auto-freeze, the manual kill switch, signed-receipt verification, CSV export, per-tool/per-wallet/per-chain analytics, webhook alerts actually arriving at a live receiver, structured self-correcting denials, side-effect-free dry runs, TTL grant expiry, one-click approval links, the stats endpoint, AP2 mandate-chain drift detection, human-not-present authority, governed Bazaar discovery, ACP shared-payment-token scope, request-integrity binding (including a payload swapped after authorization), signed dispute evidence packs and their tamper detection, OpenTelemetry span export under an inbound traceparent, and a real MCP stdio JSON-RPC round trip.
+`npm run verify` runs the whole thing headlessly — **429 end-to-end assertions**: catalog, forged-signature rejection, hard policy blocks, all three approval outcomes (approved / denied / timed-out-fails-closed), delegation caps including the n-level cascade, tool + chain scoping, multichain settlement (chain-scoped signatures, per-chain balances, chain allowlists), runaway-burst auto-freeze, the manual kill switch, signed-receipt verification, CSV export, per-tool/per-wallet/per-chain analytics, webhook alerts actually arriving at a live receiver, structured self-correcting denials, side-effect-free dry runs, TTL grant expiry, one-click approval links, the stats endpoint, AP2 mandate-chain drift detection, human-not-present authority, governed Bazaar discovery, ACP shared-payment-token scope, request-integrity binding (including a payload swapped after authorization), signed dispute evidence packs and their tamper detection, OpenTelemetry span export under an inbound traceparent, and a real MCP stdio JSON-RPC round trip.
 
-> **On the number:** a fresh clone runs **402** assertions. Three more exercise a real cross-project integration against [Basis](https://github.com/revanthrajeev/basis) and run only when `../prediction-copilot` is checked out beside this repo — the suite prints `(skipped: cross-project Basis integration test …)` when it isn't. Every published number is the 402 anyone can reproduce.
+> **On the number:** a fresh clone runs **429** assertions. Three more exercise a real cross-project integration against [Basis](https://github.com/revanthrajeev/basis) and run only when `../prediction-copilot` is checked out beside this repo — the suite prints `(skipped: cross-project Basis integration test …)` when it isn't. Every published number is the 429 anyone can reproduce.
 
 **Marketing site**: `npm run site` serves the deploy-ready landing page (Three.js hero, animated product walkthrough) at http://localhost:8403 — `site/` is fully static and self-contained, drop it on Vercel/Netlify as-is. Includes an **interactive playground** (`site/playground.html`) that runs the real policy-decision logic client-side — set a budget, fire agent spend, watch it pass/pause/block — and a **use-cases** page grounded in real 2026 agent-spend scenarios.
 
@@ -355,6 +377,12 @@ server/
   integrity.js              request binding: is this the spend I allowed? (canonical digest, single-use)
   disputes.js               signed dispute evidence packs — the agent-chargeback defence file
   otel.js                   OTLP decision spans; adopts an inbound W3C traceparent, blocked ≠ ERROR
+  llmguard.js               the LLM spend guard: drop-in Anthropic/OpenAI-compatible budget gateway, loop freeze, holds
+  llm-pricing.js            provider usage → dollars (current Claude + OpenAI price sheets, exact-match, fail-safe unknowns)
+  cards.js                  card authorization governance: Stripe Issuing + Lithic ASA webhooks
+  authcapture.js            x402 auth-capture: vet escrow routes, hold the maximum, check the seller, reclaim watch
+bin/
+  spendveto.mjs            the CLI: start · budget · status · observe/enforce · freeze/unfreeze · connect · mcp
 client/
   wallet.js                parent keypair + delegated child wallets (pick by label)
   policy.js                the governance wedge: freezes, hard limits, approval threshold, cascading caps
@@ -375,7 +403,7 @@ scripts/
   policy.mjs                list/apply policy packs
   site.mjs                  serves the marketing site on :8403
   sdk-python/               Python client (pip install ./sdk-python), same surface as the npm SDK
-  verify.mjs                402 end-to-end assertions incl. MCP stdio round trip + multichain + auto-freeze
+  verify.mjs                429 end-to-end assertions incl. MCP stdio round trip + multichain + auto-freeze
 data/
   policy.json               editable spend rules incl. anomaly burst threshold + alertWebhookUrl
   policy-packs/             importable governance presets (cautious/standard/production)

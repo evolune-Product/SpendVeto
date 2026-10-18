@@ -8,12 +8,13 @@
 <link rel="stylesheet" href="./style.css" />
 </head>
 <body>
-<div class="demo-banner">Demo console — real data captured from a local SpendVeto run, no server behind this page. Clicks change this tab only. <a href="/playground.html">Playground</a> · <a href="/docs.html">Run your own</a></div>
+<div class="demo-banner">Demo console — real decisions captured from a local SpendVeto run (simulate-mode payments; model traffic from a local test provider), no server behind this page. Clicks change this tab only. <a href="/playground.html">Playground</a> · <a href="/docs.html">Run your own</a></div>
 <div class="shell">
   <aside class="side">
     <div class="brand">SPENDVETO<span> console</span></div>
     <nav>
       <a href="#overview" data-nav="overview">Overview</a>
+      <a href="#ai" data-nav="ai">AI spend <b class="badge" id="nav-ai-badge" hidden>0</b></a>
       <a href="#approvals" data-nav="approvals">Approvals <b class="badge" id="nav-approvals-badge" hidden>0</b></a>
       <a href="#budgets" data-nav="budgets">Budgets</a>
       <a href="#ledger" data-nav="ledger">Ledger</a>
@@ -40,6 +41,34 @@
         <div class="card"><h2>Wallet balances <span class="hint">per chain · freeze = kill switch</span></h2><div id="ov-balances"></div></div>
       </div>
       <div class="card"><h2>Recent activity</h2><table class="tbl"><thead><tr><th>time</th><th>wallet</th><th>resource</th><th>amount</th><th>status</th><th>detail</th></tr></thead><tbody id="ov-recent"></tbody></table></div>
+    </section>
+
+    <section data-page="ai" hidden>
+      <header><h1>AI spend</h1><p>Every model call your agents make — checked against its budget before it reaches the provider, booked at the provider's own usage numbers after.</p></header>
+      <div class="stat-row" id="ai-stats"></div>
+      <div class="two-col">
+        <div class="card">
+          <h2>Connect an agent <span class="hint">one line · your key passes through, never stored</span></h2>
+          <div id="ai-connect"></div>
+          <p class="hint" id="ai-connect-note"></p>
+        </div>
+        <div class="card">
+          <h2>Budgets <span class="hint">per agent · applies to every request</span></h2>
+          <form id="ai-form" class="form">
+            <label>Daily budget (USD, rolling 24h) <input name="dailyBudgetUSD" type="number" step="0.01" min="0.01" /></label>
+            <label>Hourly budget (USD) <input name="hourlyBudgetUSD" type="number" step="0.01" min="0.01" /></label>
+            <label>Max per request (USD, worst case) <input name="maxRequestUSD" type="number" step="0.01" min="0.01" /></label>
+            <label>Per-session budget (USD) <span class="hint">Claude Code sessions · blank = off</span> <input name="sessionBudgetUSD" type="number" step="0.01" min="0.01" /></label>
+            <label>Requests per minute <input name="maxRequestsPerMinute" type="number" step="1" min="1" /></label>
+            <label>Loop freeze after N identical tool results <input name="loopThreshold" type="number" step="1" min="2" /></label>
+            <label>Mode <select name="mode"><option value="enforce">enforce — block</option><option value="observe">observe — record only</option></select></label>
+            <button class="btn go" type="submit">Save budgets</button>
+            <p class="note" id="ai-form-note"></p>
+          </form>
+        </div>
+      </div>
+      <div class="card"><h2>Agents <span class="hint">last 24 hours</span></h2><table class="tbl"><thead><tr><th>agent</th><th>spent 24h</th><th>last hour</th><th>left today</th><th>requests</th><th>mostly</th><th>status</th><th></th></tr></thead><tbody id="ai-agents"></tbody></table></div>
+      <div class="card"><h2>Recent decisions <span class="hint">blocks, and what observe mode would have blocked</span></h2><table class="tbl"><thead><tr><th>time</th><th>agent</th><th>model</th><th>code</th><th>reason</th></tr></thead><tbody id="ai-decisions"></tbody></table></div>
     </section>
 
     <section data-page="approvals" hidden>

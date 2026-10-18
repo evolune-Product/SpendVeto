@@ -1,11 +1,62 @@
 {
   "name": "spendveto",
-  "version": "0.26.1",
-  "private": true,
+  "version": "0.27.0",
+  "description": "Spend controls for AI agents: a budget, loop detection and a kill switch in front of every model call (Claude Code, Codex, OpenAI/Anthropic SDKs), x402 payment and card authorization — open source, self-hosted.",
+  "license": "Apache-2.0",
+  "author": "Revanth Rajeev",
+  "homepage": "https://spendveto.com",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/revanthrajeev/spendveto.git"
+  },
+  "bugs": {
+    "url": "https://github.com/revanthrajeev/spendveto/issues"
+  },
+  "keywords": [
+    "ai-agents",
+    "llm",
+    "budget",
+    "spend-control",
+    "claude-code",
+    "openai",
+    "anthropic",
+    "llm-gateway",
+    "x402",
+    "mcp",
+    "governance",
+    "finops"
+  ],
   "type": "module",
-  "description": "Agent payment rails + spend governance — an x402-metered endpoint in front of an AI agent call, with a policy engine and dashboard.",
+  "bin": {
+    "spendveto": "bin/spendveto.mjs"
+  },
+  "files": [
+    "bin/",
+    "server/",
+    "client/",
+    "proxy/",
+    "rails/",
+    "dashboard/",
+    "mcp/",
+    "integrations/",
+    "sdk/index.js",
+    "sdk/index.d.ts",
+    "shared-config.js",
+    "data/policy-packs/",
+    "data/policy.json",
+    "server.json",
+    "README.md",
+    "LICENSE",
+    "NOTICE",
+    "CHANGELOG.md"
+  ],
+  "engines": {
+    "node": ">=20.18"
+  },
+  "mcpName": "io.github.revanthrajeev/spendveto",
   "scripts": {
     "server": "node server/index.js",
+    "start": "node bin/spendveto.mjs",
     "call": "node client/pay-and-call.js",
     "mcp": "node mcp/server.js",
     "delegate": "node scripts/delegate.mjs",

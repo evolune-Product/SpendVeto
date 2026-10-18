@@ -1,11 +1,11 @@
 import { readFileSync, writeFileSync, existsSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { fileURLToPath } from "node:url";
-import { PORT } from "../shared-config.js";
+import { PORT, dataPath } from "../shared-config.js";
 import { resolvePayeeList } from "./ens.js";
 import { screenAddress } from "../server/sanctions.js";
 
-const POLICY_PATH = fileURLToPath(new URL("../data/policy.json", import.meta.url));
+const POLICY_PATH = dataPath("policy.json");
 
 const DEFAULT_POLICY = {
   maxPerCallUSD: 0.05,

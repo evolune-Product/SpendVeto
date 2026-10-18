@@ -2,10 +2,11 @@ import { randomUUID } from "node:crypto";
 import { readFileSync, writeFileSync, existsSync, mkdirSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname } from "node:path";
+import { dataPath } from "../shared-config.js";
 
 // Durable, unlike approvals: a budget grant must survive server restarts —
 // it's a standing authorization, not a transient question.
-const PATH = fileURLToPath(new URL("../data/delegations.json", import.meta.url));
+const PATH = dataPath("delegations.json");
 
 function read() {
   if (!existsSync(PATH)) return [];

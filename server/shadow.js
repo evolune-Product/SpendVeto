@@ -1,6 +1,7 @@
 import { readFileSync, writeFileSync, existsSync, unlinkSync, mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import { fileURLToPath } from "node:url";
+import { dataPath } from "../shared-config.js";
 
 // Shadow mode (board-review P1): run a CANDIDATE policy alongside the live one
 // without enforcing it. Every real decision at the gate is also evaluated
@@ -11,8 +12,8 @@ import { fileURLToPath } from "node:url";
 // the impact is understood. This is the safe way to change a policy that sits
 // in front of real money — the diff is measured, not guessed.
 
-const SHADOW_POLICY_PATH = fileURLToPath(new URL("../data/shadow-policy.json", import.meta.url));
-const SHADOW_LOG_PATH = fileURLToPath(new URL("../data/shadow-log.json", import.meta.url));
+const SHADOW_POLICY_PATH = dataPath("shadow-policy.json");
+const SHADOW_LOG_PATH = dataPath("shadow-log.json");
 const MAX_OBSERVATIONS = 5000; // keep the log bounded; a shadow experiment is a window, not forever
 
 function ensureDir(p) {

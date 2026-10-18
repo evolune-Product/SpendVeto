@@ -10,7 +10,7 @@ const S = { entries: [], balances: {}, mode: "…", stats: null, tools: [], appr
 const frozenSet = () => new Set(S.freezes.filter((f) => !f.unfrozen).map((f) => f.address.toLowerCase()));
 
 /* ---------- router ---------- */
-const PAGES = ["overview", "approvals", "budgets", "ledger", "chains", "analytics", "trust", "policy", "agents", "report"];
+const PAGES = ["overview", "ai", "approvals", "budgets", "ledger", "chains", "analytics", "trust", "policy", "agents", "report"];
 const PROXY_BASE = "http://localhost:8404";
 function route() {
   const page = PAGES.includes(location.hash.slice(1)) ? location.hash.slice(1) : "overview";
@@ -266,11 +266,71 @@ async function renderReport() {
 }
 $("rp-days").addEventListener("change", renderReport);
 
+/* ---------- AI spend (LLM guard) ---------- */
+let aiFormFilled = false;
+let aiConnectLoaded = false;
+function renderAi() {
+  const s = S.llm;
+  if (!s || !s.totals) return;
+  $("nav-ai-badge").hidden = !s.totals.blockedDay;
+  $("nav-ai-badge").textContent = s.totals.blockedDay;
+  $("ai-stats").innerHTML = [
+    ["AI spend (24h)", money(s.totals.spentDayUSD), "green"],
+    ["Model requests", s.totals.requestsDay, ""],
+    ["Blocked before the model", s.totals.blockedDay, s.totals.blockedDay ? "copper" : ""],
+    ["Loop freezes", s.totals.loopFreezesDay, s.totals.loopFreezesDay ? "rust" : ""],
+    ["Mode", s.mode, s.mode === "observe" ? "copper" : "green"],
+    ["In flight", s.totals.inFlight, ""],
+  ].map(([k, v, c]) => `<div class="stat"><div class="k">${k}</div><div class="v ${c}">${esc(v)}</div></div>`).join("");
+  $("ai-agents").innerHTML = s.identities.map((i) => {
+    const top = Object.entries(i.models || {}).sort((a, b) => b[1] - a[1])[0];
+    const ctl = i.frozen ? `<button class="btn go mini" onclick="unfreezeId('${esc(i.frozen.id)}')">Unfreeze</button>` : `<button class="btn deny mini" onclick="freezeAddr('${esc(i.address)}')">Freeze</button>`;
+    return `<tr><td>${esc(i.label || short(i.address))} <span class="hint">${esc(i.kind || "")}</span></td><td class="num">${money(i.spentDayUSD)}</td><td class="num">${money(i.spentHourUSD)}</td><td class="num">${money(i.remainingDayUSD)}</td><td class="num">${i.requestsDay}</td><td>${esc(top ? top[0] : "—")}</td><td>${i.frozen ? `<span class="tag rust">frozen</span> <span class="hint">${esc(i.frozen.reason)}</span>` : '<span class="tag green">ok</span>'}</td><td>${ctl}</td></tr>`;
+  }).join("") || `<tr><td colspan="8" class="empty">No model traffic yet — point an agent at this server with one of the lines above.</td></tr>`;
+  $("ai-decisions").innerHTML = (s.recentDecisions || []).map((d) =>
+    `<tr><td>${when(d.ts)}</td><td>${esc(d.agent || "—")}</td><td>${esc(d.model || "—")}</td><td><span class="tag ${d.observeOnly ? "" : "rust"}">${esc(d.code || "")}${d.observeOnly ? " · observe" : ""}</span></td><td>${esc(d.reason || "")}</td></tr>`).join("") || `<tr><td colspan="5" class="empty">Nothing blocked in the last 24 hours.</td></tr>`;
+  if (!aiFormFilled && s.settings) {
+    const f = $("ai-form").elements;
+    f.dailyBudgetUSD.value = s.settings.dailyBudgetUSD;
+    f.hourlyBudgetUSD.value = s.settings.hourlyBudgetUSD;
+    f.maxRequestUSD.value = s.settings.maxRequestUSD;
+    f.sessionBudgetUSD.value = s.settings.sessionBudgetUSD ?? "";
+    f.maxRequestsPerMinute.value = s.settings.maxRequestsPerMinute;
+    f.loopThreshold.value = s.settings.loop?.threshold ?? 6;
+    f.mode.value = s.mode;
+    aiFormFilled = true;
+  }
+  if (!aiConnectLoaded) {
+    aiConnectLoaded = true;
+    fetch("/api/llm/connect").then((r) => r.json()).then((c) => {
+      if (!c.clients) return;
+      $("ai-connect").innerHTML = c.clients.map((x) => `<div class="kv"><span class="k">${esc(x.name)}</span><span class="v"><code>${esc(x.line)}</code></span></div>`).join("");
+      $("ai-connect-note").textContent = c.note || "";
+    }).catch(() => {});
+  }
+}
+window.unfreezeId = (id) => act(`/api/freezes/${id}/unfreeze`, { method: "POST" });
+$("ai-form").addEventListener("submit", async (ev) => {
+  ev.preventDefault();
+  const f = ev.target.elements;
+  const body = {
+    dailyBudgetUSD: Number(f.dailyBudgetUSD.value), hourlyBudgetUSD: Number(f.hourlyBudgetUSD.value), maxRequestUSD: Number(f.maxRequestUSD.value),
+    sessionBudgetUSD: f.sessionBudgetUSD.value ? Number(f.sessionBudgetUSD.value) : null, maxRequestsPerMinute: Number(f.maxRequestsPerMinute.value),
+    loop: { threshold: Number(f.loopThreshold.value) }, mode: f.mode.value,
+  };
+  const { ok, body: out } = await api("/api/llm/settings", { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+  const note = $("ai-form-note");
+  note.classList.toggle("err", !ok);
+  note.textContent = ok ? "Saved — applies to the next request." : out.error || "failed";
+  aiFormFilled = false;
+  refresh();
+});
+
 /* ---------- refresh loop ---------- */
 let trustTick = 0;
 async function refresh() {
   try {
-    const [ledger, stats, catalog, approvals, delegations, freezes, chains, analytics, policy, packs, rails] = await Promise.all([
+    const [ledger, stats, catalog, approvals, delegations, freezes, chains, analytics, policy, packs, rails, llm] = await Promise.all([
       fetch("/api/ledger").then((r) => r.json()),
       fetch("/api/stats").then((r) => r.json()),
       fetch("/api/catalog").then((r) => r.json()),
@@ -282,10 +342,11 @@ async function refresh() {
       fetch("/api/policy").then((r) => r.json()),
       fetch("/api/policy-packs").then((r) => r.json()),
       fetch("/api/rails").then((r) => r.json()),
+      fetch("/api/llm/summary").then((r) => r.json()).catch(() => null),
     ]);
-    Object.assign(S, { entries: ledger.entries || [], balances: ledger.balances || {}, mode: ledger.mode, stats, tools: catalog.tools || [], approvals: approvals.approvals || [], delegations: delegations.delegations || [], freezes: freezes.freezes || [], chains: chains.chains || [], analytics, policy, packs: packs.packs || [], rails: rails.rails || [] });
+    Object.assign(S, { entries: ledger.entries || [], balances: ledger.balances || {}, mode: ledger.mode, stats, tools: catalog.tools || [], approvals: approvals.approvals || [], delegations: delegations.delegations || [], freezes: freezes.freezes || [], chains: chains.chains || [], analytics, policy, packs: packs.packs || [], rails: rails.rails || [], llm });
     $("mode-badge").textContent = S.mode;
-    renderOverview(); renderApprovals(); renderBudgets(); renderLedger(); renderChains(); renderAnalytics(); fillPolicyForm(false); renderReport();
+    renderOverview(); renderAi(); renderApprovals(); renderBudgets(); renderLedger(); renderChains(); renderAnalytics(); fillPolicyForm(false); renderReport();
     if (trustTick++ % 3 === 0) { renderTrustList(); renderAgentsList(); }
   } catch (err) {
     console.error("console refresh failed", err);

@@ -15,7 +15,7 @@ import express from "express";
 import { createHash, randomUUID } from "node:crypto";
 import { readFileSync, writeFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
-import { MODE, PORT, TOOLS, CHAINS, DEFAULT_CHAIN, findChain, findTool } from "../shared-config.js";
+import { MODE, PORT, TOOLS, CHAINS, DEFAULT_CHAIN, findChain, findTool, dataPath } from "../shared-config.js";
 
 const SERVER_URL = process.env.SPENDVETO_SERVER_URL || `http://localhost:${PORT}`;
 
@@ -50,7 +50,7 @@ const PROXY_PORT = process.env.SPENDVETO_PROXY_PORT || 8404;
 // agents are registered (zero-setup demos keep working); the moment the
 // first identity exists, /proxy/call and /proxy/llm require a token — and a
 // token bound to a wallet can never spend as anyone else.
-const AGENTS_PATH = fileURLToPath(new URL("../data/agents.json", import.meta.url));
+const AGENTS_PATH = dataPath("agents.json");
 function readAgents() {
   try {
     return JSON.parse(readFileSync(AGENTS_PATH, "utf8"));
@@ -113,7 +113,7 @@ app.get("/proxy/agents", (req, res) => {
   res.json({ agents: readAgents().map(({ token, ...a }) => ({ ...a, token: `${token.slice(0, 6)}…` })) });
 });
 
-const CHILDREN_PATH = fileURLToPath(new URL("../data/children.json", import.meta.url));
+const CHILDREN_PATH = dataPath("children.json");
 function readChildren() {
   try {
     return JSON.parse(readFileSync(CHILDREN_PATH, "utf8"));
