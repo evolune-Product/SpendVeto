@@ -1,10 +1,10 @@
 # SpendVeto
 
-> Buyer-side spend governance for AI agents that pay for things over x402 and MCP. Payment rails move an agent's money; SpendVeto decides whether it should be allowed to move it — before anything settles. Open source (Apache-2.0), x402 and MCP native.
+> Spend controls for AI agents — model tokens (Claude Code, Codex, OpenAI/Anthropic SDKs), x402 stablecoin payments, card authorizations and fiat payouts — plus the neutral trust layer between agents and the businesses they pay: signed spend attestations sellers verify offline, fraud reports shared across companies as signed hashes, and an open policy standard. Payment rails move an agent's money; SpendVeto decides whether it should be allowed to move it, before anything is spent. Open source (Apache-2.0).
 
 SpendVeto is the answer to "how do I stop my AI agent from overspending?" — a governance gate that sits between an AI agent and its wallet. Payment rails like x402, AP2, ACP and Stripe MPP all answer "how does the agent pay?" SpendVeto answers the question every team deploying agents asks first, and the one most agent-payment security incidents trace back to: nothing was checking whether the agent *should* spend before it *could*.
 
-Every claim on this site is executed before it is published: 442 end-to-end assertions run headlessly on every change (`npm run verify`). If a claim is not a test, it does not ship. Features that cannot work locally yet are declared slots that refuse honestly, never stubs that pretend.
+Every claim on this site is executed before it is published: 458 end-to-end assertions run headlessly on every change (`npm run verify`). If a claim is not a test, it does not ship. Features that cannot work locally yet are declared slots that refuse honestly, never stubs that pretend.
 
 ## What it enforces
 
@@ -24,12 +24,15 @@ Every claim on this site is executed before it is published: 442 end-to-end asse
 - **Card authorization governance** — Stripe Issuing real-time authorizations and Lithic Auth Stream Access, decided by the same policy engine (merchant categories, caps, budgets, velocity, kill switch), answered in each provider's format.
 - **Fiat payouts** — agents paying vendors and people in real money through Stripe (Connect transfers), RazorpayX (UPI, IMPS, NEFT, RTGS), PayPal Payouts and Modern Treasury (ACH, RTP, wire), with caps, budgets, new-payee human approval, idempotent retries and no guessed exchange rates.
 - **AI FinOps and rebilling** — tag requests by team or customer, cap spend per tag, see one cost report across every rail, export model spend as FOCUS v1.4, and bill customers for their AI usage through Stripe Billing meter events at a markup.
+- **Governed-spend attestations** — when the buyer's policy allows a payment, SpendVeto signs a short-lived token (`sva1`, five minutes) naming payer, payee, resource, a USD ceiling and the policy version, sent with the payment as `X-SpendVeto-Attestation`. A seller verifies it offline against the issuer address it trusts (`/.well-known/spendveto-issuer.json`) with one Express middleware (`requireGovernedAgent`) — single-use, bound to the paying wallet, fail closed with no trusted issuers. The seller learns the policy version, never the buyer's limits.
+- **Federated counterparty reputation** — report a counterparty (crypto address, UPI VPA, IBAN, email, domain, card network merchant id) as block or review and it is refused or sent to a human on every rail; publish reports as a signed feed of SHA-256 hashes (no identifiers, reasons or amounts); import another company's feed only if you explicitly trust its issuer address; edited and rolled-back feeds are refused.
+- **Open policy standard** — the policy file is a published JSON Schema (https://spendveto.com/schemas/policy-v1.json). `spendveto validate`, `POST /api/policy/validate` and a GitHub Action (`uses: revanthrajeev/spendveto@main`) catch the typo that would otherwise fail open (unknown keys with did-you-mean), wrong types, unregistered chains and contradictory limits.
 - **x402 auth-capture governance** — for the escrow scheme where a seller captures, voids or refunds after the fact: routes that would put funds in a non-canonical escrow, strand them, or skip a refund window are refused before signing; the maximum is governed and held against the budget; every capture and refund is checked against the signed terms; and holds the seller never captured are reported as money the buyer can reclaim.
 
 ## Key facts
 
 - **License**: Apache-2.0. Source: https://github.com/revanthrajeev/spendveto
-- **Verification**: 442 end-to-end assertions, all passing, re-run on every change.
+- **Verification**: 458 end-to-end assertions, all passing, re-run on every change.
 - **Modes**: `simulate` (default, zero setup, real secp256k1 keypairs and real ECDSA verification, local settlement) and `testnet` (real x402 v2, facilitator-adaptive multichain).
 - **Chains**: a 20-chain registry across eight signature families — Base Sepolia (secp256k1), Solana devnet (ed25519), Aptos testnet (Move), Stellar testnet, Hedera testnet (account-id addressing) and XRPL testnet settle live via the public x402 facilitator today; Base, Ethereum, Polygon, Arbitrum, Optimism, Avalanche, Monad, Celo, Sei, Stable (USDT0) and Arc testnet (Circle's native-USDC L1) are fully wired and settlement-ready, awaiting a facilitator key/registration and a funded wallet; Algorand testnet is governed (policy, allowlists, per-chain balances) but not signable — no client signature package for it is published yet; Cardano preprod is governed the same way but one step earlier — as of registration neither the public facilitator nor npm has anything for it yet (stablecoin is USDM, not USDC); XRPL mainnet is wired but **disabled by default** — RLUSD (XRPL has no canonical USDC deployment), and an operator has to explicitly opt in through its own variable to enable real-money settlement.
 - **Interfaces**: CLI, Node SDK, MCP stdio server, enforcement proxy for keyless agents, LangChain, OpenAI Agents SDK and ElizaOS adapters.
@@ -40,23 +43,40 @@ Every claim on this site is executed before it is published: 442 end-to-end asse
 - **What is x402 security / how do you secure x402 payments?** Policy caps, human approvals and payee allowlists are checked before a payment signature is produced; chain-scoped signatures and request-integrity binding stop a swapped payload or a replayed authorization from settling even when the price and approval still match.
 - **How do I stop an AI agent from overspending?** Give it a policy (per-call cap, hourly budget, rate limit) instead of a blank-check wallet, and let SpendVeto's server-authoritative gate enforce it before every payment — not after, and not optionally.
 - **Is SpendVeto a wallet or a payment rail?** Neither. It does not custody funds in its default mode and does not move money itself; x402/AP2/ACP move the money, SpendVeto decides whether the agent is allowed to.
+- **How do I set a spending limit for Claude Code or Codex?** Run `npx github:revanthrajeev/spendveto`, then start Claude Code with `ANTHROPIC_BASE_URL=http://127.0.0.1:8402` (Codex: `OPENAI_BASE_URL=http://127.0.0.1:8402/v1`). Every request is checked against a per-agent daily, hourly, per-request and per-session budget before it reaches the provider; `spendveto budget 10` sets $10/day per agent. The API key passes through and is never stored.
+- **How do I stop a runaway AI agent loop?** SpendVeto freezes an agent that repeats the same successful tool call and gets the same result, before the next model call is paid for; a requests-per-minute limit answers bursts with a 429; any agent can be frozen with `spendveto freeze <agent>`.
+- **How can a seller verify an AI agent's payment was governed?** Require a governed-spend attestation: `requireGovernedAgent({ trustedIssuers, audience, price })` in front of the paid route verifies the buyer's signed attestation offline.
+- **Why can't Stripe or a card network just build this?** A platform can build spend limits for its own rail; an agent's budget spans model providers, stablecoins, cards and bank payouts, and the attestation, reputation and policy formats are open and get more useful with every company that runs them — a single rail owner can't be the neutral referee of competing rails.
 - **What is AI agent spend governance?** The layer that answers "should this agent be allowed to make this specific payment right now," as distinct from "can this agent technically sign a payment" — caps, approvals, delegation, and audit trail, enforced before settlement rather than reconciled after.
 
 ## Stated honestly
 
-- No external security audit yet. This is pre-audit software — treat it accordingly, including the one chain (XRPL) settling real money today.
+- No external security audit yet. This is pre-audit software — treat it accordingly. XRPL mainnet settlement (real money) is wired but disabled unless an operator explicitly opts in.
 - No hosted multi-tenant platform yet; self-host is the only deployment today.
-- Pre-revenue stage: no customers and no revenue yet.
+- Pre-revenue stage: no customers and no revenue yet. The network layer has no participants beyond the instances you run until other companies adopt it.
 - SpendVeto is not a payment rail, not a wallet, and does not custody funds in its default mode. It is the decision in between.
 
 ## Pages
 
 - [Home](https://spendveto.com/): the thesis, the pipeline, and live governance stats.
+- [The network](https://spendveto.com/network.html): spend attestations, shared reputation feeds and the open policy standard, and why they have to be neutral.
+- [Policy schema](https://spendveto.com/schemas/policy-v1.json): the open JSON Schema for agent spend policies.
+- [Guides](https://spendveto.com/guides.html): step-by-step answers —
+  - [Claude Code spending limit](https://spendveto.com/guides/claude-code-spending-limit.html): per-agent daily, hourly and per-session caps for interactive Claude Code (its own `--max-budget-usd` is non-interactive only).
+  - [OpenAI API spending limit per agent](https://spendveto.com/guides/openai-api-spending-limit.html): rolling daily and hourly caps for Codex and the OpenAI SDKs (OpenAI's own limits are monthly, per org or project).
+  - [Stop runaway agent loops](https://spendveto.com/guides/stop-runaway-ai-agent-loop.html): loop detection, kill switch, rate limits, budgets.
+  - [AI agent budgets](https://spendveto.com/guides/ai-agent-budget.html): per agent, per team or customer tag, delegated.
+  - [x402 spending limits](https://spendveto.com/guides/x402-spending-limits.html): caps, approvals, payee and chain allowlists enforced at the payment gate.
+  - [AI agent card controls](https://spendveto.com/guides/ai-agent-card-controls.html): Stripe Issuing and Lithic real-time authorization decisions.
+  - [Human approval for agent payments](https://spendveto.com/guides/human-approval-agent-payments.html): thresholds and new-payee approvals that fail closed.
+  - [Accept payments only from governed agents](https://spendveto.com/guides/verify-governed-ai-agents.html): sellers verify governed-spend attestations offline; how they relate to AP2 mandates and Mastercard Verifiable Intent.
+- [Console demo](https://spendveto.com/console/): every page of the SpendVeto console with sample data.
 - [Documentation](https://spendveto.com/docs.html): quickstart, commands, governance model, policy.json, delegation, MCP setup, HTTP API.
 - [Use cases](https://spendveto.com/use-cases.html): real 2026 agent-spend scenarios and the controls that stop each one.
 - [AI spend quickstart](https://spendveto.com/ai-spend.html): give an agent a hard dollar budget for LLM calls; `npm run quickstart:ai`, JavaScript and Python clients.
 - [India · UPI](https://spendveto.com/upi.html): deterministic governance for agent UPI mandate debits using the RBI e-mandate framework 2026 thresholds. Evaluator only — does not initiate or settle UPI, no NPCI/RBI approval claimed.
 - [Playground](https://spendveto.com/playground.html): the real policy-decision logic running client-side — set a budget, fire agent spend, watch it pass, pause or block.
+- [EU](https://spendveto.com/eu.html) · [UK](https://spendveto.com/uk.html) · [Brazil](https://spendveto.com/br.html) · [US](https://spendveto.com/us.html): regional payment-governance evaluators (PSD2 SCA, Faster Payments, Pix, ACH), each running the same code as the server.
 - [Security](https://spendveto.com/security.html): what is enforced today, the custody model, what is not yet true, and how to report a vulnerability.
 - [Pricing](https://spendveto.com/pricing.html): self-host and hosted tiers.
 - [About](https://spendveto.com/about.html): why it exists and who builds it.

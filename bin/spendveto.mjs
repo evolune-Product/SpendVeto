@@ -8,6 +8,7 @@
 //   spendveto freeze <agent> | unfreeze <agent> # the kill switch
 //   spendveto connect                           # print the one-line setup again
 //   spendveto mcp                               # run the MCP server (stdio)
+//   spendveto validate [policy.json] [--strict] # lint a policy file against the open schema (CI)
 import { spawn } from "node:child_process";
 import { existsSync, readFileSync, writeFileSync, mkdirSync, openSync } from "node:fs";
 import { homedir } from "node:os";
@@ -180,10 +181,29 @@ try {
       child.on("exit", (code) => process.exit(code ?? 0));
       break;
     }
+    case "validate": {
+      // Policy-as-code: the same validator as POST /api/policy/validate, so a
+      // typo that would silently fail open is caught in CI, before deploy.
+      const { validatePolicy } = await import("../server/policyspec.js");
+      const file = args.find((a) => !a.startsWith("--")) || POLICY;
+      let policy;
+      try {
+        policy = JSON.parse(readFileSync(file, "utf8"));
+      } catch (err) {
+        throw new Error(`can't read ${file}: ${err.message}`);
+      }
+      const v = validatePolicy(policy);
+      for (const e of v.errors) console.log(`  error    ${e.path}  ${e.message}`);
+      for (const w of v.warnings) console.log(`  warning  ${w.path}  ${w.message}`);
+      const strictFail = args.includes("--strict") && v.warnings.length > 0;
+      console.log(v.valid && !strictFail ? `  ${file}: valid against ${v.schema}${v.warnings.length ? ` (${v.warnings.length} warning${v.warnings.length === 1 ? "" : "s"})` : ""}` : `  ${file}: ${v.errors.length} error(s)${strictFail ? `, ${v.warnings.length} warning(s) under --strict` : ""}`);
+      if (!v.valid || strictFail) process.exit(1);
+      break;
+    }
     case "help":
     case "--help":
     case "-h":
-      console.log(readFileSync(fileURLToPath(import.meta.url), "utf8").split("\n").slice(1, 10).map((l) => l.replace(/^\/\/ ?/, "")).join("\n"));
+      console.log(readFileSync(fileURLToPath(import.meta.url), "utf8").split("\n").slice(1, 11).map((l) => l.replace(/^\/\/ ?/, "")).join("\n"));
       break;
     default:
       throw new Error(`unknown command "${cmd}" — try: spendveto help`);

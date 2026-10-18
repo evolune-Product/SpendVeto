@@ -37,6 +37,17 @@
 - A blog post: *"Every way an AI agent can burn your money, and the one line that stops it"* (dev.to + Hashnode + your site).
 - Product Hunt launch once the GIF and the npm one-liner exist.
 
+### Week 1–4: organic search and answer engines (shipped 2026-10-18; now measure it)
+- Eight guides now answer the questions people actually search, each answering in its first lines with HowTo and FAQ structured data: [Claude Code spending limit](https://spendveto.com/guides/claude-code-spending-limit.html), [OpenAI API limit per agent](https://spendveto.com/guides/openai-api-spending-limit.html), [stop runaway agent loops](https://spendveto.com/guides/stop-runaway-ai-agent-loop.html), [AI agent budgets](https://spendveto.com/guides/ai-agent-budget.html), [x402 spending limits](https://spendveto.com/guides/x402-spending-limits.html), [agent card controls](https://spendveto.com/guides/ai-agent-card-controls.html), [human approval for agent payments](https://spendveto.com/guides/human-approval-agent-payments.html), and [accepting payments only from governed agents](https://spendveto.com/guides/verify-governed-ai-agents.html). The sitemap lists all of them, llms.txt describes them for AI crawlers, and robots.txt already welcomes GPTBot, ClaudeBot and PerplexityBot.
+- **Your steps (owner actions):** deploy the site, then submit the sitemap in Google Search Console and Bing Webmaster Tools, and request indexing for the eight guides and /network.html. Cross-post each guide's opening answer on dev.to and Hashnode with a canonical link back.
+- Where to show up, from the 2026-10-18 query research: the threads that rank for "Claude Code cost limit", "OpenAI project limit not working", "stop runaway agent loop bill" and "AI agent kill switch" (OpenAI community forum, Hacker News, GitHub issues). Answer the question there first, and link only when the guide adds something.
+- Measure weekly: impressions and clicks per guide (Search Console), and referrals from chatgpt.com, perplexity.ai and claude.ai.
+
+### Week 2–8: seed the network (the moat only exists once two parties use it)
+- **The first attestation pair:** one design partner running SpendVeto as a buyer, plus one API seller (an x402 tool in the Bazaar, or a partner's paid endpoint) that adds `requireGovernedAgent` for that buyer's issuer address. One pair turns "two-sided network" from a design into a fact we can show.
+- **The first shared feed:** two design partners trust each other's issuer address and exchange reputation feeds. Report it as a count: publishers, subscribers, counterparties flagged.
+- **The policy standard:** open PRs adding `"$schema": "https://spendveto.com/schemas/policy-v1.json"` examples and the GitHub Action to agent-framework docs, and ask SchemaStore to list the schema so editors pick it up automatically.
+
 ### Week 2–6: design partners (the traction investors actually weigh)
 - **20 targeted messages a week** (template below) to: YC W26/S26 agent startups, x402 ecosystem projects, teams posting about agent costs on X/Reddit, Stripe Issuing / Lithic customers building agent cards.
 - Offer: *30 minutes to set up observe mode on their real traffic; in two weeks we send them a report of what it would have blocked.* Zero risk for them, a concrete number for you.
@@ -46,6 +57,9 @@
 - Build the hosted version only after 10 design partners are running observe mode: orgs, SSO, per-team keys, the Console online. Price: Team $199/mo + 0.5% of governed model spend (from `PITCH.md`).
 
 ## What to report to investors, every week (counts, not adjectives)
+
+Network metrics, added with v0.29.0 (all zero today): issuers with a persistent key, sellers requiring attestations, attestations verified by a seller, reputation publishers and subscribers, and repositories running the policy GitHub Action.
+
 
 | Metric | Where it comes from |
 |---|---|
@@ -68,7 +82,7 @@ Never present the simulate-mode demo data in the Console as usage.
 >
 > SpendVeto sits between your agent and the model provider. Start it with `npx github:revanthrajeev/spendveto`, then run `ANTHROPIC_BASE_URL=http://127.0.0.1:8402 claude` (or set `OPENAI_BASE_URL` for Codex and the OpenAI SDKs). Every request is checked against a per-agent budget before it reaches the provider; if the same tool call keeps returning the same result, the agent is frozen until you look. The cost is booked from the provider's own usage numbers. Your key passes through and is never stored.
 >
-> It's open source (Apache-2.0), self-hosted, and the same engine also governs x402 payments and card authorizations (Stripe Issuing, Lithic), so one agent can have one budget across all three. 442 end-to-end tests run from a clean clone.
+> It's open source (Apache-2.0), self-hosted, and the same engine also governs x402 payments and card authorizations (Stripe Issuing, Lithic), so one agent can have one budget across all three. 458 end-to-end tests run from a clean clone.
 >
 > Honest limits: the pre-check uses an estimate, so the last request under a budget can overshoot by one request; there's no hosted version yet. I'd love to hear where it breaks for your setup.
 

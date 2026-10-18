@@ -14,7 +14,7 @@ const DEFAULT_POLICY = {
   requireApprovalAboveUSD: 0.015,
 };
 
-function loadPolicy() {
+export function loadPolicy() {
   if (!existsSync(POLICY_PATH)) {
     writeFileSync(POLICY_PATH, JSON.stringify(DEFAULT_POLICY, null, 2));
     return DEFAULT_POLICY;
@@ -97,6 +97,24 @@ export async function checkPolicy(address, proposedPriceUSD, toolId, chain, cate
       const programs = entry.programs?.length ? ` (program: ${entry.programs.join(", ")})` : "";
       return deny("sanctioned_payee", `payee ${payee} matches OFAC's Specially Designated Nationals list${programs} — SDN uid ${entry.sdnUid}`,
         "do not retry against this address under any circumstances; this is a sanctions compliance block, not a configurable policy rule", { policy, screening });
+    }
+  }
+
+  // Federated reputation (server/reputation.js): a counterparty this
+  // organization reported — or one a publisher it explicitly trusts reported —
+  // is refused (block) or handed to a human (review) before anything is
+  // signed. Same scoping as sanctions: only external payees are checked.
+  let reputationReview = null;
+  if (payee) {
+    try {
+      const rep = await fetch(`http://localhost:${PORT}/api/reputation/check?subject=${encodeURIComponent(payee)}`).then((r) => r.json());
+      if (rep.verdict === "block") {
+        return deny("payee_reputation_block", `payee ${payee} is on a reputation block list (${rep.summary})`,
+          "do not retry against this payee; it was reported for fraud or abuse — a human can review the report in the Console", { policy, reputation: rep });
+      }
+      if (rep.verdict === "review") reputationReview = rep;
+    } catch {
+      // older server or a transient failure — reputation adds to the controls below, it doesn't replace them
     }
   }
 
@@ -300,6 +318,7 @@ export async function checkPolicy(address, proposedPriceUSD, toolId, chain, cate
       `only $${Math.max(0, policy.maxPerHourUSD - committedUSD).toFixed(4)} remains in this hour's budget — wait for the window to roll over${heldUSD > 0 ? ", settle or void an open authorization to release its hold" : ""}, or pick a cheaper tool`, { policy, recent, heldUSD });
   }
 
-  const requiresApproval = price > policy.requireApprovalAboveUSD;
-  return { allowed: true, requiresApproval, policy, recent, delegation, heldUSD };
+  // A payee flagged for review always goes to a human, whatever the amount.
+  const requiresApproval = price > policy.requireApprovalAboveUSD || Boolean(reputationReview);
+  return { allowed: true, requiresApproval, policy, recent, delegation, heldUSD, ...(reputationReview ? { reputation: reputationReview } : {}) };
 }

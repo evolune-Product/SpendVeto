@@ -10,7 +10,7 @@ const S = { entries: [], balances: {}, mode: "…", stats: null, tools: [], appr
 const frozenSet = () => new Set(S.freezes.filter((f) => !f.unfrozen).map((f) => f.address.toLowerCase()));
 
 /* ---------- router ---------- */
-const PAGES = ["overview", "ai", "costs", "payouts", "approvals", "budgets", "ledger", "chains", "analytics", "trust", "policy", "agents", "report"];
+const PAGES = ["overview", "ai", "costs", "payouts", "approvals", "budgets", "ledger", "chains", "analytics", "trust", "network", "policy", "agents", "report"];
 const PROXY_BASE = "http://localhost:8404";
 function route() {
   const page = PAGES.includes(location.hash.slice(1)) ? location.hash.slice(1) : "overview";
@@ -361,11 +361,49 @@ function renderPayouts() {
 }
 $("costs-group").addEventListener("change", () => refresh());
 
+/* ---------- Network: attestations, reputation, policy schema ---------- */
+function renderNetwork() {
+  const a = S.attestations;
+  const r = S.reputation;
+  const v = S.policyCheck;
+  if (a && a.issuer) {
+    $("net-issuer").innerHTML = `<div class="addr">${esc(a.issuer)}</div><p class="hint" style="margin-top:0.5rem">${a.persistent ? "persistent key (SERVER_SIGNER_KEY)" : "per-process key — set SERVER_SIGNER_KEY so this address survives restarts"} · attestations last ${a.settings.ttlSeconds}s · ${a.settings.requireOnCatalog ? "required on this catalog" : "optional on this catalog"} · <a href="/.well-known/spendveto-issuer.json" target="_blank">issuer document ↗</a></p>`;
+    $("net-attestations").innerHTML = (a.recent || []).slice(0, 12).map((x) => `<tr><td>${when(x.iat * 1000)}</td><td class="addr">${esc(short(x.sub))}</td><td class="addr">${x.aud ? esc(short(x.aud)) : '<span class="hint">catalog</span>'}</td><td>${esc(x.res)}</td><td class="num">$${esc(x.amt)}</td><td>${x.dec === "approved" ? '<span class="tag copper" title="a human approved this spend">approved</span>' : '<span class="tag green">allowed</span>'}</td></tr>`).join("") || `<tr><td colspan="6" class="empty">None yet — every governed x402 payment carries one.</td></tr>`;
+  }
+  if (r && r.settings) {
+    $("rep-rows").innerHTML = (r.reports || []).map((x) => `<tr><td class="addr">${esc(x.subject)}</td><td>${esc(x.kind)}</td><td>${x.severity === "block" ? '<span class="tag rust">block</span>' : '<span class="tag copper">review</span>'}</td><td class="num">${x.count}</td><td>${when(x.lastSeen)}</td><td>${x.share ? "yes" : "no"}</td><td><button class="btn ghost mini" onclick="removeReport('${esc(x.id)}')">remove</button></td></tr>`).join("") || `<tr><td colspan="7" class="empty">No reports. A reported counterparty is refused on every rail.</td></tr>`;
+    const trusted = r.settings.trustedPublishers || [];
+    $("rep-settings").innerHTML = `<p class="hint" style="margin-bottom:0.8rem">Publishing as <b>${esc(r.settings.publisherName || "SpendVeto instance")}</b> (${esc(short(r.publisher))}) · imported blocks <b>${esc(r.settings.importedAction)}</b> · trusted publishers: ${trusted.length ? trusted.map((p) => `<span class="addr">${esc(short(p))}</span>`).join(", ") : "none, so no feed is accepted"} · <a href="/api/reputation/feed" target="_blank">your signed feed ↗</a></p>`;
+    $("feed-rows").innerHTML = (r.feeds || []).map((f) => `<tr><td class="addr">${esc(short(f.publisher))}</td><td>${esc(f.name)}</td><td class="num">${f.entries}</td><td>${when(f.issuedAt)}</td><td>${when(f.importedAt)}</td><td>${f.trusted ? '<span class="tag green">trusted</span>' : '<span class="tag">untrusted — ignored</span>'}</td></tr>`).join("") || `<tr><td colspan="6" class="empty">No imported feeds.</td></tr>`;
+  }
+  if (v && Array.isArray(v.errors)) {
+    const items = [...v.errors.map((e) => `<li><b>${esc(e.path)}</b> ${esc(e.message)}</li>`), ...v.warnings.map((w) => `<li>${esc(w.path)} ${esc(w.message)}</li>`)].join("");
+    $("net-policy").innerHTML = v.valid && !v.warnings.length
+      ? `<p><span class="tag green">valid</span> every key is one the engine reads, and no limits contradict each other.</p>`
+      : `<p>${v.valid ? '<span class="tag copper">valid, with warnings</span>' : '<span class="tag rust">invalid</span> a key the engine never reads is a limit that isn\'t enforced.'}</p><ul class="hint" style="margin:0.6rem 0 0 1.1rem">${items}</ul>`;
+  }
+  $("net-stats").innerHTML = [
+    ["Attestations issued", a ? a.issued : "—", "green"],
+    ["Counterparty reports", r ? (r.reports || []).length : "—", ""],
+    ["Imported feeds", r ? (r.feeds || []).length : "—", ""],
+    ["Policy", v ? (v.valid ? (v.warnings.length ? "warnings" : "valid") : "invalid") : "—", v && !v.valid ? "rust" : v && v.warnings.length ? "copper" : "green"],
+  ].map(([k, val, cl]) => `<div class="stat"><div class="k">${k}</div><div class="v ${cl}">${esc(val)}</div></div>`).join("");
+}
+window.removeReport = (id) => act(`/api/reputation/reports/${encodeURIComponent(id)}`, { method: "DELETE" });
+$("rep-form").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const f = new FormData(e.target);
+  const { ok, body } = await api("/api/reputation/reports", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ subject: f.get("subject"), kind: f.get("kind"), severity: f.get("severity"), reason: f.get("reason") }) });
+  $("rep-result").textContent = ok ? `Reported. Payments to it are now ${body.report?.severity === "block" ? "refused" : "sent to a human"} on every rail.` : body.reason || body.error || "Couldn't save the report.";
+  if (ok) e.target.reset();
+  await refresh();
+});
+
 /* ---------- refresh loop ---------- */
 let trustTick = 0;
 async function refresh() {
   try {
-    const [ledger, stats, catalog, approvals, delegations, freezes, chains, analytics, policy, packs, rails, llm, costs, costsRail, rebilling, payoutsSummary] = await Promise.all([
+    const [ledger, stats, catalog, approvals, delegations, freezes, chains, analytics, policy, packs, rails, llm, costs, costsRail, rebilling, payoutsSummary, attestations, reputation, policyCheck] = await Promise.all([
       fetch("/api/ledger").then((r) => r.json()),
       fetch("/api/stats").then((r) => r.json()),
       fetch("/api/catalog").then((r) => r.json()),
@@ -382,10 +420,13 @@ async function refresh() {
       fetch("/api/costs?groupBy=rail&days=30").then((r) => r.json()).catch(() => null),
       fetch("/api/rebilling").then((r) => r.json()).catch(() => null),
       fetch("/api/payouts").then((r) => r.json()).catch(() => null),
+      fetch("/api/attestations").then((r) => r.json()).catch(() => null),
+      fetch("/api/reputation").then((r) => r.json()).catch(() => null),
+      fetch("/api/policy/validate").then((r) => r.json()).catch(() => null),
     ]);
-    Object.assign(S, { entries: ledger.entries || [], balances: ledger.balances || {}, mode: ledger.mode, stats, tools: catalog.tools || [], approvals: approvals.approvals || [], delegations: delegations.delegations || [], freezes: freezes.freezes || [], chains: chains.chains || [], analytics, policy, packs: packs.packs || [], rails: rails.rails || [], llm, costs, costsRail, rebilling, payouts: payoutsSummary });
+    Object.assign(S, { entries: ledger.entries || [], balances: ledger.balances || {}, mode: ledger.mode, stats, tools: catalog.tools || [], approvals: approvals.approvals || [], delegations: delegations.delegations || [], freezes: freezes.freezes || [], chains: chains.chains || [], analytics, policy, packs: packs.packs || [], rails: rails.rails || [], llm, costs, costsRail, rebilling, payouts: payoutsSummary, attestations, reputation, policyCheck });
     $("mode-badge").textContent = S.mode;
-    renderOverview(); renderAi(); renderCosts(); renderPayouts(); renderApprovals(); renderBudgets(); renderLedger(); renderChains(); renderAnalytics(); fillPolicyForm(false); renderReport();
+    renderOverview(); renderAi(); renderCosts(); renderPayouts(); renderNetwork(); renderApprovals(); renderBudgets(); renderLedger(); renderChains(); renderAnalytics(); fillPolicyForm(false); renderReport();
     if (trustTick++ % 3 === 0) { renderTrustList(); renderAgentsList(); }
   } catch (err) {
     console.error("console refresh failed", err);

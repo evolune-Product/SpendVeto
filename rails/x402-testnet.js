@@ -21,8 +21,8 @@ export default {
   id: "x402-live",
   name: "x402 v2 — live settlement",
   status: "live",
-  note: "real on-chain USDC/stablecoin settlement on every registry chain the configured facilitator supports (public facilitator: base-sepolia, solana-devnet, aptos-testnet, stellar-testnet, hedera-testnet, and XRPL mainnet today; CDP facilitator key unlocks EVM mainnets)",
-  async pay({ tool, account, chain, baseUrl, query }) {
+  note: "real on-chain USDC/stablecoin settlement on every registry chain the configured facilitator supports (public facilitator: base-sepolia, solana-devnet, aptos-testnet, stellar-testnet, hedera-testnet and xrpl-testnet today; XRPL mainnet only on explicit opt-in; a CDP facilitator key unlocks EVM mainnets)",
+  async pay({ tool, account, chain, baseUrl, query, attestation }) {
     const c = findChain(chain);
     if (!c?.caip2) {
       throw new Error(`chain "${chain}" is not in the registry — see shared-config.js CHAINS`);
@@ -56,7 +56,9 @@ export default {
     });
     const url = new URL(`${baseUrl}${tool.path}`);
     for (const [k, v] of Object.entries(query || {})) url.searchParams.set(k, v);
-    const response = await fetchWithPay(url);
+    // The wrapper clones this request for its paid retry, so a governed-spend
+    // attestation set here reaches the seller with the payment.
+    const response = await fetchWithPay(url, attestation ? { headers: { "X-SpendVeto-Attestation": attestation } } : undefined);
     if (!response.ok) {
       throw new Error(`request failed: ${response.status}`);
     }

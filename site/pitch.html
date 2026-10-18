@@ -97,9 +97,9 @@
     <div class="shell">
       <p class="counter reveal"><b>DECK · 2026-07</b> Pre-seed / accelerator</p>
       <h1 class="reveal">Your agents can spend.<br /><span class="g">SpendVeto decides.</span></h1>
-      <p class="sub reveal"><strong>The spend-governance layer for AI agents.</strong> Payment rails move an agent's money; SpendVeto decides whether it should be allowed to move it. Open source, x402 + MCP native, working today — every claim in this deck is executed by a 442-assertion verification suite before it's published.</p>
+      <p class="sub reveal"><strong>The spend-governance layer for AI agents.</strong> Payment rails move an agent's money; SpendVeto decides whether it should be allowed to move it. Open source, x402 + MCP native, working today — every claim in this deck is executed by a 458-assertion verification suite before it's published.</p>
     </div>
-    <span class="slide-num mono">01 / 12</span>
+    <span class="slide-num mono">01 / 13</span>
   </section>
 
   <section class="slide" id="s2">
@@ -112,7 +112,7 @@
         <p class="row reveal"><span>Almost nobody answers the question every team asks first: <b>"how do I stop it from overspending?"</b></span></p>
       </div>
     </div>
-    <span class="slide-num mono">02 / 12</span>
+    <span class="slide-num mono">02 / 13</span>
   </section>
 
   <section class="slide" id="s3">
@@ -125,7 +125,7 @@
         <p class="row reveal"><span>The open position is empty: <b>open-source, self-hostable, rail-neutral, MCP-native</b> buyer-side governance. The GitLab-vs-a-bank position — SpendVeto works <b>with</b> any rail and any custodian, competing with none.</span></p>
       </div>
     </div>
-    <span class="slide-num mono">03 / 12</span>
+    <span class="slide-num mono">03 / 13</span>
   </section>
 
   <section class="slide" id="s4">
@@ -146,9 +146,9 @@
         <div class="tile reveal"><b>Multichain governance</b><span>chain-scoped signatures, per-chain balances, chain allowlists across 20 registered chains, eight signature families</span></div>
         <div class="tile reveal"><b>Self-correcting denials + dry runs</b><span>every block returns a machine code + fix the agent can act on; dry-run any intent with zero side effects; time-boxed budgets that self-expire</span></div>
       </div>
-      <p class="foot-note reveal">Real x402 on Base Sepolia + zero-setup simulate mode with real ECDSA and replay protection. 442 end-to-end assertions: <span class="mono">npm run verify</span>.</p>
+      <p class="foot-note reveal">Real x402 on Base Sepolia + zero-setup simulate mode with real ECDSA and replay protection. 458 end-to-end assertions: <span class="mono">npm run verify</span>.</p>
     </div>
-    <span class="slide-num mono">04 / 12</span>
+    <span class="slide-num mono">04 / 13</span>
   </section>
 
   <section class="slide" id="s5">
@@ -158,7 +158,7 @@
       <p class="quote reveal">"Stripe moves money. SpendVeto decides whether the agent should be allowed to move it."</p>
       <p class="sub reveal">Rail-agnostic by design: x402 today; Google AP2, Stripe MPP, and Mastercard adapters on the roadmap — the policy layer shouldn't care which rail settles.</p>
     </div>
-    <span class="slide-num mono">05 / 12</span>
+    <span class="slide-num mono">05 / 13</span>
   </section>
 
   <section class="slide" id="s6">
@@ -169,23 +169,37 @@
         <table class="data">
           <thead><tr><th>Player</th><th>What they are</th><th>What they don't do</th></tr></thead>
           <tbody>
-            <tr><td>Coinbase x402 ecosystem</td><td>The rail itself</td><td>No buyer-side policy, budgets, approvals</td></tr>
-            <tr><td>Cloudflare · Stripe MPP · Nevermined</td><td>Seller-side monetization</td><td>Nothing for the paying agent</td></tr>
-            <tr><td>Skyfire ($9.5M seed)</td><td>Wallets + identity + execution</td><td>Not a policy/governance SDK</td></tr>
-            <tr><td>Payman</td><td>Closest: limits, approvals</td><td>Fiat, closed, enterprise — not x402/MCP-native</td></tr>
-            <tr><td>Catena Labs</td><td>Enterprise agent-payment control plane</td><td>Closed, institutional; no OSS, no MCP middleware</td></tr>
-            <tr><td>Pleo AI agents · ReimburseAI</td><td>AI inside human spend/expenses</td><td>Governs humans' spend, not agents' wallets</td></tr>
+            <tr><td>Stripe — Issuing controls, Link approvals, agent guardrails (preview)</td><td>Agent spend controls on Stripe instruments</td><td>Stripe's own rails only</td></tr>
+            <tr><td>Sapiom · Fragment · Natural (funded 2026)</td><td>Agent spend controls and agent payments</td><td>Category validation at our stage — $15.75M + $35M, $12M, $9.8M + $30M</td></tr>
+            <tr><td>Ramp ($60B) — AI token limits, agent cards</td><td>Limits by user or API key; its own cards</td><td>Its own cards and four AI providers; no seller-verifiable proof or shared reputation found</td></tr>
+            <tr><td>LLM gateways — LiteLLM, Portkey, Cloudflare</td><td>Budgets on model traffic</td><td>Model spend only — budget stops at the model bill</td></tr>
+            <tr><td>Coinbase x402 · Spend Permissions</td><td>The rail, and wallet allowances</td><td>Coinbase wallets only</td></tr>
+            <tr><td>AP2 · Mastercard Verifiable Intent</td><td>Signed records of what a user authorized</td><td>No budgets; prove user intent, not the org's policy decision — composes with our attestations</td></tr>
           </tbody>
         </table>
       </div>
-      <p class="foot-note reveal">The gap: open-source, developer-first, buyer-side governance in the stack agents already use (MCP). Skyfire's $9.5M seed — Coinbase Ventures + a16z CSX — prices this space at exactly our stage.</p>
+      <p class="foot-note reveal">The gap: open-source, buyer-side governance across every rail an agent spends on, with open network formats on top. 2026 rounds price the category at our stage: Sapiom $15.75M seed then a $35M Series A six months later, Natural $9.8M then $30M, Baselayer $35M, Fragment $12M.</p>
     </div>
-    <span class="slide-num mono">06 / 12</span>
+    <span class="slide-num mono">06 / 13</span>
+  </section>
+
+  <section class="slide" id="s6b">
+    <div class="shell">
+      <p class="counter reveal"><b>07</b> Defensibility</p>
+      <h2 class="reveal">Stripe can copy a feature. It can't copy a network it doesn't own.</h2>
+      <div class="rows">
+        <p class="row reveal"><span><b>Every incumbent control is single-rail.</b> Stripe's limits, approvals and agent guardrails sit on Stripe instruments. OpenAI and Anthropic cap their own models monthly, and by their own docs spend can exceed it. Coinbase governs its wallets. An agent's budget spans all of them.</span></p>
+        <p class="row reveal"><span><b>Neutral beats owned.</b> x402 moved to the Linux Foundation, with Stripe, Visa, Mastercard, Google and AWS as members. Visa tried to buy Plaid; Google paid $32B for multi-cloud Wiz; Stripe bought Bridge, Privy and Metronome rather than build them.</span></p>
+        <p class="row reveal"><span><b>What compounds — shipped in v0.29.0.</b> Spend attestations a seller verifies offline (two-sided network), fraud reports shared across companies as signed hashes (data network), an open JSON-Schema policy standard linted by a GitHub Action (ecosystem).</span></p>
+      </div>
+      <p class="foot-note reveal">Risks we take seriously: Stripe bundling "good enough" limits for Stripe-only spenders; signed user-intent proofs already exist (AP2, Mastercard Verifiable Intent) — our attestations prove the organization's policy decision and compose with them; the network has no outside participants yet.</p>
+    </div>
+    <span class="slide-num mono">07 / 13</span>
   </section>
 
   <section class="slide" id="s7">
     <div class="shell">
-      <p class="counter reveal"><b>07</b> Market</p>
+      <p class="counter reveal"><b>08</b> Market</p>
       <h2 class="reveal">Every agent dollar needs a spend decision before it moves.</h2>
       <div class="stat-grid">
         <div class="reveal"><div class="big"><em>$3–5T</em></div><p class="cap">TAM — global agentic-commerce spend by 2030 (McKinsey; Bain: $300–500B US). Stablecoins already move $4.5T/quarter.</p></div>
@@ -194,12 +208,12 @@
       </div>
       <p class="foot-note reveal">Monetizes like usage-billing infra (Lago, Metronome, Orb): open-source core, hosted platform for money. Spend-management software (human spenders) is $26B → $56B by 2032 — agents are the next cohort.</p>
     </div>
-    <span class="slide-num mono">07 / 12</span>
+    <span class="slide-num mono">08 / 13</span>
   </section>
 
   <section class="slide" id="s7b">
     <div class="shell">
-      <p class="counter reveal"><b>08</b> Where adoption starts</p>
+      <p class="counter reveal"><b>09</b> Where adoption starts</p>
       <h2 class="reveal">Two wedges that don't need anyone to believe in crypto first.</h2>
       <div class="rows">
         <p class="row reveal"><span><b>AI spend control — a buyer exists today.</b> Every team running agents has an LLM bill an agent loop can blow up. <span class="mono">npm run quickstart:ai</span> gives an agent a hard dollar budget and shows the next call refused <i>before</i> the model is called. JavaScript and Python clients.</span></p>
@@ -207,12 +221,12 @@
         <p class="row reveal"><span><b>Honest limits:</b> the UPI adapter is an evaluator — it does not initiate or settle UPI, is not a PSP, and claims no NPCI/RBI approval; NPCI's agent protocol is not live and needs RBI sign-off. We are the rule layer that sits in front of whatever rail is cleared.</span></p>
       </div>
     </div>
-    <span class="slide-num mono">08 / 12</span>
+    <span class="slide-num mono">09 / 13</span>
   </section>
 
   <section class="slide" id="s8">
     <div class="shell">
-      <p class="counter reveal"><b>09</b> Fit — why these funds, right now</p>
+      <p class="counter reveal"><b>10</b> Fit — why these funds, right now</p>
       <h2 class="reveal">Two RFS items in one repo.</h2>
       <div class="rows">
         <p class="row reveal"><span><b>Y Combinator</b> — the 2026 RFS explicitly asks for agent infrastructure naming MCPs, and stablecoin infrastructure. YC now funds S26 in <b>$500K USDC</b>.</span></p>
@@ -220,12 +234,12 @@
         <p class="row reveal"><span><b>Alliance DAO</b> — crypto×AI accelerator, $500K, rolling applications, decisions in 2 weeks. Next cohort starts <b>Sept 7, 2026</b>.</span></p>
       </div>
     </div>
-    <span class="slide-num mono">09 / 12</span>
+    <span class="slide-num mono">10 / 13</span>
   </section>
 
   <section class="slide" id="s9">
     <div class="shell">
-      <p class="counter reveal"><b>10</b> Traction plan — before applications go in</p>
+      <p class="counter reveal"><b>11</b> Traction plan — before applications go in</p>
       <h2 class="reveal">Ship in public. Walk in with usage, not promises.</h2>
       <div class="rows">
         <p class="row reveal"><span><b>Launch:</b> GitHub OSS → Show HN, awesome-x402, MCP registries, x402 Discord. Site, deck, demo script, and listing blurbs are already built.</span></p>
@@ -233,12 +247,12 @@
         <p class="row reveal"><span><b>The metric nobody else can show:</b> blocked-spend dollars — already a first-class stat — plus one testimonial from a team whose runaway agent got auto-frozen mid-loop.</span></p>
       </div>
     </div>
-    <span class="slide-num mono">10 / 12</span>
+    <span class="slide-num mono">11 / 13</span>
   </section>
 
   <section class="slide" id="s10">
     <div class="shell">
-      <p class="counter reveal"><b>11</b> Honest gaps — and what funding fixes</p>
+      <p class="counter reveal"><b>12</b> Honest gaps — and what funding fixes</p>
       <h2 class="reveal">Prototype-grade where it should be. Real where it must be.</h2>
       <div class="rows">
         <p class="row reveal"><span>JSON-file storage → <b>hosted Postgres backend</b> is the first funded milestone.</span></p>
@@ -247,12 +261,12 @@
         <p class="row reveal"><span>No production users yet → that's what the 30–60 day plan is for.</span></p>
       </div>
     </div>
-    <span class="slide-num mono">11 / 12</span>
+    <span class="slide-num mono">12 / 13</span>
   </section>
 
   <section class="slide" id="s11">
     <div class="shell">
-      <p class="counter reveal"><b>12</b> The ask</p>
+      <p class="counter reveal"><b>13</b> The ask</p>
       <h2 class="reveal" style="font-size:clamp(2.2rem,5.5vw,4.2rem)">$500K to go from<br /><span class="g">verified prototype</span> to hosted product.</h2>
       <p class="sub reveal">Multi-rail adapters (AP2, Stripe MPP), richer anomaly models and real-time alerting, SOC 2 path, and the hosted governance dashboard that is the business.</p>
       <div class="rows" style="margin-top:2rem">
@@ -260,7 +274,7 @@
         <p class="row reveal"><span>All sources for every number: <a href="https://github.com/revanthrajeev/spendveto/blob/main/PITCH.md" target="_blank" rel="noopener">PITCH.md in the repo</a> — McKinsey, Bain, Morgan Stanley, Forbes/BCG, Fortune BI, Coinbase disclosures.</span></p>
       </div>
     </div>
-    <span class="slide-num mono">12 / 12</span>
+    <span class="slide-num mono">13 / 13</span>
   </section>
 
 </div>
@@ -269,7 +283,7 @@
 
 <footer>
   <span class="wordmark">SPENDVETO<span class="tick">_</span></span>
-  <span>Every product claim in this deck is covered by <span class="mono">npm run verify</span> — 442 end-to-end assertions.</span>
+  <span>Every product claim in this deck is covered by <span class="mono">npm run verify</span> — 458 end-to-end assertions.</span>
   <div class="links"><a href="https://github.com/revanthrajeev/spendveto" target="_blank" rel="noopener">GitHub</a><a href="./use-cases.html">Use cases</a><a href="./playground.html">Playground</a><a href="./index.html">Home</a><a href="./docs.html">Docs</a><a href="./about.html">About</a><a href="./security.html">Security</a><a href="./contact.html">Contact</a><a href="./privacy.html">Privacy</a><a href="./terms.html">Terms</a></div>
 </footer>
 

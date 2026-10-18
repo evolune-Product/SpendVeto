@@ -551,7 +551,7 @@ export function createLlmGuard(deps) {
       body.stream_options = { ...(body.stream_options || {}), include_usage: true };
       sendBody = Buffer.from(JSON.stringify(body));
     }
-    const estimate = estimateRequest(r.provider, body, { outputCapTokens: settings.outputEstimateCapTokens, overrides: settings.prices });
+    const estimate = estimateRequest(r.provider, body, { outputCapTokens: settings.outputEstimateCapTokens, overrides: settings.prices, unknownRates: settings.unknownModelRates });
     const fingerprint = settings.loop.enabled ? loopFingerprint(r.provider, body) : null;
     const tags = parseTags(req.headers);
     const tagKeys = tags ? Object.entries(tags).map(([k, v]) => `${k}=${v}`) : [];
@@ -597,13 +597,13 @@ export function createLlmGuard(deps) {
       booked = true;
       holds.delete(holdId);
       const ok = status >= 200 && status < 300;
-      let cost = usage ? costOf(r.provider, model, usage, settings.prices) : null;
+      let cost = usage ? costOf(r.provider, model, usage, settings.prices, settings.unknownModelRates) : null;
       let priceSource = cost?.priceSource;
       if (!cost && ok) {
         // A 2xx that never reported usage (a stream cut before message_start,
         // a proxy that strips it): book the estimated INPUT cost rather than
         // zero — conservative, and labelled as an estimate.
-        const inputOnly = round6((estimate.inputTokens * lookupPrice(r.provider, model, settings.prices).price.input) / 1e6);
+        const inputOnly = round6((estimate.inputTokens * lookupPrice(r.provider, model, settings.prices, settings.unknownModelRates).price.input) / 1e6);
         cost = { usd: inputOnly, usage: null };
         priceSource = "estimated (provider reported no usage)";
       }

@@ -88,10 +88,12 @@ const LITHIC_CODE = {
   card_mcc_not_allowed: "UNAUTHORIZED_MERCHANT",
   card_currency_unsupported: "UNAUTHORIZED_MERCHANT",
   card_velocity: "VELOCITY_EXCEEDED",
+  card_merchant_reputation_block: "UNAUTHORIZED_MERCHANT",
+  card_merchant_reputation_review: "UNAUTHORIZED_MERCHANT",
 };
 
 export function createCardRouter(deps) {
-  const { loadPolicy, checkPolicy, policyHash, appendLedgerEntry, getLedger, findActiveFreeze, listDelegations, readCards, pseudoAddress, childAddress } = deps;
+  const { loadPolicy, checkPolicy, policyHash, appendLedgerEntry, getLedger, findActiveFreeze, listDelegations, readCards, pseudoAddress, childAddress, reputationCheck } = deps;
   const router = express.Router();
   const raw = express.raw({ type: () => true, limit: "1mb" });
   const authsAt = new Map(); // address -> [ms]
@@ -117,6 +119,14 @@ export function createCardRouter(deps) {
     const deny = (code, reason) => ({ approved: false, code, reason });
     const { address } = auth.identity;
     if (findActiveFreeze(address)) return deny("frozen", `card "${auth.identity.label}" is frozen in SpendVeto`);
+    // Federated reputation on the card network's merchant id. A card
+    // authorization answers in about two seconds, so "review" can't wait for
+    // a human — it declines, failing closed like everything else here.
+    if (auth.merchantId && reputationCheck) {
+      const rep = reputationCheck([`card-merchant:${auth.merchantId}`]);
+      if (rep.verdict === "block") return deny("card_merchant_reputation_block", `merchant ${auth.merchant || auth.merchantId} is on a reputation block list (${rep.summary})`);
+      if (rep.verdict === "review") return deny("card_merchant_reputation_review", `merchant ${auth.merchant || auth.merchantId} is flagged for review (${rep.summary}) — an authorization can't wait for a human, so it is declined`);
+    }
     if (!s.allowedCurrencies.map((c) => String(c).toLowerCase()).includes(String(auth.currency).toLowerCase())) {
       return deny("card_currency_unsupported", `authorizations in ${String(auth.currency).toUpperCase()} aren't governed (allowed: ${s.allowedCurrencies.join(", ")}) — declined rather than compared across currencies`);
     }
@@ -160,6 +170,7 @@ export function createCardRouter(deps) {
         authorizationId: auth.authorizationId,
         mcc: auth.mcc || undefined,
         merchant: auth.merchant || undefined,
+        merchantId: auth.merchantId || undefined,
         decisionId,
         ...(auth.identity.tags ? { tags: auth.identity.tags } : {}),
         ...(decision.approved ? {} : { reason: decision.reason, code: decision.code }),
@@ -194,6 +205,7 @@ export function createCardRouter(deps) {
       mcc: a.merchant_data?.category_code || null,
       category: a.merchant_data?.category || null,
       merchant: a.merchant_data?.name || null,
+      merchantId: a.merchant_data?.network_id || null,
       identity: identityFor("stripe", card.id, card.last4, card.metadata?.spendveto_agent),
     };
     const decision = await decide({ rail: "stripe", auth });
@@ -230,6 +242,7 @@ export function createCardRouter(deps) {
       mcc: asa.merchant?.mcc || null,
       category: null,
       merchant: asa.merchant?.descriptor || null,
+      merchantId: asa.merchant?.acceptor_id || null,
       identity: identityFor("lithic", cardToken, asa.card?.last_four, null),
     };
     const decision = await decide({ rail: "lithic", auth });

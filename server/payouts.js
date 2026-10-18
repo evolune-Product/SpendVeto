@@ -166,7 +166,7 @@ export const PROVIDERS = {
 };
 
 export function createPayouts(deps) {
-  const { dataPath, loadPolicy, checkPolicy, policyHash, appendLedgerEntry, getLedger, findActiveFreeze, listDelegations, createApproval, getApproval, readAgents, childAddress, pseudoAddress } = deps;
+  const { dataPath, loadPolicy, checkPolicy, policyHash, appendLedgerEntry, getLedger, findActiveFreeze, listDelegations, createApproval, getApproval, readAgents, childAddress, pseudoAddress, reputationCheck } = deps;
   const PATH = dataPath("payouts.json");
   const read = () => {
     try {
@@ -300,6 +300,12 @@ export function createPayouts(deps) {
     }
 
     if (findActiveFreeze(identity.address)) return deny("frozen", `"${identity.label}" is frozen`, "a human must unfreeze it in the Console before it can pay anyone");
+    // Federated reputation (server/reputation.js) on the provider's payee id
+    // and, when the agent names it, the counterparty's portable identity — a
+    // UPI VPA, IBAN, email or domain other organizations can recognize too.
+    const counterparty = body.counterparty ? String(body.counterparty).trim().slice(0, 120) : null;
+    const rep = reputationCheck ? reputationCheck([payee, counterparty].filter(Boolean)) : null;
+    if (rep?.verdict === "block") return deny("payee_reputation_block", `this payee is on a reputation block list (${rep.summary})`, "do not pay this counterparty; if the report looks wrong, a human can review it in the Console");
     if (Array.isArray(s.allowedPurposes) && s.allowedPurposes.length && !s.allowedPurposes.includes(purpose)) return deny("payout_purpose_not_allowed", `purpose "${purpose}" is not in policy.payouts.allowedPurposes`, `use one of: ${s.allowedPurposes.join(", ")}`);
     if (amountUSD > s.maxPerPayoutUSD) return deny("payout_cap", `$${amountUSD.toFixed(2)} exceeds maxPerPayoutUSD $${s.maxPerPayoutUSD}`, "split it only if a human agrees, or have a human raise policy.payouts.maxPerPayoutUSD");
     if (countHour(identity.address) >= s.maxPayoutsPerHour) return deny("payout_velocity", `more than ${s.maxPayoutsPerHour} payouts in the last hour`, "slow down; a burst of payouts is the shape of a compromised agent");
@@ -315,16 +321,18 @@ export function createPayouts(deps) {
     const id = `po_${randomUUID().replace(/-/g, "").slice(0, 24)}`;
     const newPayee = !s.allowedPayees.includes(payee);
     const overThreshold = amountUSD > s.requireApprovalAboveUSD;
+    const flagged = rep?.verdict === "review";
     const tags = body.tags && typeof body.tags === "object" ? Object.fromEntries(Object.entries(body.tags).slice(0, 10).map(([k, v]) => [String(k).slice(0, 32), String(v).slice(0, 64)])) : null;
     const record = {
       id, provider: providerId, payee, amount, currency, amountUSD, fx, method, purpose, reference: body.reference ? String(body.reference).slice(0, 40) : null,
       description: body.description ? String(body.description).slice(0, 200) : null, tags,
+      ...(counterparty ? { counterparty } : {}),
       address: identity.address, agent: identity.label, idempotencyKey: idempotencyKey || id,
       status: "pending", createdAt: new Date().toISOString(),
     };
 
-    if (newPayee || overThreshold) {
-      const reasons = [newPayee ? "a payee not on policy.payouts.allowedPayees" : null, overThreshold ? `above requireApprovalAboveUSD $${s.requireApprovalAboveUSD}` : null].filter(Boolean).join(" and ");
+    if (newPayee || overThreshold || flagged) {
+      const reasons = [newPayee ? "a payee not on policy.payouts.allowedPayees" : null, overThreshold ? `above requireApprovalAboveUSD $${s.requireApprovalAboveUSD}` : null, flagged ? `a payee flagged for review (${rep.summary})` : null].filter(Boolean).join(" and ");
       const approval = createApproval({ address: identity.address, resource: `payout:${providerId}:${payee}`, price: amountUSD });
       record.status = "awaiting_approval";
       record.approvalId = approval.id;

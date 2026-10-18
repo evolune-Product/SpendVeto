@@ -14,13 +14,13 @@ import { HTTPFacilitatorClient } from "@x402/core/server";
 import { MODE, PORT, TOOLS, CHAINS, FACILITATOR_URL, findChain, DEFAULT_CHAIN, dataPath, PACKAGE_DATA_DIR } from "../shared-config.js";
 import { randomUUID } from "node:crypto";
 import { writeFileSync } from "node:fs";
-import { createSimulateGate, receiptMessage, signDecision, signUpiDecision, signEuDecision, signUkDecision, signBrDecision, signUsDecision, consentMessage } from "./simulate.js";
+import { createSimulateGate, receiptMessage, signDecision, signUpiDecision, signEuDecision, signUkDecision, signBrDecision, signUsDecision, consentMessage, instanceSigner } from "./simulate.js";
 import { decisionEvents, toJSONL } from "./events.js";
 import { checkPolicy, policyHash } from "../client/policy.js";
 import { verifyMessage } from "viem";
 import { runTool } from "./agent.js";
 import { getLedger, getBalances, appendLedgerEntry, creditSimBalance, verifyLedgerChain } from "./ledger.js";
-import { createApproval, getApproval, decideApproval, listApprovals } from "./approvals.js";
+import { createApproval, getApproval, decideApproval, listApprovals, findApprovableFor } from "./approvals.js";
 import { worldIdConfigured, verifyWorldIdProof, rpContextFor, WORLD_ACTION } from "./worldid.js";
 import { listDelegations, createDelegation, revokeDelegation } from "./delegations.js";
 import { listFreezes, findActiveFreeze, createFreeze, unfreeze } from "./freezes.js";
@@ -54,6 +54,9 @@ import { createLlmGuard, pseudoAddress } from "./llmguard.js";
 import { createCardRouter, cardSettings } from "./cards.js";
 import { createPayouts } from "./payouts.js";
 import { costReport, focusRows, toFocusCsv, createRebiller, rebillingSettings } from "./finops.js";
+import { mintAttestation, verifyAttestation, ATTESTATION_PREFIX, ATTESTATION_HEADER, ATTESTATION_MESSAGE_PREFIX, ATTESTATION_DEFAULT_TTL_SECONDS, ATTESTATION_MAX_TTL_SECONDS, ATTESTATION_RAILS } from "./attestations.js";
+import { createReputation, reputationSettings, FEED_SPEC, FEED_MESSAGE_PREFIX } from "./reputation.js";
+import { validatePolicy, POLICY_SCHEMA_ID, POLICY_SCHEMA_PATH } from "./policyspec.js";
 
 dotenv.config({ path: fileURLToPath(new URL("../.env.local", import.meta.url)), quiet: true });
 
@@ -101,6 +104,10 @@ const llmGuard = createLlmGuard({
 });
 app.use(llmGuard.router);
 
+// Federated counterparty reputation (server/reputation.js), consulted by the
+// policy engine, payouts and card authorizations alike.
+const reputation = createReputation({ dataPath, loadPolicy: () => readJsonFile(dataPath("policy.json"), {}), signer: instanceSigner });
+
 // Card authorization webhooks (server/cards.js) need raw bytes too — the
 // Stripe and Lithic signatures are computed over the exact body received.
 app.use(createCardRouter({
@@ -114,6 +121,7 @@ app.use(createCardRouter({
   readCards: () => readJsonFile(dataPath("cards.json"), []),
   pseudoAddress,
   childAddress: childAddressFor,
+  reputationCheck: (subjects) => reputation.check(subjects),
 }));
 
 app.use(express.json());
@@ -1452,6 +1460,7 @@ const payouts = createPayouts({
   readAgents: () => readJsonFile(dataPath("agents.json"), []),
   childAddress: childAddressFor,
   pseudoAddress,
+  reputationCheck: (subjects) => reputation.check(subjects),
 });
 app.post("/api/payouts", async (req, res) => {
   const out = await payouts.create(req, req.body || {});
@@ -1741,8 +1750,156 @@ app.get("/api/otel/spans", async (req, res) => {
   res.json({ spanCount: spans.length, traceparent: req.get("traceparent") || null, exported, payload });
 });
 
+// ---- The network layer: attestations a seller verifies, reputation shared across organizations, an open policy standard ----
+
+// Governed-spend attestations (server/attestations.js). Minted only after the
+// server-side policy check passes — and above the approval line only once a
+// human approved — so holding one means this instance's policy said yes.
+const ATTESTATIONS_FILE = dataPath("attestations.json");
+const isEvmAddress = (a) => /^0x[0-9a-fA-F]{40}$/.test(String(a || ""));
+function attestationSettings() {
+  const a = readJsonFile(POLICY_FILE, {}).attestations || {};
+  const ttl = Number(a.ttlSeconds);
+  return {
+    ttlSeconds: Number.isInteger(ttl) ? Math.min(ATTESTATION_MAX_TTL_SECONDS, Math.max(30, ttl)) : ATTESTATION_DEFAULT_TTL_SECONDS,
+    trustedIssuers: Array.isArray(a.trustedIssuers) ? a.trustedIssuers.filter(isEvmAddress) : [],
+    requireOnCatalog: Boolean(a.requireOnCatalog),
+  };
+}
+
+app.post("/api/attestations", async (req, res) => {
+  const b = req.body || {};
+  const address = String(b.address || "").trim();
+  const resource = String(b.resource || "").trim().slice(0, 300);
+  const price = Number(b.price ?? b.amountUSD);
+  if (!address || !resource || !(price >= 0)) return res.status(400).json({ error: "address, resource and price (USD) are required" });
+  const payee = b.payee ? String(b.payee).trim().slice(0, 200) : null;
+  const chain = b.chain ? String(b.chain) : undefined;
+  const rail = ATTESTATION_RAILS.includes(b.rail) ? b.rail : "x402";
+  let verdict;
+  try {
+    verdict = await checkPolicy(address, price, b.toolId ? String(b.toolId) : undefined, chain, b.category ? String(b.category) : undefined, payee || undefined);
+  } catch {
+    return res.status(503).json({ error: "policy engine unavailable — no attestation without a decision" });
+  }
+  if (!verdict.allowed) return res.status(403).json({ error: "attestation_refused", code: verdict.code || "policy_denied", reason: verdict.reason, suggestion: verdict.suggestion });
+  let approvalId = null;
+  if (verdict.requiresApproval) {
+    const approval = findApprovableFor(address, resource, price);
+    if (!approval) {
+      return res.status(409).json({ error: "attestation_refused", code: "approval_required", reason: "this spend needs a human approval first — an attestation vouches only for what was actually decided", suggestion: "request the approval (POST /api/approvals), let a human decide, then ask for the attestation" });
+    }
+    approvalId = approval.id; // not consumed: the payment itself still has to present it
+  }
+  const { ttlSeconds } = attestationSettings();
+  const iat = Math.floor(Date.now() / 1000);
+  const claims = {
+    v: 1, iss: instanceSigner.address, sub: isEvmAddress(address) ? address.toLowerCase() : address, aud: payee, res: resource,
+    amt: String(price), cur: "USD", rail, ...(chain ? { chain } : {}), pol: policyHash(), dec: approvalId ? "approved" : "allowed",
+    ...(approvalId ? { apr: approvalId } : {}), iat, exp: iat + ttlSeconds, jti: randomUUID(),
+  };
+  const token = await mintAttestation(claims, instanceSigner.signMessage);
+  const log = readJsonFile(ATTESTATIONS_FILE, []);
+  log.push({ jti: claims.jti, sub: claims.sub, aud: claims.aud, res: claims.res, amt: claims.amt, rail, dec: claims.dec, iat, exp: claims.exp });
+  writeFileSync(ATTESTATIONS_FILE, JSON.stringify(log.slice(-2000), null, 2));
+  res.status(201).json({ token, claims, header: ATTESTATION_HEADER, issuer: instanceSigner.address, persistent: instanceSigner.persistent });
+});
+
+// Check a token the way a seller would — this instance plus the issuers its
+// policy trusts. Informational: unlike a seller's own gate, nothing is consumed.
+app.post("/api/attestations/verify", async (req, res) => {
+  const b = req.body || {};
+  if (!b.token) return res.status(400).json({ error: "token is required" });
+  const { trustedIssuers } = attestationSettings();
+  res.json(await verifyAttestation(b.token, { trustedIssuers: [instanceSigner.address, ...trustedIssuers], audience: b.audience, resource: b.resource, amountUSD: b.price ?? b.amountUSD, payer: b.payer }));
+});
+
+app.get("/api/attestations", (req, res) => {
+  const log = readJsonFile(ATTESTATIONS_FILE, []);
+  res.json({ issuer: instanceSigner.address, persistent: instanceSigner.persistent, settings: attestationSettings(), issued: log.length, recent: log.slice(-50).reverse() });
+});
+
+// The instance's public identity: what a seller pins to accept its
+// attestations, and what a subscriber pins to import its reputation feed.
+app.get("/.well-known/spendveto-issuer.json", (req, res) => {
+  res.json({
+    spec: "spendveto-issuer/v1",
+    issuer: instanceSigner.address,
+    persistent: instanceSigner.persistent,
+    attestations: { format: `${ATTESTATION_PREFIX}.<base64url claims>.<0x signature>`, header: ATTESTATION_HEADER, messagePrefix: ATTESTATION_MESSAGE_PREFIX, signature: "EIP-191 personal_sign, secp256k1", ttlSeconds: attestationSettings().ttlSeconds, mint: "/api/attestations", verify: "/api/attestations/verify" },
+    reputation: { spec: FEED_SPEC, feed: "/api/reputation/feed", messagePrefix: FEED_MESSAGE_PREFIX },
+    policySchema: POLICY_SCHEMA_ID,
+    docs: "https://github.com/revanthrajeev/spendveto/blob/main/docs/NETWORK.md",
+  });
+});
+
+// Federated reputation (server/reputation.js).
+app.get("/api/reputation", (req, res) => {
+  res.json(reputation.summary());
+});
+app.post("/api/reputation/reports", requireAuth("admin"), (req, res) => {
+  const out = reputation.report(req.body || {});
+  if (!out.ok) return res.status(out.status).json({ error: out.code, reason: out.reason });
+  res.status(out.created ? 201 : 200).json(out);
+});
+app.delete("/api/reputation/reports/:id", requireAuth("admin"), (req, res) => {
+  const removed = reputation.removeReport(req.params.id);
+  res.status(removed ? 200 : 404).json({ ok: removed });
+});
+app.get("/api/reputation/feed", async (req, res) => {
+  res.json(await reputation.exportFeed());
+});
+app.post("/api/reputation/import", requireAuth("admin"), async (req, res) => {
+  const out = await reputation.importFeed(req.body?.feed ?? req.body);
+  res.status(out.ok ? 200 : out.status).json(out);
+});
+app.get("/api/reputation/check", (req, res) => {
+  const q = req.query.subject;
+  const subjects = (Array.isArray(q) ? q : q ? [q] : []).map(String).slice(0, 20);
+  if (!subjects.length) return res.status(400).json({ error: "subject is required (repeat it to check several)" });
+  res.json(reputation.check(subjects));
+});
+app.put("/api/reputation/settings", requireAuth("admin"), (req, res) => {
+  const b = req.body || {};
+  const policy = readJsonFile(POLICY_FILE, {});
+  const r = { ...(policy.reputation || {}) };
+  if (typeof b.enabled === "boolean") r.enabled = b.enabled;
+  if (b.importedAction !== undefined) {
+    if (!["deny", "review"].includes(b.importedAction)) return res.status(400).json({ error: 'importedAction must be "deny" or "review"' });
+    r.importedAction = b.importedAction;
+  }
+  if (b.trustedPublishers !== undefined) {
+    if (!Array.isArray(b.trustedPublishers) || !b.trustedPublishers.every(isEvmAddress)) return res.status(400).json({ error: "trustedPublishers must be a list of 0x addresses (each publisher's issuer address)" });
+    r.trustedPublishers = [...new Set(b.trustedPublishers.map((a) => a.toLowerCase()))].slice(0, 100);
+  }
+  if (b.publisherName !== undefined) {
+    const name = String(b.publisherName || "").trim().slice(0, 80);
+    if (name) r.publisherName = name;
+    else delete r.publisherName;
+  }
+  policy.reputation = r;
+  writeFileSync(POLICY_FILE, JSON.stringify(policy, null, 2));
+  res.json({ settings: reputationSettings(policy) });
+});
+
+// The open policy standard (spec/policy-v1.schema.json + server/policyspec.js).
+app.get("/api/policy/schema", (req, res) => {
+  res.type("application/schema+json").send(readFileSync(POLICY_SCHEMA_PATH));
+});
+app.get("/api/policy/validate", (req, res) => {
+  res.json(validatePolicy(readJsonFile(POLICY_FILE, {})));
+});
+app.post("/api/policy/validate", (req, res) => {
+  const b = req.body;
+  const wrapped = b && typeof b === "object" && !Array.isArray(b) && Object.keys(b).length === 1 && b.policy && typeof b.policy === "object";
+  res.json(validatePolicy(wrapped ? b.policy : b));
+});
+
 app.listen(PORT, process.env.HOST || undefined, () => {
   console.log(`SpendVeto server — mode: ${MODE}`);
+  // A typo in the policy file fails open (the engine never reads the key), so say so at boot.
+  const policyCheck = validatePolicy(readJsonFile(POLICY_FILE, {}));
+  if (!policyCheck.valid) console.warn(`policy.json has ${policyCheck.errors.length} problem(s): ${policyCheck.errors.slice(0, 3).map((e) => `${e.path} ${e.message}`).join("; ")} — see GET /api/policy/validate`);
   console.log(`Dashboard: http://localhost:${PORT}/`);
   console.log(`Catalog:   ${TOOLS.map((t) => `${t.path} ($${t.price})`).join(", ")}`);
   if (MODE === "simulate") console.log(`Client wallets are auto-seeded with a $5.00 simulated USDC balance on first call.`);

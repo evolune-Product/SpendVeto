@@ -5,7 +5,8 @@ import { getSimBalance, debitSimBalance, appendLedgerEntry } from "./ledger.js";
 import { findActiveFreeze } from "./freezes.js";
 import { maybeFreezeForBurst } from "./anomaly.js";
 import { findApprovableFor, consumeApproval } from "./approvals.js";
-import { checkPolicy, policyHash } from "../client/policy.js";
+import { checkPolicy, policyHash, loadPolicy } from "../client/policy.js";
+import { verifyAttestation, createReplayCache, ATTESTATION_HEADER } from "./attestations.js";
 import { sendUsageEvent } from "./billing.js";
 import { getShadowPolicy, recordShadowObservation } from "./shadow.js";
 import { DEFAULT_CHAIN, findChain } from "../shared-config.js";
@@ -19,6 +20,19 @@ const PAYOUT_ADDRESS = process.env.SERVER_PAYOUT_ADDRESS || "0x00000000000000000
 // can be verified by anyone later — an audit trail that doesn't rely on
 // trusting the ledger file. Persistent if SERVER_SIGNER_KEY is set.
 const receiptSigner = privateKeyToAccount(process.env.SERVER_SIGNER_KEY || generatePrivateKey());
+
+// The instance's public identity — the address other parties pin. Governed-
+// spend attestations (server/attestations.js) and reputation feeds
+// (server/reputation.js) are signed with the same key, each under its own
+// message prefix, so no signature made for one can be replayed as another.
+export const instanceSigner = {
+  address: receiptSigner.address,
+  persistent: Boolean(process.env.SERVER_SIGNER_KEY),
+  signMessage: (message) => receiptSigner.signMessage({ message }),
+};
+
+// Seller-side replay guard for attestations presented at the catalog gate.
+const attestationReplay = createReplayCache();
 
 export function receiptMessage({ receiptId, payer, resource, price, chain }) {
   return `spendveto-receipt:${receiptId}:${payer}:${resource}:${price}:${chain}`;
@@ -186,6 +200,32 @@ export function createSimulateGate(tool) {
       return res.status(402).json(issueChallenge(tool, "invalid_signature"));
     }
     entry.used = true;
+
+    // Seller-side: with policy.attestations.requireOnCatalog, the catalog only
+    // sells to agents whose spend was governed — the payment must carry an
+    // attestation from this instance (or an issuer in trustedIssuers), for
+    // this payer, this resource, at least this price, presented once.
+    const attestationRules = (() => {
+      try {
+        return loadPolicy().attestations || {};
+      } catch {
+        return {};
+      }
+    })();
+    if (attestationRules.requireOnCatalog) {
+      const verdict = await verifyAttestation(req.get(ATTESTATION_HEADER), {
+        trustedIssuers: [instanceSigner.address, ...(Array.isArray(attestationRules.trustedIssuers) ? attestationRules.trustedIssuers : [])],
+        audience: tool.payTo || undefined,
+        resource: tool.path,
+        amountUSD: Number(tool.price),
+        payer: address,
+        replay: attestationReplay,
+      });
+      if (!verdict.ok) {
+        appendLedgerEntry({ address, resource: tool.path, amount: tool.price, chain, ...(tool.category ? { category: tool.category } : {}), status: "blocked", mode: "simulate", reason: `gate: governed-spend attestation required (${verdict.code}): ${verdict.reason}`, policyHash: policyHash() });
+        return res.status(402).json(issueChallenge(tool, verdict.code));
+      }
+    }
 
     // Server-authoritative enforcement (issue #8). Until now the gate only
     // checked freeze + nonce + signature + balance, so a key-holding agent

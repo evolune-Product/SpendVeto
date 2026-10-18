@@ -58,7 +58,8 @@
     <a href="./index.html">Home</a>
     <a href="./playground.html">Playground</a>
     <a href="./ai-spend.html">AI spend</a>
-    <a href="./upi.html">India · UPI</a>
+    <a href="./guides.html">Guides</a>
+    <a href="./network.html">Network</a>
     <a href="./docs.html">Docs</a>
     <a href="./about.html">About</a>
     <a class="nav-cta" href="./signup.html">Join waitlist</a>
@@ -105,6 +106,9 @@ ANTHROPIC_BASE_URL=http://127.0.0.1:8402                 # Anthropic SDKs</pre>
 
 <div class="card warn"><b>What to know.</b> The pre-check uses an estimate (input sized from the request, output from its <code>max_tokens</code>), so the last request allowed under a budget can overshoot it by that one request's difference — the hold exists so parallel requests can't do the same. Traffic on a Claude subscription is metered at API-equivalent prices. Message Batches and other endpoints it can't meter are refused rather than passed through ungoverned. Self-hosted today; a hosted, multi-tenant version is the funded milestone.</div>
 
+<h2>Step-by-step guides</h2>
+<p><a href="./guides/claude-code-spending-limit.html" style="color:var(--green)">Claude Code spending limit</a> · <a href="./guides/openai-api-spending-limit.html" style="color:var(--green)">OpenAI API limit per agent</a> · <a href="./guides/stop-runaway-ai-agent-loop.html" style="color:var(--green)">Stop runaway agent loops</a> · <a href="./guides/ai-agent-budget.html" style="color:var(--green)">Budgets per team or customer</a></p>
+
 <h2>Prefer an SDK?</h2>
 <p>The <code>spendveto-sdk</code> client (and its Python twin in <code>sdk-python/</code>) governs calls through SpendVeto's enforcement proxy instead — <code>npm run quickstart:ai</code> shows an agent spending a $0.0015 budget down to a refusal.</p>
 <div class="row-btns"><a class="pill pill-primary" href="https://github.com/revanthrajeev/spendveto" target="_blank" rel="noopener">Get it on GitHub →</a><a class="pill pill-ghost" href="./console/">Open the console demo</a></div>
@@ -115,6 +119,8 @@ ANTHROPIC_BASE_URL=http://127.0.0.1:8402                 # Anthropic SDKs</pre>
   <span>Prototype in public — simulate mode by default, x402 testnet on Base Sepolia. Every claim on this page is covered by <span class="mono">npm run verify</span>.</span>
   <div class="links"><a href="https://github.com/revanthrajeev/spendveto" target="_blank" rel="noopener">GitHub</a>
     <a href="./use-cases.html">Use cases</a>
+    <a href="./guides.html">Guides</a>
+    <a href="./network.html">Network</a>
     <a href="./ai-spend.html">AI spend</a>
     <a href="./upi.html">India · UPI</a>
     <a href="./playground.html">Playground</a>

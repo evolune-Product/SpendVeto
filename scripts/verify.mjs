@@ -27,6 +27,12 @@ import { evaluateAchDebit } from "../server/us-ach.js";
 import { createSpendVetoTools, createSpendVetoTool } from "../integrations/langchain.js";
 import { createSpendVetoFunctionTools } from "../integrations/openai-agents.js";
 import { createSpendVetoPlugin } from "../integrations/eliza.js";
+import express from "express";
+import { governedCall } from "../client/pay.js";
+import { verifyAttestation, mintAttestation } from "../server/attestations.js";
+import { verifyFeed, subjectHash, feedDigest, FEED_MESSAGE_PREFIX } from "../server/reputation.js";
+import { validatePolicy, unsupportedKeywords } from "../server/policyspec.js";
+import { requireGovernedAgent } from "../integrations/seller-express.js";
 
 const ROOT = fileURLToPath(new URL("..", import.meta.url));
 const PORT = 8402;
@@ -112,7 +118,7 @@ class McpStdio {
 }
 
 // Fresh state for a deterministic run.
-for (const f of ["data/ledger.json", "data/balances.json", "data/delegations.json", "data/children.json", "data/freezes.json", "data/waitlist.json", "data/tools.json", "data/agents.json", "data/shadow-policy.json", "data/shadow-log.json", "data/api-keys.json", "data/consents.json", "data/upto.json", "data/authcapture.json", "data/cards.json", "data/payouts.json", "data/rebilling.json"]) {
+for (const f of ["data/ledger.json", "data/balances.json", "data/delegations.json", "data/children.json", "data/freezes.json", "data/waitlist.json", "data/tools.json", "data/agents.json", "data/shadow-policy.json", "data/shadow-log.json", "data/api-keys.json", "data/consents.json", "data/upto.json", "data/authcapture.json", "data/cards.json", "data/payouts.json", "data/rebilling.json", "data/attestations.json", "data/reputation.json"]) {
   const p = `${ROOT}${f}`;
   if (existsSync(p)) unlinkSync(p);
 }
@@ -2979,6 +2985,17 @@ try {
       llmLookup("openai", "gpt-5.6-terra").unknown === true && canonicalModel("claude-haiku-4-5-20251001") === "claude-haiku-4-5" && llmLookup("openai", "gpt-4o-2024-08-06").model === "gpt-4o",
     `amount=${unkEntry?.amount} src=${unkEntry?.priceSource}`
   );
+  writeFileSync(`${ROOT}data/policy.json`, JSON.stringify({ ...LLM_BASE_POLICY, llm: { ...LLM_BASE_POLICY.llm, unknownModelRates: { anthropic: { inputPerM: 1, outputPerM: 2 } } } }, null, 2));
+  const unkRateRes = await anthropicCall({ model: "claude-future-9", max_tokens: 100, messages: [{ role: "user", content: "x" }] }, { "x-spendveto-agent": "unknown-rate-bot" });
+  await unkRateRes.json();
+  await sleep(100);
+  const unkRateEntry = (await llmLedger()).find((e) => e.agent === "unknown-rate-bot");
+  writeFileSync(`${ROOT}data/policy.json`, JSON.stringify(LLM_BASE_POLICY, null, 2));
+  check(
+    "policy.llm.unknownModelRates replaces the flagship fallback for a model no price sheet knows — booked at the operator's declared rate (1,200 in + 3,000 cache read + 500 cache write + 400 out at $1/$2 = $0.002925) and labelled as such",
+    unkRateEntry?.unknownModel === true && unkRateEntry.priceSource === "policy.llm.unknownModelRates" && unkRateEntry.amount === 0.002925,
+    `amount=${unkRateEntry?.amount} src=${unkRateEntry?.priceSource}`
+  );
   check(
     "provider pricing details are honoured: Haiku 5.5 bills a >100K-token prompt at its long-context rate, a 1-hour cache write at 2x input, an upstream-reported cost (OpenRouter) wins over the sheet",
     llmCost("anthropic", "claude-haiku-5-5", { input_tokens: 150000, output_tokens: 1000 }).usd === 0.0775 &&
@@ -3296,6 +3313,244 @@ try {
     `cli=${cliBudget.status} served=${relocatedSettings.settings?.dailyBudgetUSD} freezes=${existsSync(join(tmpData, "freezes.json"))}`
   );
   writeFileSync(`${ROOT}data/policy.json`, JSON.stringify(LOOSE_POLICY, null, 2));
+
+  // --- The network layer: attestations a seller verifies, federated reputation, an open policy standard ---
+  // Each piece gets more valuable with every OTHER organization running it: a
+  // seller can require governed agents only once buyers can prove governance,
+  // a reputation feed protects its subscribers in proportion to its
+  // publishers, and a policy format is a standard only when more than one
+  // party reads it. These checks pin the mechanics — offline verification,
+  // fail-closed trust, replay and rollback protection, identifiers that never
+  // leave the instance in the clear, and typos that can't fail open.
+  const jsonReq = (path, body, method = "POST") =>
+    fetch(`${BASE}${path}`, { method, headers: { "Content-Type": "application/json" }, body: body === undefined ? undefined : JSON.stringify(body) }).then(async (r) => ({ status: r.status, body: await r.json() }));
+  const issuerDoc = await fetch(`${BASE}/.well-known/spendveto-issuer.json`).then((r) => r.json());
+  const ISSUER = issuerDoc.issuer;
+  const SELLER_PAYTO = "0x" + "5e11".repeat(10);
+  const netAgent = privateKeyToAccount(generatePrivateKey());
+  const minted = await jsonReq("/api/attestations", { address: netAgent.address, resource: "/premium/report", price: "0.01", payee: SELLER_PAYTO, rail: "x402" });
+  const offline = await verifyAttestation(minted.body.token, { trustedIssuers: [ISSUER], audience: SELLER_PAYTO.toUpperCase().replace("0X", "0x"), resource: "/premium/report", amountUSD: 0.01, payer: netAgent.address });
+  check(
+    "a governed-spend attestation is minted only after the policy check and verifies offline against the issuer address alone — payer, payee, resource, ceiling and policy version under one EIP-191 signature",
+    issuerDoc.spec === "spendveto-issuer/v1" && /^0x[0-9a-fA-F]{40}$/.test(ISSUER || "") && minted.status === 201 && minted.body.token?.startsWith("sva1.") && offline.ok === true &&
+      offline.claims.sub === netAgent.address.toLowerCase() && offline.claims.amt === "0.01" && offline.claims.dec === "allowed" && /^[0-9a-f]{64}$/.test(offline.claims.pol) && offline.claims.exp - offline.claims.iat === 300,
+    `status=${minted.status} ok=${offline.ok} ${offline.code || ""}`
+  );
+  const [svaPrefix, svaPayload, svaSig] = minted.body.token.split(".");
+  const inflated = `${svaPrefix}.${Buffer.from(JSON.stringify({ ...JSON.parse(Buffer.from(svaPayload, "base64url").toString("utf8")), amt: "100" })).toString("base64url")}.${svaSig}`;
+  const rogue = privateKeyToAccount(generatePrivateKey());
+  const rogueToken = await mintAttestation({ ...offline.claims, iss: rogue.address, jti: "rogue-1" }, (message) => rogue.signMessage({ message }));
+  const failCodes = {
+    tampered: (await verifyAttestation(inflated, { trustedIssuers: [ISSUER] })).code,
+    selfMinted: (await verifyAttestation(rogueToken, { trustedIssuers: [ISSUER] })).code,
+    noTrust: (await verifyAttestation(minted.body.token, { trustedIssuers: [] })).code,
+    expired: (await verifyAttestation(minted.body.token, { trustedIssuers: [ISSUER], now: Date.now() + 3600e3 })).code,
+    payee: (await verifyAttestation(minted.body.token, { trustedIssuers: [ISSUER], audience: "0x" + "ab".repeat(20) })).code,
+    price: (await verifyAttestation(minted.body.token, { trustedIssuers: [ISSUER], amountUSD: 0.02 })).code,
+    payer: (await verifyAttestation(minted.body.token, { trustedIssuers: [ISSUER], payer: rogue.address })).code,
+  };
+  check(
+    "verification fails closed with a root-cause code: an inflated amount breaks the signature, a self-minted token is an untrusted issuer, an empty trust list accepts nothing, and expiry, payee, price and payer are each enforced",
+    failCodes.tampered === "attestation_bad_signature" && failCodes.selfMinted === "attestation_untrusted_issuer" && failCodes.noTrust === "attestation_no_trusted_issuers" &&
+      failCodes.expired === "attestation_expired" && failCodes.payee === "attestation_audience_mismatch" && failCodes.price === "attestation_amount_insufficient" && failCodes.payer === "attestation_payer_mismatch",
+    JSON.stringify(failCodes)
+  );
+  const overCapMint = await jsonReq("/api/attestations", { address: netAgent.address, resource: "/premium/big", price: "5" });
+  const needsHumanMint = await jsonReq("/api/attestations", { address: netAgent.address, resource: "/premium/approval", price: "0.5" });
+  const netApproval = (await jsonReq("/api/approvals", { address: netAgent.address, resource: "/premium/approval", price: "0.5" })).body;
+  await jsonReq(`/api/approvals/${netApproval.id}/decide`, { decision: "approved" });
+  const approvedMint = await jsonReq("/api/attestations", { address: netAgent.address, resource: "/premium/approval", price: "0.5" });
+  const netApprovalAfter = await fetch(`${BASE}/api/approvals/${netApproval.id}`).then((r) => r.json());
+  check(
+    "no attestation without a yes: an over-cap spend is refused with the policy's own code, an above-threshold spend needs a human first, and once approved the attestation says so — without consuming the approval the payment itself must still present",
+    overCapMint.status === 403 && overCapMint.body.code === "per_call_cap" && needsHumanMint.status === 409 && needsHumanMint.body.code === "approval_required" &&
+      approvedMint.status === 201 && approvedMint.body.claims?.dec === "approved" && approvedMint.body.claims?.apr === netApproval.id && netApprovalAfter.status === "approved" && !netApprovalAfter.consumed,
+    `overCap=${overCapMint.status}/${overCapMint.body.code} human=${needsHumanMint.status} approved=${approvedMint.status}/${approvedMint.body.claims?.dec}`
+  );
+
+  const { TOOLS: NET_TOOLS } = await import("../shared-config.js");
+  const translateTool = NET_TOOLS.find((t) => t.id === "translate");
+  const payTranslate = async (acct, attestation) => {
+    const ch = await fetch(`${BASE}${translateTool.path}`).then((r) => r.json());
+    const sig = await acct.signMessage({ message: `${ch.nonce}:${ch.resource}:${ch.price}:base-sepolia` });
+    const r = await fetch(`${BASE}${translateTool.path}`, { headers: { "X-SIM-PAYMENT": `${acct.address}:${ch.nonce}:base-sepolia:${sig}`, ...(attestation ? { "X-SpendVeto-Attestation": attestation } : {}) } });
+    return { status: r.status, body: await r.json() };
+  };
+  writeFileSync(`${ROOT}data/policy.json`, JSON.stringify({ ...LOOSE_POLICY, attestations: { requireOnCatalog: true } }, null, 2));
+  const gateAgent = privateKeyToAccount(generatePrivateKey());
+  const bareSale = await payTranslate(gateAgent);
+  const governedSale = await governedCall(translateTool, gateAgent, { chain: "base-sepolia" });
+  check(
+    "a seller can sell only to governed agents: with requireOnCatalog, a validly signed payment carrying no attestation is refused (402 attestation_missing), while the same agent's governed call — policy, attestation, payment — settles",
+    bareSale.status === 402 && bareSale.body.reason === "attestation_missing" && governedSale.ok === true && governedSale.stage === "paid",
+    `bare=${bareSale.status}/${bareSale.body.reason} governed=${governedSale.stage} ${governedSale.reason || ""}`
+  );
+  const gateToken = (await jsonReq("/api/attestations", { address: gateAgent.address, resource: translateTool.path, price: translateTool.price })).body.token;
+  const firstUse = await payTranslate(gateAgent, gateToken);
+  const secondUse = await payTranslate(gateAgent, gateToken);
+  const otherToken = (await jsonReq("/api/attestations", { address: gateAgent.address, resource: translateTool.path, price: translateTool.price })).body.token;
+  const borrowedUse = await payTranslate(privateKeyToAccount(generatePrivateKey()), otherToken);
+  writeFileSync(`${ROOT}data/policy.json`, JSON.stringify(LOOSE_POLICY, null, 2));
+  check(
+    "at the gate an attestation is single-use and bound to its payer: a second presentation is refused as replayed, and one wallet's attestation can't vouch for another wallet's payment",
+    firstUse.status === 200 && secondUse.status === 402 && secondUse.body.reason === "attestation_replayed" && borrowedUse.status === 402 && borrowedUse.body.reason === "attestation_payer_mismatch",
+    `first=${firstUse.status} second=${secondUse.status}/${secondUse.body.reason} borrowed=${borrowedUse.status}/${borrowedUse.body.reason}`
+  );
+
+  const sellerApp = express();
+  sellerApp.get("/premium/report", requireGovernedAgent({ trustedIssuers: [ISSUER], audience: SELLER_PAYTO, price: 0.01 }), (req, res) => res.json({ ok: true, governedBy: req.spendveto.iss, dec: req.spendveto.dec }));
+  const sellerServer = sellerApp.listen(8493);
+  const sellerGet = async (token) => {
+    const r = await fetch("http://localhost:8493/premium/report", { headers: token ? { "X-SpendVeto-Attestation": token } : {} });
+    return { status: r.status, body: await r.json() };
+  };
+  const sellerFresh = (await jsonReq("/api/attestations", { address: netAgent.address, resource: "/premium/report", price: "0.01", payee: SELLER_PAYTO })).body.token;
+  const sellerNone = await sellerGet();
+  const sellerOk = await sellerGet(sellerFresh);
+  const sellerAgain = await sellerGet(sellerFresh);
+  const sellerRogue = await sellerGet(rogueToken);
+  let gateNeedsIssuers = false;
+  try {
+    requireGovernedAgent({});
+  } catch {
+    gateNeedsIssuers = true;
+  }
+  sellerServer.close();
+  check(
+    "a seller requires governed agents with one middleware and no SpendVeto server: ungoverned and self-minted requests are refused, a fresh attestation passes once, and a gate with no trusted issuers refuses to start",
+    sellerNone.status === 402 && sellerNone.body.code === "attestation_missing" && sellerOk.status === 200 && sellerOk.body.governedBy === ISSUER &&
+      sellerAgain.status === 402 && sellerAgain.body.code === "attestation_replayed" && sellerRogue.body.code === "attestation_untrusted_issuer" && gateNeedsIssuers,
+    `none=${sellerNone.body.code} ok=${sellerOk.status} again=${sellerAgain.body.code} rogue=${sellerRogue.body.code}`
+  );
+
+  const SCAM = "0x" + "bad0".repeat(10);
+  const filed = await jsonReq("/api/reputation/reports", { subject: SCAM.toUpperCase().replace("0X", "0x"), kind: "scam", severity: "block", reason: "drained a test agent - internal note" });
+  const ap2Scam = await jsonReq("/api/ap2/evaluate", { agent: netAgent.address, amountUSD: 0.01, payee: SCAM });
+  const ourFeed = await fetch(`${BASE}/api/reputation/feed`).then((r) => r.json());
+  const ourFeedCheck = await verifyFeed(ourFeed, { trustedPublishers: [ISSUER] });
+  check(
+    "a counterparty reported here is refused before anything is signed, however its address is cased — and the published feed carries only a domain-separated SHA-256 of it: no address, no reason text, verifiable offline against the instance address",
+    filed.status === 201 && ap2Scam.body.decision === "deny" && ap2Scam.body.code === "payee_reputation_block" && ourFeedCheck.ok === true &&
+      ourFeed.entries.some((e) => e.subject === subjectHash(SCAM)) && !JSON.stringify(ourFeed).toLowerCase().includes("bad0bad0") && !JSON.stringify(ourFeed).includes("internal note"),
+    `filed=${filed.status} ap2=${ap2Scam.body.decision}/${ap2Scam.body.code} feed=${ourFeedCheck.ok}`
+  );
+  const orgB = privateKeyToAccount(generatePrivateKey());
+  const FRAUD_VPA = "refund-desk@okaxis";
+  const signFeed = async (entries, issuedAt) => {
+    const body = { spec: "spendveto-reputation-feed/v1", publisher: orgB.address, name: "Org B", issuedAt, entries };
+    const digest = feedDigest(body);
+    return { ...body, digest, signature: await orgB.signMessage({ message: `${FEED_MESSAGE_PREFIX}${digest}` }) };
+  };
+  const feedB = await signFeed([
+    { subject: subjectHash(FRAUD_VPA), kind: "fraud", severity: "block", count: 3 },
+    { subject: subjectHash("https://Sketchy-Data.example/api"), kind: "non_delivery", severity: "review", count: 1 },
+  ], new Date(Date.now() - 60e3).toISOString());
+  const untrustedImport = await jsonReq("/api/reputation/import", feedB);
+  await jsonReq("/api/reputation/settings", { trustedPublishers: [orgB.address] }, "PUT");
+  const trustedImport = await jsonReq("/api/reputation/import", feedB);
+  const vpaVerdict = await fetch(`${BASE}/api/reputation/check?subject=${encodeURIComponent("Refund-Desk@OKAXIS")}`).then((r) => r.json());
+  const domainVerdict = await fetch(`${BASE}/api/reputation/check?subject=sketchy-data.example`).then((r) => r.json());
+  check(
+    "reputation crosses organizations only on explicit trust: another publisher's signed feed is refused until its address is trusted, then its block refuses that UPI VPA here (any casing) and its review sends that domain to a human",
+    untrustedImport.status === 403 && untrustedImport.body.code === "feed_no_trusted_publishers" && trustedImport.status === 200 && trustedImport.body.entries === 2 &&
+      vpaVerdict.verdict === "block" && vpaVerdict.matches[0]?.source === orgB.address.toLowerCase() && domainVerdict.verdict === "review",
+    `untrusted=${untrustedImport.body.code} imported=${trustedImport.status} vpa=${vpaVerdict.verdict} domain=${domainVerdict.verdict}`
+  );
+  const editedFeed = { ...feedB, entries: [...feedB.entries, { subject: subjectHash("0x" + "cafe".repeat(10)), kind: "scam", severity: "block", count: 1 }] };
+  const editedImport = await jsonReq("/api/reputation/import", editedFeed);
+  const sameAgain = await jsonReq("/api/reputation/import", feedB);
+  const newerB = await signFeed([{ subject: subjectHash(FRAUD_VPA), kind: "fraud", severity: "block", count: 4 }], new Date().toISOString());
+  const newerImport = await jsonReq("/api/reputation/import", newerB);
+  const rollback = await jsonReq("/api/reputation/import", feedB);
+  const domainAfter = await fetch(`${BASE}/api/reputation/check?subject=sketchy-data.example`).then((r) => r.json());
+  check(
+    "a feed can't be edited or rolled back: an entry added after signing breaks its digest, and once a newer feed is in, the older one (which still flagged the domain) is refused as stale — the publisher's withdrawal sticks",
+    editedImport.status === 400 && editedImport.body.code === "feed_digest_mismatch" && sameAgain.status === 409 && newerImport.status === 200 &&
+      rollback.status === 409 && rollback.body.code === "feed_stale" && domainAfter.verdict === "clear",
+    `edited=${editedImport.body.code} same=${sameAgain.status} newer=${newerImport.status} rollback=${rollback.body.code} domain=${domainAfter.verdict}`
+  );
+  await jsonReq("/api/reputation/settings", { importedAction: "review" }, "PUT");
+  const ap2Review = await jsonReq("/api/ap2/evaluate", { agent: netAgent.address, amountUSD: 0.001, payee: FRAUD_VPA });
+  writeFileSync(`${ROOT}data/policy.json`, JSON.stringify({ ...LOOSE_POLICY, reputation: { trustedPublishers: [orgB.address] }, payouts: { requireAgentToken: false } }, null, 2));
+  const payoutFlagged = await jsonReq("/api/payouts", { provider: "paypal", amount: 25, currency: "USD", payee: "vendor@example.com", counterparty: FRAUD_VPA, agent: "ap-bot", purpose: "refund" });
+  await jsonReq("/api/reputation/reports", { subject: "card-merchant:4445550001", kind: "fraud", severity: "block" });
+  const flaggedSwipe = stripeAuthEvent(1500, "5734", "ic_reputation_card");
+  flaggedSwipe.data.object.merchant_data.network_id = "4445550001";
+  const swipeDecision = await stripePost(flaggedSwipe);
+  writeFileSync(`${ROOT}data/policy.json`, JSON.stringify(LOOSE_POLICY, null, 2));
+  check(
+    "the same reports govern every rail: under importedAction review an imported block asks a human instead, a payout whose counterparty another organization flagged is refused, and a card swipe at a reported merchant id is declined in Stripe's format",
+    ap2Review.body.decision === "requires_approval" && payoutFlagged.status === 403 && payoutFlagged.body.code === "payee_reputation_block" &&
+      swipeDecision.status === 200 && swipeDecision.body.approved === false && swipeDecision.body.metadata?.spendveto_code === "card_merchant_reputation_block",
+    `ap2=${ap2Review.body.decision} payout=${payoutFlagged.status}/${payoutFlagged.body.code} card=${swipeDecision.body.approved}/${swipeDecision.body.metadata?.spendveto_code}`
+  );
+  check(
+    "one counterparty, one hash: EVM checksum casing, a URL and its bare domain, a spaced lower-case IBAN and an upper-case VPA each canonicalize to one subject, while case-sensitive base58 addresses keep their case",
+    subjectHash("0xAbC0000000000000000000000000000000000001") === subjectHash("0xabc0000000000000000000000000000000000001") &&
+      subjectHash("https://Shop.Example/checkout") === subjectHash("shop.example") &&
+      subjectHash("gb82 west 1234 5698 7654 32") === subjectHash("GB82WEST12345698765432") &&
+      subjectHash("Name@OKAXIS") === subjectHash("name@okaxis") &&
+      subjectHash("9WzDXwBbmkg8ZTbNMqUxvQRAyrZzDsGYdLVL9zYtAWWM") !== subjectHash("9wzdxwbbmkg8ztbnmquxvqrayrzzdsgydlvl9zytawwm"),
+    "canonical forms"
+  );
+
+  const specText = readFileSync(`${ROOT}spec/policy-v1.schema.json`, "utf8");
+  const hostedSpecText = readFileSync(`${ROOT}site/schemas/policy-v1.json`, "utf8");
+  const shippedPacks = readdirSync(`${ROOT}data/policy-packs`).filter((f) => f.endsWith(".json")).map((f) => JSON.parse(readFileSync(`${ROOT}data/policy-packs/${f}`, "utf8")));
+  const shippedDefault = { maxPerCallUSD: 0.05, maxPerHourUSD: 0.2, maxCallsPerHour: 10, requireApprovalAboveUSD: 0.015, anomaly: { burstAttempts: 10, burstWindowSeconds: 10 } };
+  const everySection = {
+    ...LOOSE_POLICY, approversRequired: 2, requireWorldIdForApproval: false, allowedChains: ["base-sepolia", "base", "solana-devnet"], allowedPayees: ["vitalik.eth", SELLER_PAYTO],
+    allowedHoursUTC: { start: 22, end: 6 }, categoryCapsUSD: { content: 0.5, payout: 2000 }, billingWebhookUrl: "https://billing.example/hook", billingSigningSecret: "s",
+    llm: { ...LLM_BASE_POLICY.llm, mode: "observe", sessionBudgetUSD: null, approvalAboveUSD: 2, allowedModels: null, blockedModels: ["o1-pro"], identityFrom: "credential", prices: { "my-model": { inputPerM: 1, outputPerM: 2 } }, unknownModelRates: { openai: { inputPerM: 5, outputPerM: 20 } }, tagBudgets: { "customer=cus_123": { dailyUSD: 5 } } },
+    cards: { maxAuthorizationUSD: 200, blockedMccs: ["7995", 6051], allowedMccs: null, allowedCurrencies: ["usd", "eur"] },
+    payouts: { maxPerPayoutUSD: 500, allowedPayees: ["fa_123"], allowedPurposes: ["refund", "vendor_bill"], fxRates: { INR: 0.012 }, requireAgentToken: true },
+    rebilling: { enabled: true, markupPct: 25, eventName: "spendveto_ai_usage", customerTag: "customer" }, finops: { billingAccountId: "acme", billingAccountName: "Acme" },
+    authCapture: { maxHoldSeconds: 86400, allowedFlows: ["escrow"], allowedOperators: null }, attestations: { ttlSeconds: 120, trustedIssuers: [ISSUER], requireOnCatalog: false },
+    reputation: { trustedPublishers: [orgB.address], importedAction: "review", publisherName: "Acme" },
+    upi: { maxPerTxnINR: 5000, allowedPayeeVpas: ["netflix@okhdfc"] }, eu: { maxPerTxnEUR: 100, pspFraudRateBps: 4 }, uk: { allowedPayeeAccounts: ["040004:12345678"], reimbursementCapGBP: 85000 },
+    br: { nighttimeWindow: "22-6", nighttimeLimitBRL: 1000 }, us: { allowedPayeeAccounts: ["021000021:123456789"] }, "x-team": "payments", $comment: "kitchen sink",
+  };
+  const sectionVerdicts = [shippedDefault, ...shippedPacks, LOOSE_POLICY, everySection].map((p) => validatePolicy(p));
+  check(
+    "the policy format is an open standard: the hosted schema is byte-identical to the one the engine validates with, uses only keywords the validator implements, and accepts the shipped default, all four packs and a policy that uses every section",
+    specText === hostedSpecText && unsupportedKeywords(JSON.parse(specText)).length === 0 && JSON.parse(specText).$id === "https://spendveto.com/schemas/policy-v1.json" && sectionVerdicts.every((v) => v.valid),
+    sectionVerdicts.filter((v) => !v.valid).map((v) => JSON.stringify(v.errors.slice(0, 2))).join(" ") || `${sectionVerdicts.length} policies valid`
+  );
+  const typoVerdict = validatePolicy({ maxPerHourUsd: 5, allowedChains: ["base", "basee"], llm: { dailyBudgetUSD: "10", mode: "block" } });
+  const apiTypo = await jsonReq("/api/policy/validate", { policy: { maxPerHourUsd: 5 } });
+  check(
+    "a typo can't fail open silently: an unknown key is an error with a did-you-mean, wrong types, bad enums and unregistered chain ids are errors at JSON-pointer paths — and POST /api/policy/validate returns the same verdict",
+    !typoVerdict.valid && typoVerdict.errors.some((e) => e.path === "/maxPerHourUsd" && e.message.includes('did you mean "maxPerHourUSD"')) && typoVerdict.errors.some((e) => e.path === "/llm/dailyBudgetUSD") &&
+      typoVerdict.errors.some((e) => e.path === "/llm/mode") && typoVerdict.errors.some((e) => e.path === "/allowedChains/1") && apiTypo.status === 200 && apiTypo.body.valid === false && apiTypo.body.errors[0]?.path === "/maxPerHourUsd",
+    typoVerdict.errors.map((e) => e.path).join(",")
+  );
+  const typoFile = join(tmpData, "typo-policy.json");
+  const warnFile = join(tmpData, "warn-policy.json");
+  writeFileSync(typoFile, JSON.stringify({ maxPerHourUsd: 5 }));
+  writeFileSync(warnFile, JSON.stringify({ maxPerCallUSD: 0.5, requireApprovalAboveUSD: 1 }));
+  const cliRun = (...a) => spawnSync(process.execPath, ["bin/spendveto.mjs", "validate", ...a], { cwd: ROOT, encoding: "utf8" });
+  const cliTypo = cliRun(typoFile);
+  const cliPack = cliRun("data/policy-packs/production.json");
+  const cliStrict = cliRun(warnFile, "--strict");
+  const cliLenient = cliRun(warnFile);
+  check(
+    "`spendveto validate` is the CI gate: exit 1 on a typo (naming the key it meant), 0 on a shipped pack, and --strict also fails a policy whose approval threshold sits above its per-call cap",
+    cliTypo.status === 1 && cliTypo.stdout.includes("maxPerHourUSD") && cliPack.status === 0 && cliStrict.status === 1 && cliLenient.status === 0,
+    `typo=${cliTypo.status} pack=${cliPack.status} strict=${cliStrict.status} lenient=${cliLenient.status}`
+  );
+  // The GitHub Action (action.yml) is that same validator, run from the
+  // action's own checkout with no install: execute its run block verbatim.
+  const actionYml = readFileSync(`${ROOT}action.yml`, "utf8");
+  const actionRun = (actionYml.match(/run: \|\n((?: {8}.*\n?)+)/) || [])[1]?.replace(/^ {8}/gm, "") || "";
+  const runAction = (file, strict) => spawnSync("bash", ["-c", actionRun], { env: { ...process.env, GITHUB_WORKSPACE: tmpData, GITHUB_ACTION_PATH: ROOT, RUNNER_TEMP: tmpData, POLICY_FILE: file, STRICT: strict }, encoding: "utf8" });
+  const actionTypo = runAction("typo-policy.json", "false");
+  const actionWarnStrict = runAction("warn-policy.json", "true");
+  const actionWarn = runAction("warn-policy.json", "false");
+  check(
+    "the GitHub Action is the same gate in anyone's CI with no install — its step fails the job on a typo, and on a contradictory policy only when strict is set",
+    actionRun.includes("bin/spendveto.mjs\" validate") && actionTypo.status === 1 && actionTypo.stdout.includes("maxPerHourUSD") && actionWarnStrict.status === 1 && actionWarn.status === 0,
+    `typo=${actionTypo.status} strict=${actionWarnStrict.status} lenient=${actionWarn.status} ${actionTypo.stderr.slice(0, 120)}`
+  );
 
   // --- Multi-chain live settlement wiring (facilitator-adaptive) ---
   // In testnet mode the gate asks its facilitator (GET /supported) what it can

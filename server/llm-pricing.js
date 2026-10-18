@@ -106,16 +106,19 @@ export function canonicalModel(model) {
 
 const tableFor = (provider) => (provider === "anthropic" ? ANTHROPIC_PRICES : OPENAI_PRICES);
 
-export function lookupPrice(provider, model, overrides = {}) {
+export function lookupPrice(provider, model, overrides = {}, unknownRates = null) {
   const raw = String(model || "").trim().toLowerCase();
   const canon = canonicalModel(raw);
-  const custom = overrides[raw] || overrides[canon];
+  const custom = overrides?.[raw] || overrides?.[canon];
   if (custom) return { price: normalizeCustom(custom), source: "policy.llm.prices", model: canon };
   const table = tableFor(provider);
   // Exact id first (some dated snapshots carry their own price, e.g.
   // gpt-4o-2024-05-13), then the date-stripped family id.
   const row = table[raw] || table[canon];
   if (row) return { price: row, source: `${provider} price sheet (${PRICES_AS_OF})`, model: table[raw] ? raw : canon };
+  // policy.llm.unknownModelRates: { anthropic: { inputPerM, outputPerM }, openai: {…} } replaces the flagship fallback.
+  const declared = unknownRates?.[provider];
+  if (declared && Number(declared.inputPerM) >= 0 && Number(declared.outputPerM) >= 0) return { price: normalizeCustom(declared), source: "policy.llm.unknownModelRates", model: canon, unknown: true };
   return { price: UNKNOWN_MODEL_RATES[provider] || UNKNOWN_MODEL_RATES.anthropic, source: "unknown-model-fallback", model: canon, unknown: true };
 }
 
@@ -153,10 +156,10 @@ export function normalizeUsage(provider, usage) {
   return { input: Math.max(0, n(usage.input_tokens) - cached), cacheRead: cached, cacheWrite5m: 0, cacheWrite1h: 0, output: n(usage.output_tokens), reportedCostUSD: reported };
 }
 
-export function costOf(provider, model, usage, overrides = {}) {
+export function costOf(provider, model, usage, overrides = {}, unknownRates = null) {
   const u = normalizeUsage(provider, usage);
   if (!u) return null;
-  const { price: base, source, unknown } = lookupPrice(provider, model, overrides);
+  const { price: base, source, unknown } = lookupPrice(provider, model, overrides, unknownRates);
   if (u.reportedCostUSD != null) {
     return { usd: round6(u.reportedCostUSD), priceSource: "upstream-reported", usage: u, unknownModel: Boolean(unknown) };
   }
@@ -175,7 +178,7 @@ export function costOf(provider, model, usage, overrides = {}) {
   };
   const usd =
     (u.input * price.input + u.cacheRead * cacheRead + u.cacheWrite5m * price.input * 1.25 + u.cacheWrite1h * price.input * 2 + u.output * price.output) / 1e6;
-  return { usd: round6(usd), priceSource: unknown ? "unknown-model-fallback" : source, usage: u, breakdown, unknownModel: Boolean(unknown), longContext: price !== base };
+  return { usd: round6(usd), priceSource: source, usage: u, breakdown, unknownModel: Boolean(unknown), longContext: price !== base };
 }
 
 // The pre-request estimate the guard decides and reserves on. Input is sized
@@ -215,7 +218,7 @@ function textBytes(node, acc) {
   }
 }
 
-export function estimateRequest(provider, body, { outputCapTokens = 16000, overrides = {} } = {}) {
+export function estimateRequest(provider, body, { outputCapTokens = 16000, overrides = {}, unknownRates = null } = {}) {
   const model = body?.model || "";
   const acc = { bytes: 0, media: 0 };
   if (provider === "anthropic") {
@@ -231,8 +234,8 @@ export function estimateRequest(provider, body, { outputCapTokens = 16000, overr
   const inputTokens = Math.ceil(acc.bytes / 3) + acc.media;
   const requested = Number(body?.max_tokens ?? body?.max_completion_tokens ?? body?.max_output_tokens);
   const outputTokens = Math.min(Number.isFinite(requested) && requested > 0 ? requested : outputCapTokens, outputCapTokens);
-  const { price: base, source, unknown, model: canon } = lookupPrice(provider, model, overrides);
+  const { price: base, source, unknown, model: canon } = lookupPrice(provider, model, overrides, unknownRates);
   const price = base.long && base.longThreshold && inputTokens > base.longThreshold ? base.long : base;
   const usd = (inputTokens * price.input + outputTokens * price.output) / 1e6;
-  return { usd: round6(usd), inputTokens, outputTokens, model: canon, priceSource: unknown ? "unknown-model-fallback" : source, unknownModel: Boolean(unknown) };
+  return { usd: round6(usd), inputTokens, outputTokens, model: canon, priceSource: source, unknownModel: Boolean(unknown) };
 }
