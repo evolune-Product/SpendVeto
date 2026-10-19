@@ -9,6 +9,7 @@
 //   spendveto connect                           # print the one-line setup again
 //   spendveto mcp                               # run the MCP server (stdio)
 //   spendveto validate [policy.json] [--strict] # lint a policy file against the open schema (CI)
+//   spendveto rails                             # which x402 chain SDKs are installed, and how to add the rest
 import { spawn } from "node:child_process";
 import { existsSync, readFileSync, writeFileSync, mkdirSync, openSync } from "node:fs";
 import { homedir } from "node:os";
@@ -200,10 +201,25 @@ try {
       if (!v.valid || strictFail) process.exit(1);
       break;
     }
+    case "rails": {
+      // Chain SDKs are optional packages (server/optional.js): the guard, the
+      // policy engine, cards and payouts need none of them. Resolution only —
+      // nothing is loaded, so this answers instantly.
+      const { railFamilies } = await import("../server/optional.js");
+      const families = railFamilies();
+      console.log("\n  x402 live settlement — one chain SDK family per row. Nothing else in SpendVeto needs these.\n");
+      for (const f of families) console.log(`  ${f.family.padEnd(8)} ${f.installed ? "installed" : `missing ${f.missing.join(" ")}`}`);
+      const missing = families.filter((f) => !f.installed);
+      if (missing.length) {
+        const all = [...new Set(missing.flatMap((f) => f.install.replace(/^npm install /, "").split(" ")))];
+        console.log(`\n  Add them in the project you run spendveto from:\n    npm install spendveto ${all.join(" ")}\n  or clone the repo, where npm install brings every rail:\n    git clone https://github.com/revanthrajeev/spendveto && cd spendveto && npm install\n`);
+      } else console.log("\n  Every rail family is installed.\n");
+      break;
+    }
     case "help":
     case "--help":
     case "-h":
-      console.log(readFileSync(fileURLToPath(import.meta.url), "utf8").split("\n").slice(1, 11).map((l) => l.replace(/^\/\/ ?/, "")).join("\n"));
+      console.log(readFileSync(fileURLToPath(import.meta.url), "utf8").split("\n").slice(1, 12).map((l) => l.replace(/^\/\/ ?/, "")).join("\n"));
       break;
     default:
       throw new Error(`unknown command "${cmd}" — try: spendveto help`);

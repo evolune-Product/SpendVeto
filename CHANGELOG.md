@@ -2,6 +2,17 @@
 
 Every feature listed here is exercised by the end-to-end suite (`npm run verify`) — the suite grew from 33 assertions at the first public cut to **114** at v0.7.0. If a claim isn't an assertion, it doesn't ship.
 
+## 0.29.1 — 2026-10-19
+
+The fast install. `npx spendveto` used to download every chain SDK the live x402 rail can settle on before anyone could put a budget in front of Claude Code: 630 packages and about 700 MB from a clean npm cache, 77 seconds on the benchmark machine, with Hedera's SDK alone pulling in React Native and Metro. It now installs 150 packages (120 MB) in 25 seconds.
+
+- **Chain SDKs are optional peer dependencies** (`server/optional.js`). The fourteen x402 and chain packages (`@x402/*`, `@solana/kit`, `@aptos-labs/ts-sdk`, `@stellar/stellar-sdk`, `@hiero-ledger/sdk`, `xrpl`) moved out of `dependencies`. The LLM spend guard, the policy engine, approvals, the simulate rail, cards, payouts, attestations and the MCP server need none of them. `client/wallet.js`, `rails/x402-testnet.js` and the testnet gate in `server/index.js` load a family's packages when they settle on it.
+- **Missing packages are named, never a crash.** A live payment without them is refused with `rail_package_missing` and the install command. Testnet mode without the x402 core refuses to boot and prints that command. A chain whose family isn't installed is skipped in testnet mode instead of being advertised in a 402 the gate can't verify. A package that is installed but broken inside keeps its real error.
+- `spendveto rails` lists which chain families are installed and prints the one command that adds the rest. `GET /api/rails` reports the same per family on the `x402-live` rail.
+- A clone is unchanged: the same packages are devDependencies, so `npm install` in the repo brings every rail and `npm run verify` exercises all of them.
+- `three` (the source of the site's vendored `site/vendor/three.module.min.js`) moved to devDependencies; nothing at runtime imports it.
+- Verify: 466 (+8, run against the `npm pack` output with every chain SDK absent: the dependency declaration, a governed Claude call, a simulate-rail payment, `/api/rails`, the live rail's refusal, testnet's refusal to boot, `spendveto rails`, and a broken package keeping its real error; 469 with `../prediction-copilot` alongside).
+
 ## 0.29.0 — 2026-10-18
 
 The network release. A VC asked why Stripe — or anyone with engineers — couldn't just build this. A platform can build spend controls for its own rail; it can't make them more valuable with every *other* company that runs them. These three pieces do exactly that, and none of them belongs to any one rail.

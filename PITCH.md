@@ -20,7 +20,7 @@ Every newly-paid tool makes the **buyer side** — the agent doing the spending 
 
 ## Product (working today, not a plan)
 
-Open-source (Apache-2.0) Node.js stack, every claim below covered by a 458-assertion end-to-end verification suite:
+Open-source (Apache-2.0) Node.js stack, every claim below covered by a 466-assertion end-to-end verification suite:
 
 1. **Payment rails** — real x402 (HTTP 402 + USDC) gating a catalog of priced tools; runs against the live Base Sepolia facilitator, plus a zero-setup simulate mode with real ECDSA signing and replay protection.
 2. **Policy engine** — the agent's own rules, enforced *before* payment: per-call cap, hourly budget, call-rate limit, checked against live spend history.
@@ -69,7 +69,7 @@ Open-source (Apache-2.0) Node.js stack, every claim below covered by a 458-asser
 
 ### Two audited R&D prototypes — built, tested, independently attacked, *not yet shipped*
 
-Not counted in the 458 and not claimed as product above the line, because neither is wired into anything a user runs today — stated here exactly that plainly, the same honesty bar the rest of this document holds everywhere else:
+Not counted in the 466 and not claimed as product above the line, because neither is wired into anything a user runs today — stated here exactly that plainly, the same honesty bar the rest of this document holds everywhere else:
 
 - **A portable WASM policy core** (`wasm-policy/`) — the deterministic half of `checkPolicy` ported to AssemblyScript and compiled to an actual WebAssembly binary, so governance could run with zero network call inside a browser extension, an edge function, or a sandboxed agent process that can't reach a server — proven by disconnecting the internet and watching it keep deciding correctly. An independent adversarial review found and fixed two real fail-open bugs (a type-confusion truthy check, a numeric-string coercion gap) and a memory leak (unbounded growth under the `stub` runtime, fixed by switching to `incremental` with GC-rooted buffers). 41-assertion parity suite against a from-scratch JS reference, including 50,000 randomized fuzz cases, run three times clean.
 - **A universal interception gateway** (`intercept/`) — a local HTTPS man-in-the-middle proxy (built on mockttp, the same engine behind HTTP Toolkit) that governs x402 payments from an agent that never integrated SpendVeto at all, zero code changes required on the agent's side. Proven against a mock third-party seller carrying zero SpendVeto imports: a denied payment never reaches the seller, an allowed one passes through correctly, both over a real TLS connection the gateway terminated with its own dynamically generated certificate. An independent adversarial review found and fixed two critical issues before this was called done — a host-scoping bypass via `127.0.0.1`/`[::1]`/trailing-dot string mismatches, and a generic-payment-header path that trusted an unverified claimed wallet address (a real impersonation vector) — both now closed and regression-tested. 10/10 across three runs, full findings in `intercept/AUDIT_REPORT.md`.

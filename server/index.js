@@ -3,14 +3,7 @@ import { fileURLToPath } from "node:url";
 import { join } from "node:path";
 import { readFileSync } from "node:fs";
 import express from "express";
-import { paymentMiddleware, x402ResourceServer } from "@x402/express";
-import { ExactEvmScheme } from "@x402/evm/exact/server";
-import { ExactSvmScheme } from "@x402/svm/exact/server";
-import { ExactAptosScheme } from "@x402/aptos/exact/server";
-import { ExactStellarScheme } from "@x402/stellar/exact/server";
-import { ExactHederaScheme } from "@x402/hedera/exact/server";
-import { ExactXrplScheme } from "@x402/xrpl/exact/server";
-import { HTTPFacilitatorClient } from "@x402/core/server";
+import { loadOptional } from "./optional.js";
 import { MODE, PORT, TOOLS, CHAINS, FACILITATOR_URL, findChain, DEFAULT_CHAIN, dataPath, PACKAGE_DATA_DIR } from "../shared-config.js";
 import { randomUUID } from "node:crypto";
 import { writeFileSync } from "node:fs";
@@ -169,6 +162,23 @@ if (MODE === "testnet") {
   // An empty value counts as unset — a blank SERVER_PAYOUT_ADDRESS_XRPL_MAINNET=
   // line in a .env file must not read as "opted in to real money".
   const payoutFor = (c) => (c.mainnetOptIn ? process.env[c.mainnetOptIn] : payToFor[c.family]) || undefined;
+  // The x402 packages are optional (server/optional.js) so the default install
+  // stays small. Testnet mode can't run without the core, the Express gate and
+  // the EVM scheme, so their absence stops boot with the install command —
+  // same as a missing payout address above.
+  let x402;
+  try {
+    const [{ paymentMiddleware, x402ResourceServer }, { HTTPFacilitatorClient }, { ExactEvmScheme }] = await Promise.all([
+      loadOptional("@x402/express"),
+      loadOptional("@x402/core/server"),
+      loadOptional("@x402/evm/exact/server"),
+    ]);
+    x402 = { paymentMiddleware, x402ResourceServer, HTTPFacilitatorClient, ExactEvmScheme };
+  } catch (err) {
+    if (err.code !== "rail_package_missing") throw err;
+    console.error(`SPENDVETO_MODE=testnet: ${err.message}`);
+    process.exit(1);
+  }
   // x402 v2, registry-driven: ask the configured facilitator what it can
   // actually settle (GET /supported) and bring every registry chain it names
   // live — schemes registered and 402s advertising one accepts entry per live
@@ -177,7 +187,7 @@ if (MODE === "testnet") {
   // at a CDP facilitator (with an API key) and its mainnet chains go live with
   // zero code changes. If /supported is unreachable, fall back to base-sepolia
   // rather than refusing to boot.
-  const facilitatorClient = new HTTPFacilitatorClient({ url: FACILITATOR_URL });
+  const facilitatorClient = new x402.HTTPFacilitatorClient({ url: FACILITATOR_URL });
   let supportedNetworks;
   try {
     const { kinds } = await facilitatorClient.getSupported();
@@ -188,20 +198,19 @@ if (MODE === "testnet") {
   }
   liveSettlementChains = CHAINS.filter((c) => supportedNetworks.has(c.caip2) && payoutFor(c) != null).map((c) => c.id);
   if (liveSettlementChains.length === 0) liveSettlementChains = ["base-sepolia"];
-  console.log(`[testnet] live settlement chains via ${FACILITATOR_URL}: ${liveSettlementChains.join(", ")}`);
 
-  const schemeFor = (c) => {
+  const schemeFor = async (c) => {
     switch (c.family) {
       case "svm":
-        return new ExactSvmScheme();
+        return new (await loadOptional("@x402/svm/exact/server")).ExactSvmScheme();
       case "aptos":
-        return new ExactAptosScheme();
+        return new (await loadOptional("@x402/aptos/exact/server")).ExactAptosScheme();
       case "stellar":
-        return new ExactStellarScheme();
+        return new (await loadOptional("@x402/stellar/exact/server")).ExactStellarScheme();
       case "hedera":
-        return new ExactHederaScheme();
+        return new (await loadOptional("@x402/hedera/exact/server")).ExactHederaScheme();
       case "xrpl":
-        return new ExactXrplScheme();
+        return new (await loadOptional("@x402/xrpl/exact/server")).ExactXrplScheme();
       // A registered family with no published client scheme package (algorand,
       // cardano today) must never fall through to the EVM scheme: signing a
       // non-EVM payment with a secp256k1 EVM signature would produce a
@@ -214,11 +223,30 @@ if (MODE === "testnet") {
       case "cardano":
         throw new Error(`no x402 client scheme package published for family "${c.family}" (${c.id}) — neither the facilitator nor this instance can settle it yet`);
       default:
-        return new ExactEvmScheme();
+        return new x402.ExactEvmScheme();
     }
   };
-  let resourceServer = new x402ResourceServer(facilitatorClient);
-  for (const id of liveSettlementChains) resourceServer = resourceServer.register(findChain(id).caip2, schemeFor(findChain(id)));
+  // A chain whose family SDK isn't installed is skipped, loudly: never
+  // advertised in a 402 this instance can't verify. If that leaves nothing,
+  // Base Sepolia — whose packages are loaded above — is the fallback, as when
+  // the facilitator is unreachable.
+  let resourceServer = new x402.x402ResourceServer(facilitatorClient);
+  const registered = [];
+  for (const id of liveSettlementChains) {
+    try {
+      resourceServer = resourceServer.register(findChain(id).caip2, await schemeFor(findChain(id)));
+      registered.push(id);
+    } catch (err) {
+      if (err.code !== "rail_package_missing") throw err;
+      console.error(`[testnet] ${id} skipped — ${err.message}`);
+    }
+  }
+  if (registered.length === 0) {
+    resourceServer = resourceServer.register(findChain("base-sepolia").caip2, new x402.ExactEvmScheme());
+    registered.push("base-sepolia");
+  }
+  liveSettlementChains = registered;
+  console.log(`[testnet] live settlement chains via ${FACILITATOR_URL}: ${liveSettlementChains.join(", ")}`);
   // Price as an explicit AssetAmount per chain (atomic units + the registry's
   // canonical stablecoin contract/token id) rather than the "$0.01" shorthand
   // — the shorthand needs each package's built-in default-asset table, which
@@ -261,7 +289,7 @@ if (MODE === "testnet") {
     description: `SpendVeto demo — ${tool.label}`,
   });
   const routes = Object.fromEntries(TOOLS.flatMap((tool) => [[`GET ${tool.path}`, paidRule(tool)], [`HEAD ${tool.path}`, paidRule(tool)]]));
-  app.use(paymentMiddleware(routes, resourceServer));
+  app.use(x402.paymentMiddleware(routes, resourceServer));
   // x402-express already verified + settled payment before these handlers run.
   // Ledger accounting for testnet mode happens client-side (see client/pay-and-call.js) —
   // the client is the one party that reliably knows its own address and outcome.

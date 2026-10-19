@@ -4,7 +4,7 @@
 
 [**Live site + playground**](https://spendveto.com) · [**Docs**](https://spendveto.com/docs.html) · Apache-2.0 · x402 + MCP native
 
-**Every claim in this README is executed before it ships.** `npm run verify` runs **458 end-to-end assertions** from a clean clone — real secp256k1 keypairs, real ECDSA verification, a real MCP stdio JSON-RPC session, and a synthetic runaway agent frozen mid-burst. If a claim isn't a test, it doesn't ship; features that can't work locally yet are declared slots that refuse honestly, never stubs that pretend.
+**Every claim in this README is executed before it ships.** `npm run verify` runs **466 end-to-end assertions** from a clean clone — real secp256k1 keypairs, real ECDSA verification, a real MCP stdio JSON-RPC session, and a synthetic runaway agent frozen mid-burst. If a claim isn't a test, it doesn't ship; features that can't work locally yet are declared slots that refuse honestly, never stubs that pretend.
 
 What *isn't* true yet is stated just as plainly: no external security audit, no customers. Settlement is testnet and simulate only, by default, for every chain. XRPL mainnet settlement (real money, RLUSD) is fully wired but **disabled unless an operator explicitly opts in** — that's their decision and their risk; we don't run, monitor, or control anyone's deployment. Funding positioning and market numbers live in [`PITCH.md`](./PITCH.md).
 
@@ -14,7 +14,7 @@ What *isn't* true yet is stated just as plainly: no external security audit, no 
 npx github:revanthrajeev/spendveto        # or: git clone … && npm install && npm start
 ```
 
-First run installs dependencies (about two minutes); Node 22+ recommended (Node 20.18 runs it, with npm engine warnings).
+First run installs dependencies in under a minute — 150 packages, because the chain SDKs for live x402 settlement are optional ([below](#one-api-any-rail-rails)). Node 22+ recommended (Node 20.18 runs it, with npm engine warnings).
 
 Then point the agent at it — one environment variable, your provider key passes straight through and is never stored:
 
@@ -110,9 +110,9 @@ npm run call -- summarize      # $0.02 — above the approval line: go approve/d
 npm run call -- translate      # $0.005
 ```
 
-`npm run verify` runs the whole thing headlessly — **458 end-to-end assertions**: catalog, forged-signature rejection, hard policy blocks, all three approval outcomes (approved / denied / timed-out-fails-closed), delegation caps including the n-level cascade, tool + chain scoping, multichain settlement (chain-scoped signatures, per-chain balances, chain allowlists), runaway-burst auto-freeze, the manual kill switch, signed-receipt verification, CSV export, per-tool/per-wallet/per-chain analytics, webhook alerts actually arriving at a live receiver, structured self-correcting denials, side-effect-free dry runs, TTL grant expiry, one-click approval links, the stats endpoint, AP2 mandate-chain drift detection, human-not-present authority, governed Bazaar discovery, ACP shared-payment-token scope, request-integrity binding (including a payload swapped after authorization), signed dispute evidence packs and their tamper detection, OpenTelemetry span export under an inbound traceparent, governed-spend attestations verified offline by a seller (replay, payer binding, tampering), signed reputation feeds crossing organizations (trust, rollback, digest), policy-schema validation in the CLI and the GitHub Action, and a real MCP stdio JSON-RPC round trip.
+`npm run verify` runs the whole thing headlessly — **466 end-to-end assertions**: catalog, forged-signature rejection, hard policy blocks, all three approval outcomes (approved / denied / timed-out-fails-closed), delegation caps including the n-level cascade, tool + chain scoping, multichain settlement (chain-scoped signatures, per-chain balances, chain allowlists), runaway-burst auto-freeze, the manual kill switch, signed-receipt verification, CSV export, per-tool/per-wallet/per-chain analytics, webhook alerts actually arriving at a live receiver, structured self-correcting denials, side-effect-free dry runs, TTL grant expiry, one-click approval links, the stats endpoint, AP2 mandate-chain drift detection, human-not-present authority, governed Bazaar discovery, ACP shared-payment-token scope, request-integrity binding (including a payload swapped after authorization), signed dispute evidence packs and their tamper detection, OpenTelemetry span export under an inbound traceparent, governed-spend attestations verified offline by a seller (replay, payer binding, tampering), signed reputation feeds crossing organizations (trust, rollback, digest), policy-schema validation in the CLI and the GitHub Action, and a real MCP stdio JSON-RPC round trip.
 
-> **On the number:** a fresh clone runs **458** assertions. Three more exercise a real cross-project integration against [Basis](https://github.com/revanthrajeev/basis) and run only when `../prediction-copilot` is checked out beside this repo — the suite prints `(skipped: cross-project Basis integration test …)` when it isn't. Every published number is the 458 anyone can reproduce.
+> **On the number:** a fresh clone runs **466** assertions. Three more exercise a real cross-project integration against [Basis](https://github.com/revanthrajeev/basis) and run only when `../prediction-copilot` is checked out beside this repo — the suite prints `(skipped: cross-project Basis integration test …)` when it isn't. Every published number is the 466 anyone can reproduce.
 
 **Marketing site**: `npm run site` serves the deploy-ready landing page (Three.js hero, animated product walkthrough) at http://localhost:8403 — `site/` is fully static and self-contained, drop it on Vercel/Netlify as-is. Includes an **interactive playground** (`site/playground.html`) that runs the real policy-decision logic client-side — set a budget, fire agent spend, watch it pass/pause/block — and a **use-cases** page grounded in real 2026 agent-spend scenarios.
 
@@ -210,6 +210,8 @@ Three controls born from the July 2026 research round (see `launch/DEEP_RESEARCH
 ## One API, any rail (`rails/`)
 
 Every payment rail plugs in behind the same four-line contract — `{ id, name, status, pay({ tool, account, chain, baseUrl }) }` — and the governance pipeline never learns which rail settled. Two rails are live today (`x402-simulate`, `x402-live` — the latter facilitator-adaptive across every registry chain the facilitator supports); Google AP2, OpenAI ACP, and Stripe Machine Payments are **declared adapter slots** that refuse honestly (`not implemented yet — funded-roadmap slot`) instead of pretending. `GET /api/rails` serves the registry; the proxy advertises it in `/proxy/health`. This is the "Stripe for agent spending" shape without the money-transmitter license: one integration in front of every rail, governance above, settlement below.
+
+**Chain SDKs are optional** (`server/optional.js`). The live x402 rail settles on six chain families, and each brings its own SDK — together they were 480 of the 630 packages a clean install downloaded (Hedera's alone pulls in React Native). They are optional peer dependencies: the LLM guard, the policy engine, the simulate rail, cards, payouts, attestations and the MCP server never load them, and the live rail loads a family's packages when it settles there. `spendveto rails` shows what's installed and prints the command for the rest (`npm install spendveto @x402/core @x402/fetch @x402/express @x402/evm …` in your project); a clone's `npm install` brings every family. Without them a live payment is refused with `rail_package_missing` and that command, and testnet mode won't boot — tested on the `npm pack` output with every one absent.
 
 ## SDK, LangChain, and concurrency-safe caps
 
@@ -449,7 +451,7 @@ scripts/
   policy.mjs                list/apply policy packs
   site.mjs                  serves the marketing site on :8403
   sdk-python/               Python client (pip install ./sdk-python), same surface as the npm SDK
-  verify.mjs                458 end-to-end assertions incl. MCP stdio round trip + multichain + auto-freeze
+  verify.mjs                466 end-to-end assertions incl. MCP stdio round trip + multichain + auto-freeze
 data/
   policy.json               editable spend rules incl. anomaly burst threshold + alertWebhookUrl
   policy-packs/             importable governance presets (cautious/standard/production)

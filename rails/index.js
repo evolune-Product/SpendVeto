@@ -37,7 +37,9 @@ export function getRail(id) {
   return RAILS.find((r) => r.id === id);
 }
 
-// Metadata-only view for APIs/UIs — never leaks the pay functions.
+// Metadata-only view for APIs/UIs — never leaks the pay functions. A rail
+// whose settlement needs optional packages also says whether they're
+// installed and how to add them (x402-live: one entry per chain family).
 export function railsCatalog() {
-  return RAILS.map(({ id, name, status, note }) => ({ id, name, status, note }));
+  return RAILS.map(({ id, name, status, note, availability }) => ({ id, name, status, note, ...(availability ? availability() : {}) }));
 }

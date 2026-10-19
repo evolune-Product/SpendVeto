@@ -10,8 +10,8 @@ import { createServer, request as httpRequest } from "node:http";
 import { verifyMessage } from "viem";
 import { generatePrivateKey, privateKeyToAccount } from "viem/accounts";
 import { setTimeout as sleep } from "node:timers/promises";
-import { writeFileSync, readFileSync, readdirSync, existsSync, unlinkSync } from "node:fs";
-import { fileURLToPath } from "node:url";
+import { writeFileSync, readFileSync, readdirSync, existsSync, unlinkSync, mkdirSync, symlinkSync, rmSync } from "node:fs";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { RAILS, getRail } from "../rails/index.js";
 import { createHmac } from "node:crypto";
 import { mkdtempSync } from "node:fs";
@@ -3313,6 +3313,119 @@ try {
     `cli=${cliBudget.status} served=${relocatedSettings.settings?.dailyBudgetUSD} freezes=${existsSync(join(tmpData, "freezes.json"))}`
   );
   writeFileSync(`${ROOT}data/policy.json`, JSON.stringify(LOOSE_POLICY, null, 2));
+
+  // --- The default install carries no chain SDKs (server/optional.js) ---
+  // The x402 live-settlement SDKs were most of a clean install (480 of 630
+  // packages, ~700 MB, 77 s) for a feature most users never switch on, so they are
+  // optional peer dependencies. Proven on the PUBLISHED file set (npm pack),
+  // with a node_modules holding every package the repo has except the optional
+  // ones — symlinked, so it is Node's own resolver failing to find each one,
+  // not a stub — and the parts that need them must say how to install them.
+  const pkgJson = JSON.parse(readFileSync(`${ROOT}package.json`, "utf8"));
+  const { OPTIONAL_PACKAGES } = await import("../server/optional.js");
+  const strayOptional = OPTIONAL_PACKAGES.filter((p) => pkgJson.dependencies[p] || pkgJson.peerDependenciesMeta?.[p]?.optional !== true || !pkgJson.peerDependencies?.[p] || pkgJson.devDependencies?.[p] !== pkgJson.peerDependencies[p]);
+  const undeclaredPeers = Object.keys(pkgJson.peerDependencies || {}).filter((p) => !OPTIONAL_PACKAGES.includes(p));
+  check(
+    "chain SDKs are optional peer dependencies: none in `dependencies`, every one declared optional and developed against the same range, and no other peer",
+    strayOptional.length === 0 && undeclaredPeers.length === 0 && OPTIONAL_PACKAGES.length === 14,
+    strayOptional.concat(undeclaredPeers).join(", ") || `${OPTIONAL_PACKAGES.length} optional`
+  );
+  const leanDir = mkdtempSync(join(tmpdir(), "spendveto-lean-"));
+  const leanData = mkdtempSync(join(tmpdir(), "spendveto-lean-data-"));
+  const packed = spawnSync("npm", ["pack", "--json", "--pack-destination", leanDir], { cwd: ROOT, encoding: "utf8" });
+  spawnSync("tar", ["-xzf", join(leanDir, JSON.parse(packed.stdout)[0].filename), "-C", leanDir]);
+  const LEAN = join(leanDir, "package");
+  const blockedPackages = new Set(OPTIONAL_PACKAGES);
+  mkdirSync(join(LEAN, "node_modules"));
+  for (const name of readdirSync(join(ROOT, "node_modules"))) {
+    if (name.startsWith(".")) continue;
+    if (!name.startsWith("@")) {
+      if (!blockedPackages.has(name)) symlinkSync(join(ROOT, "node_modules", name), join(LEAN, "node_modules", name));
+      continue;
+    }
+    for (const sub of readdirSync(join(ROOT, "node_modules", name))) {
+      if (blockedPackages.has(`${name}/${sub}`)) continue;
+      mkdirSync(join(LEAN, "node_modules", name), { recursive: true });
+      symlinkSync(join(ROOT, "node_modules", name, sub), join(LEAN, "node_modules", name, sub));
+    }
+  }
+  const leanUpstream = createServer((req, res) => {
+    req.resume();
+    req.on("end", () => {
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end(JSON.stringify({ id: "msg_lean", type: "message", role: "assistant", model: "claude-opus-5-5", content: [{ type: "text", text: "ok" }], stop_reason: "end_turn", usage: { input_tokens: 1000, output_tokens: 100 } }));
+    });
+  });
+  leanUpstream.listen(8386);
+  const leanEnv = { ...process.env, PORT: "8388", SPENDVETO_MODE: "simulate", SPENDVETO_DATA_DIR: leanData, SPENDVETO_ANTHROPIC_UPSTREAM: "http://localhost:8386" };
+  const leanServer = spawn("node", [join(LEAN, "server", "index.js")], { cwd: LEAN, env: leanEnv, stdio: ["ignore", "pipe", "pipe"] });
+  let leanLog = "";
+  leanServer.stdout.on("data", (d) => (leanLog += d));
+  leanServer.stderr.on("data", (d) => (leanLog += d));
+  for (let i = 0; i < 50; i++) {
+    await sleep(200);
+    try { if ((await fetch("http://localhost:8388/api/llm/settings")).ok) break; } catch {}
+  }
+  const leanCall = await fetch("http://localhost:8388/v1/messages", { method: "POST", headers: { "content-type": "application/json", "x-api-key": "sk-ant-lean-never-stored", "anthropic-version": "2023-06-01", "x-spendveto-agent": "lean-bot" }, body: JSON.stringify({ model: "claude-opus-5-5", max_tokens: 64, messages: [{ role: "user", content: "hi" }] }) }).catch(() => ({ status: 0 }));
+  const leanSummary = await fetch("http://localhost:8388/api/llm/summary").then((r) => r.json()).catch(() => ({}));
+  check(
+    "the published file set with every chain SDK absent boots and governs a Claude call: relayed to the provider and its cost booked",
+    leanCall.status === 200 && leanSummary.totals?.requestsDay === 1 && leanSummary.totals?.spentDayUSD > 0,
+    `status ${leanCall.status}, booked ${leanSummary.totals?.spentDayUSD}${leanCall.status === 200 ? "" : ` — ${leanLog.split("\n").filter(Boolean).slice(-2).join(" / ")}`}`
+  );
+  const leanClient = spawn("node", [join(LEAN, "client", "pay-and-call.js"), "review"], { cwd: LEAN, env: leanEnv });
+  let leanClientOut = "";
+  leanClient.stdout.on("data", (d) => (leanClientOut += d));
+  leanClient.stderr.on("data", (d) => (leanClientOut += d));
+  const leanClientCode = await waitForClose(leanClient);
+  const leanLedger = await fetch("http://localhost:8388/api/ledger").then((r) => r.json()).catch(() => ({ entries: [] }));
+  check(
+    "…and an agent pays for a catalog tool through the x402 simulate rail — policy, a signed 402 payment and a ledger entry, no chain SDK loaded",
+    leanClientCode === 0 && leanLedger.entries.some((e) => e.resource === "/api/agent/review" && e.status === "paid"),
+    `exit ${leanClientCode}, ${leanLedger.entries.length} ledger entries${leanClientCode === 0 ? "" : ` — ${leanClientOut.split("\n").filter(Boolean).slice(-2).join(" / ")}`}`
+  );
+  const leanRails = await fetch("http://localhost:8388/api/rails").then((r) => r.json()).catch(() => ({}));
+  const leanLive = leanRails.rails?.find((r) => r.id === "x402-live");
+  check(
+    "GET /api/rails says the live x402 rail's SDKs aren't installed, per chain family, each with its install command",
+    leanLive?.installed === false && leanLive.families?.length === 6 && leanLive.families.every((f) => !f.installed && f.install.startsWith("npm install @x402/core @x402/fetch @x402/express @x402/evm")),
+    leanLive?.families?.map((f) => `${f.family}:${f.installed}`).join(" ")
+  );
+  leanServer.kill();
+  leanUpstream.close();
+  const leanPay = spawnSync(process.execPath, ["--input-type=module", "-e", `import { getRail } from ${JSON.stringify(pathToFileURL(join(LEAN, "rails", "index.js")).href)};\ntry { await getRail("x402-live").pay({ tool: { path: "/api/agent/review" }, account: {}, chain: "solana-devnet", baseUrl: "http://localhost:9" }); console.log("{}"); } catch (e) { console.log(JSON.stringify({ code: e.code, install: e.install })); }`], { cwd: LEAN, env: leanEnv, encoding: "utf8" });
+  const leanPayErr = JSON.parse(leanPay.stdout.trim().split("\n").pop() || "{}");
+  check(
+    "a live x402 payment without the SDKs is refused with code rail_package_missing and the install command — never a crash, never another chain's scheme",
+    leanPayErr.code === "rail_package_missing" && leanPayErr.install?.includes("@x402/fetch"),
+    leanPayErr.install || leanPay.stderr.split("\n").filter(Boolean).pop()
+  );
+  const leanTestnet = spawnSync(process.execPath, [join(LEAN, "server", "index.js")], { cwd: LEAN, env: { ...leanEnv, PORT: "8389", SPENDVETO_MODE: "testnet", SERVER_PAYOUT_ADDRESS: privateKeyToAccount(generatePrivateKey()).address, SPENDVETO_FACILITATOR_URL: "http://localhost:9" }, encoding: "utf8", timeout: 20000 });
+  check(
+    "testnet mode without the x402 packages refuses to boot and prints the install command, instead of dying on an import",
+    leanTestnet.status === 1 && leanTestnet.stderr.includes("npm install @x402/core @x402/fetch @x402/express @x402/evm"),
+    `exit ${leanTestnet.status}: ${leanTestnet.stderr.split("\n").filter(Boolean).pop()}`
+  );
+  const leanRailsCli = spawnSync(process.execPath, [join(LEAN, "bin", "spendveto.mjs"), "rails"], { cwd: LEAN, env: leanEnv, encoding: "utf8" });
+  check(
+    "`spendveto rails` lists every chain family as missing and prints the one command that adds them",
+    leanRailsCli.status === 0 && (leanRailsCli.stdout.match(/ missing @x402\//g) || []).length === 6 && leanRailsCli.stdout.includes("npm install spendveto @x402/core @x402/fetch @x402/express @x402/evm @x402/svm @solana/kit"),
+    leanRailsCli.stdout.split("\n").filter(Boolean).slice(-3, -2).join("") || leanRailsCli.stderr
+  );
+  // An installed package that is broken inside keeps its real error: a
+  // missing transitive dependency must not be misreported as "not installed".
+  mkdirSync(join(LEAN, "node_modules", "@x402", "core"), { recursive: true });
+  writeFileSync(join(LEAN, "node_modules", "@x402", "core", "package.json"), JSON.stringify({ name: "@x402/core", type: "module", exports: { ".": "./index.js" } }));
+  writeFileSync(join(LEAN, "node_modules", "@x402", "core", "index.js"), 'import "zzz-spendveto-not-installed-anywhere";\n');
+  const leanBroken = spawnSync(process.execPath, ["--input-type=module", "-e", `import { loadOptional } from ${JSON.stringify(pathToFileURL(join(LEAN, "server", "optional.js")).href)};\ntry { await loadOptional("@x402/core"); console.log("{}"); } catch (e) { console.log(JSON.stringify({ code: e.code, message: e.message })); }`], { cwd: LEAN, encoding: "utf8" });
+  const leanBrokenErr = JSON.parse(leanBroken.stdout.trim().split("\n").pop() || "{}");
+  check(
+    "a rail package that is installed but broken inside keeps its real error (the missing dependency it names), not a misleading \"not installed\"",
+    leanBrokenErr.code === "ERR_MODULE_NOT_FOUND" && leanBrokenErr.message?.includes("zzz-spendveto-not-installed-anywhere"),
+    `${leanBrokenErr.code}`
+  );
+  rmSync(leanDir, { recursive: true, force: true });
+  rmSync(leanData, { recursive: true, force: true });
 
   // --- The network layer: attestations a seller verifies, federated reputation, an open policy standard ---
   // Each piece gets more valuable with every OTHER organization running it: a
