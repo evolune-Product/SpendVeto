@@ -2,6 +2,27 @@
 
 Every feature listed here is exercised by the end-to-end suite (`npm run verify`) — the suite grew from 33 assertions at the first public cut to **114** at v0.7.0. If a claim isn't an assertion, it doesn't ship.
 
+## 0.30.0 — 2026-10-19
+
+Stripe and Tempo's Machine Payments Protocol, governed. MPP (launched March 18, 2026) is x402's sibling: a server answers 402 with one `WWW-Authenticate: Payment` challenge per offer — a one-off charge, a session that streams vouchers against an escrowed deposit, or a subscription — and the official client, mppx, pays by itself. SpendVeto now decides before mppx creates a credential.
+
+- **`server/mpp.js` + `POST /api/mpp/evaluate`.** Parses every Payment challenge in a 402, including several in one header the way fetch joins them. Prices each one: Tempo OUSD, pathUSD or USDC.e on mainnet and Moderato; the registry's USDC on EVM; USD for Stripe and card. Anything else is refused, never guessed. Then applies MPP's own rules and the same policy engine as every rail (hourly budget with holds, approval line, payees, sanctions, reputation, freezes, chain allowlist), and picks the cheapest offer the policy accepts.
+- **MPP-specific protections.**
+  - A charge's splits are payees too.
+  - A session is decided on its deposit, capped by `policy.mpp.maxSessionDepositUSD`, and refused if its escrow isn't Tempo's TIP-1034 channel reserve.
+  - A subscription needs a human approval, which the first allow consumes.
+  - Expired challenges, credential headers other than Authorization/Payment-Authorization, and Tempo offers with no chainId are refused. mppx's parser lets all three through.
+- **Nothing allowed vanishes from the budget.**
+  - Allowed charges are held until reported (`POST /api/mpp/charges/:id/report`, which keeps the server's Payment-Receipt as evidence), and are booked as paid if their challenge expires unreported.
+  - A session's whole deposit is held until `POST /api/mpp/sessions/:id/close` books the amount consumed.
+  - Vouchers (`…/voucher`) must be cumulative and within the approved deposit.
+  - MPP holds fold into `GET /api/upto/holds/:address`.
+- **`integrations/mppx.js`.** `governMppx()` plugs SpendVeto into mppx's `onChallenge` hook. A denial throws before anything is signed, `requires_approval` waits for a human, and `governed.fetch()` reports each payment's outcome.
+- **Policy standard.** A new `mpp` section (`maxSessionDepositUSD`, `maxUnitPriceUSD`, `allowCustomEscrow`, `allowedMethods`), and `tempo` and `tempo-moderato` are chains a policy may allow.
+- **Elsewhere.** Tempo addresses are screened against OFAC's EVM list. Attestations may name the `mpp` rail. The `stripe-mpp` rail slot now says what's governed; settlement stays with mppx and the server.
+- **Dev dependencies.** `mppx` 0.13.5 (pinned) for the suite, with an npm override for its optional `express >=5` peer: SpendVeto stays on Express 4 and never loads mppx/express. viem moves to 2.57.7, mppx's minimum.
+- **Verify: 476** (+10). Every challenge is produced by the official SDK, and the last check pays a local seller with the real mppx client. 479 with `../prediction-copilot` alongside.
+
 ## 0.29.1 — 2026-10-19
 
 The fast install. `npx spendveto` used to download every chain SDK the live x402 rail can settle on before anyone could put a budget in front of Claude Code: 630 packages and about 700 MB from a clean npm cache, 77 seconds on the benchmark machine, with Hedera's SDK alone pulling in React Native and Metro. It now installs 150 packages (120 MB) in 25 seconds.

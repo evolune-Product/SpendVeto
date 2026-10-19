@@ -4,16 +4,17 @@ import { join } from "node:path";
 import { readFileSync } from "node:fs";
 import express from "express";
 import { loadOptional } from "./optional.js";
+import { parseChallenges, assessChallenge, mppHoldUSD, authorizeCharge, reportCharge, openSession, recordVoucher, closeSession, mppState } from "./mpp.js";
 import { MODE, PORT, TOOLS, CHAINS, FACILITATOR_URL, findChain, DEFAULT_CHAIN, dataPath, PACKAGE_DATA_DIR } from "../shared-config.js";
 import { randomUUID } from "node:crypto";
 import { writeFileSync } from "node:fs";
 import { createSimulateGate, receiptMessage, signDecision, signUpiDecision, signEuDecision, signUkDecision, signBrDecision, signUsDecision, consentMessage, instanceSigner } from "./simulate.js";
 import { decisionEvents, toJSONL } from "./events.js";
-import { checkPolicy, policyHash } from "../client/policy.js";
+import { checkPolicy, policyHash, loadPolicy } from "../client/policy.js";
 import { verifyMessage } from "viem";
 import { runTool } from "./agent.js";
 import { getLedger, getBalances, appendLedgerEntry, creditSimBalance, verifyLedgerChain } from "./ledger.js";
-import { createApproval, getApproval, decideApproval, listApprovals, findApprovableFor } from "./approvals.js";
+import { createApproval, getApproval, decideApproval, listApprovals, findApprovableFor, consumeApproval } from "./approvals.js";
 import { worldIdConfigured, verifyWorldIdProof, rpContextFor, WORLD_ACTION } from "./worldid.js";
 import { listDelegations, createDelegation, revokeDelegation } from "./delegations.js";
 import { listFreezes, findActiveFreeze, createFreeze, unfreeze } from "./freezes.js";
@@ -1162,6 +1163,127 @@ app.post("/api/acp/checkout", async (req, res) => {
   });
 });
 
+// ---- MPP (Machine Payments Protocol — Stripe + Tempo's HTTP 402 standard), buyer side (server/mpp.js) ----
+// The agent's client hands over the 402's WWW-Authenticate value (or the
+// challenges mppx parsed) BEFORE it creates a credential; this decides which
+// offer, if any, it may pay. Allowed money is held against the budget at once —
+// evaluating is authorizing — until the client reports the outcome.
+const mppPolicy = () => {
+  try {
+    return loadPolicy().mpp || {};
+  } catch {
+    return {};
+  }
+};
+// The ledger entry for MPP money that actually moved: a reported (or, past its
+// expiry, assumed) charge, or the consumed part of a closed session.
+function bookMpp(row) {
+  const isSession = row.id.startsWith("mpps_");
+  const amount = isSession ? row.spentUSD : row.amountUSD;
+  if (!(amount > 0)) return;
+  appendLedgerEntry({
+    ...(row.status === "assumed_paid" ? { ts: row.authorizedAt } : {}),
+    address: row.address, resource: row.resource, amount, chain: row.network || "mpp", ...(row.recipient ? { payTo: row.recipient } : {}),
+    status: "paid", mode: "mpp",
+    ...(isSession ? { mppSessionId: row.id, depositUSD: row.depositUSD, releasedUSD: row.releasedUSD } : { mppChargeId: row.id }),
+    ...(row.status === "assumed_paid" ? { reason: "unreported MPP charge, assumed paid when its challenge expired" } : {}),
+    policyHash: policyHash(),
+  });
+}
+app.post("/api/mpp/evaluate", async (req, res) => {
+  const b = req.body || {};
+  const address = String(b.address || "");
+  if (!/^0x[0-9a-fA-F]{40}$/.test(address)) return res.status(400).json({ error: "address must be the agent's 0x-prefixed 20-byte wallet address" });
+  const input = b.wwwAuthenticate ?? b.challenges ?? b.challenge;
+  if (!input) return res.status(400).json({ error: "send the 402's WWW-Authenticate value as wwwAuthenticate, or parsed challenges as challenges" });
+  const parsed = parseChallenges(input);
+  if (!parsed.length) return res.status(400).json({ error: "no Payment challenge in what was sent — an x402 402 goes to the x402 rail, not here" });
+  const ts = new Date().toISOString();
+  const mpp = mppPolicy();
+  const assessed = parsed.map((p) => (p.ok ? assessChallenge(p.challenge, { deposit: b.deposit, mpp }) : p));
+  const offers = assessed.map((a) => (a.ok ? { id: a.id, method: a.method, intent: a.intent, network: a.network, exposureUSD: a.exposureUSD, ok: true } : { ok: false, code: a.code, reason: a.reason }));
+  // Cheapest exposure first, then the simplest intent; the first offer the
+  // policy accepts is the one to pay — a refused tempo offer doesn't sink an
+  // acceptable card offer from the same server.
+  const rank = { charge: 0, session: 1, subscription: 2 };
+  const candidates = assessed.filter((a) => a.ok).sort((x, y) => x.exposureUSD - y.exposureUSD || rank[x.intent] - rank[y.intent]);
+  let refusal = assessed.find((a) => !a.ok) || null;
+  for (const offer of candidates) {
+    // A session's deposit is one decision for many calls: its per-call cap is
+    // policy.mpp.maxSessionDepositUSD when set. Everything else — hourly
+    // budget with holds, approval line, payees, sanctions, reputation,
+    // freezes, chain allowlist — is the same engine as every other rail.
+    const base = loadPolicy();
+    const override = offer.intent === "session" && mpp.maxSessionDepositUSD != null ? { ...base, maxPerCallUSD: Number(mpp.maxSessionDepositUSD) } : undefined;
+    const chain = offer.network || undefined;
+    const verdict = await checkPolicy(address, offer.exposureUSD, "mpp", chain, b.category, offer.payees[0]?.payee, override);
+    let denied = verdict.allowed ? null : { code: verdict.code || "policy_denied", reason: verdict.reason, suggestion: verdict.suggestion };
+    // Every other recipient of a charge's money (splits) must be one this
+    // policy can pay: probed at $0, so the payee rules run without counting
+    // the money twice.
+    for (const p of denied ? [] : offer.payees.slice(1)) {
+      const v = await checkPolicy(address, 0, "mpp", chain, b.category, p.payee, override);
+      if (!v.allowed) denied = { code: v.code || "policy_denied", reason: `split recipient ${p.payee}: ${v.reason}`, suggestion: v.suggestion };
+    }
+    if (denied) {
+      refusal = { ok: false, ...denied, offerId: offer.id };
+      appendLedgerEntry({ address, resource: offer.resource, amount: offer.exposureUSD, chain: chain || "mpp", ...(offer.recipient ? { payTo: offer.recipient } : {}), status: "blocked", mode: "mpp", reason: `mpp ${offer.intent}: ${denied.reason}`, policyHash: policyHash() });
+      continue;
+    }
+    // A subscription is a standing commitment: a human approves the first one
+    // whatever its size. Approvals are matched on (wallet, resource, amount)
+    // and consumed here — the only point SpendVeto stands in an MPP payment.
+    const needsHuman = verdict.requiresApproval || offer.intent === "subscription";
+    let approvalId = null;
+    if (needsHuman) {
+      const approval = findApprovableFor(address, offer.resource, offer.exposureUSD);
+      if (!approval) {
+        const signed = await signDecision({ id: offer.id, agent: address, amountUSD: offer.exposureUSD, payee: offer.recipient, verdict: "requires_approval", ts });
+        return res.json({
+          decision: "requires_approval", stage: "policy", code: offer.intent === "subscription" ? "mpp_subscription_needs_approval" : "requires_approval",
+          reason: offer.intent === "subscription"
+            ? `a subscription of $${offer.periodUSD} per ${offer.periodCount > 1 ? `${offer.periodCount} ` : ""}${offer.periodUnit}${offer.commitmentUSD ? ` ($${offer.commitmentUSD} until ${offer.subscriptionExpires})` : ""} is a standing commitment — a human approves the first one`
+            : `$${offer.exposureUSD} is above requireApprovalAboveUSD $${verdict.policy.requireApprovalAboveUSD}`,
+          suggestion: "request approval (POST /api/approvals with this resource and price), wait for a human, then evaluate again",
+          approval: { resource: offer.resource, price: offer.exposureUSD }, offer, offers, ts, ...signed,
+        });
+      }
+      consumeApproval(approval.id);
+      approvalId = approval.id;
+    }
+    const held = offer.intent === "session" ? { session: openSession({ address, offer, channelId: b.channelId }) } : { charge: authorizeCharge({ address, offer }) };
+    const signed = await signDecision({ id: offer.id, agent: address, amountUSD: offer.exposureUSD, payee: offer.recipient, verdict: "allow", ts });
+    return res.json({
+      decision: "allow", stage: "policy",
+      reason: offer.intent === "session" ? `deposit $${offer.depositUSD} at $${offer.unitUSD} per ${offer.unitType || "unit"} is within policy` : `$${offer.exposureUSD} ${offer.intent} is within policy`,
+      offer, offers, ...(approvalId ? { approvalId } : {}),
+      ...(held.session ? { sessionId: held.session.id, maxDeposit: offer.maxDeposit } : { chargeId: held.charge.id, maxAmount: offer.maxAmount ?? null }),
+      heldUSD: mppHoldUSD(address, bookMpp), ts, ...signed,
+    });
+  }
+  const signed = await signDecision({ id: refusal?.offerId || null, agent: address, amountUSD: 0, payee: null, verdict: "deny", ts });
+  res.json({ decision: "deny", stage: refusal?.offerId ? "policy" : "mpp", code: refusal?.code, reason: refusal?.reason, suggestion: refusal?.suggestion, offers, ts, ...signed });
+});
+app.post("/api/mpp/charges/:id/report", (req, res) => {
+  const r = reportCharge(req.params.id, req.body || {}, bookMpp);
+  if (!r.ok) return res.status(409).json({ code: r.code, reason: r.reason, suggestion: r.suggestion });
+  res.json({ charge: r.charge, heldUSD: mppHoldUSD(r.charge.address, bookMpp) });
+});
+app.post("/api/mpp/sessions/:id/voucher", (req, res) => {
+  const r = recordVoucher(req.params.id, (req.body || {}).cumulative);
+  if (!r.ok) return res.status(409).json({ decision: "deny", code: r.code, reason: r.reason, suggestion: r.suggestion });
+  res.json({ decision: "allow", session: r.session, remainingUSD: r.remainingUSD });
+});
+app.post("/api/mpp/sessions/:id/close", (req, res) => {
+  const r = closeSession(req.params.id, (req.body || {}).cumulative, bookMpp);
+  if (!r.ok) return res.status(409).json({ code: r.code, reason: r.reason, suggestion: r.suggestion });
+  res.json({ session: r.session, heldUSD: mppHoldUSD(r.session.address, bookMpp) });
+});
+app.get("/api/mpp", (req, res) => {
+  const address = /^0x[0-9a-fA-F]{40}$/.test(req.query.address || "") ? req.query.address : null;
+  res.json({ ...mppState(address, bookMpp), ...(address ? { heldUSD: mppHoldUSD(address, bookMpp) } : {}) });
+});
+
 // UPI mandate governance (India). Decides allow / requires_approval / deny for a UPI mandate debit with the RBI
 // e-mandate framework's rules, deterministically, and signs the verdict in INR. It never initiates or settles
 // anything on UPI, and "requires_approval" always means a human completes the customer's authentication (server/upi.js).
@@ -1432,7 +1554,9 @@ app.get("/api/upto/holds/:address", (req, res) => {
   // In-flight LLM requests reserve their estimate too (server/llmguard.js),
   // so a payment racing a model call sees the money already committed.
   const llmUSD = llmGuard.heldUSD(req.params.address);
-  res.json({ address: req.params.address, heldUSD: Math.round((uptoUSD + authCaptureUSD + llmUSD) * 1e6) / 1e6, uptoUSD, authCaptureUSD, llmUSD });
+  // Allowed MPP charges not yet reported and open MPP session deposits (server/mpp.js).
+  const mppUSD = mppHoldUSD(req.params.address, bookMpp);
+  res.json({ address: req.params.address, heldUSD: Math.round((uptoUSD + authCaptureUSD + llmUSD + mppUSD) * 1e6) / 1e6, uptoUSD, authCaptureUSD, llmUSD, mppUSD });
 });
 
 // ---- AI FinOps (server/finops.js): one cost view across every rail, FOCUS export, rebilling ----

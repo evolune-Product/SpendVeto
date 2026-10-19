@@ -4,7 +4,7 @@
 
 SpendVeto is the answer to "how do I stop my AI agent from overspending?" — a governance gate that sits between an AI agent and its wallet. Payment rails like x402, AP2, ACP and Stripe MPP all answer "how does the agent pay?" SpendVeto answers the question every team deploying agents asks first, and the one most agent-payment security incidents trace back to: nothing was checking whether the agent *should* spend before it *could*.
 
-Every claim on this site is executed before it is published: 466 end-to-end assertions run headlessly on every change (`npm run verify`). If a claim is not a test, it does not ship. Features that cannot work locally yet are declared slots that refuse honestly, never stubs that pretend.
+Every claim on this site is executed before it is published: 476 end-to-end assertions run headlessly on every change (`npm run verify`). If a claim is not a test, it does not ship. Features that cannot work locally yet are declared slots that refuse honestly, never stubs that pretend.
 
 ## What it enforces
 
@@ -28,11 +28,12 @@ Every claim on this site is executed before it is published: 466 end-to-end asse
 - **Federated counterparty reputation** — report a counterparty (crypto address, UPI VPA, IBAN, email, domain, card network merchant id) as block or review and it is refused or sent to a human on every rail; publish reports as a signed feed of SHA-256 hashes (no identifiers, reasons or amounts); import another company's feed only if you explicitly trust its issuer address; edited and rolled-back feeds are refused.
 - **Open policy standard** — the policy file is a published JSON Schema (https://spendveto.com/schemas/policy-v1.json). `spendveto validate`, `POST /api/policy/validate` and a GitHub Action (`uses: revanthrajeev/spendveto@main`) catch the typo that would otherwise fail open (unknown keys with did-you-mean), wrong types, unregistered chains and contradictory limits.
 - **x402 auth-capture governance** — for the escrow scheme where a seller captures, voids or refunds after the fact: routes that would put funds in a non-canonical escrow, strand them, or skip a refund window are refused before signing; the maximum is governed and held against the budget; every capture and refund is checked against the signed terms; and holds the seller never captured are reported as money the buyer can reclaim.
+- **Machine Payments Protocol (Stripe + Tempo)** — MPP offers (charge, session, subscription) are decided inside the official mppx client's onChallenge hook, before a credential exists: each priced in USD (Tempo OUSD/pathUSD/USDC.e, EVM USDC, Stripe/card USD) or refused, a charge's splits checked as payees, a session decided on the deposit it locks with its escrow pinned to Tempo's channel reserve, subscriptions sent to a human, and every allowed dollar held against the same budget until reported (`POST /api/mpp/evaluate`, `integrations/mppx.js`).
 
 ## Key facts
 
 - **License**: Apache-2.0. Source: https://github.com/revanthrajeev/spendveto
-- **Verification**: 466 end-to-end assertions, all passing, re-run on every change.
+- **Verification**: 476 end-to-end assertions, all passing, re-run on every change.
 - **Modes**: `simulate` (default, zero setup, real secp256k1 keypairs and real ECDSA verification, local settlement) and `testnet` (real x402 v2, facilitator-adaptive multichain).
 - **Chains**: a 20-chain registry across eight signature families — Base Sepolia (secp256k1), Solana devnet (ed25519), Aptos testnet (Move), Stellar testnet, Hedera testnet (account-id addressing) and XRPL testnet settle live via the public x402 facilitator today; Base, Ethereum, Polygon, Arbitrum, Optimism, Avalanche, Monad, Celo, Sei, Stable (USDT0) and Arc testnet (Circle's native-USDC L1) are fully wired and settlement-ready, awaiting a facilitator key/registration and a funded wallet; Algorand testnet is governed (policy, allowlists, per-chain balances) but not signable — no client signature package for it is published yet; Cardano preprod is governed the same way but one step earlier — as of registration neither the public facilitator nor npm has anything for it yet (stablecoin is USDM, not USDC); XRPL mainnet is wired but **disabled by default** — RLUSD (XRPL has no canonical USDC deployment), and an operator has to explicitly opt in through its own variable to enable real-money settlement.
 - **Interfaces**: CLI, Node SDK, MCP stdio server, enforcement proxy for keyless agents, LangChain, OpenAI Agents SDK and ElizaOS adapters.
@@ -67,6 +68,7 @@ Every claim on this site is executed before it is published: 466 end-to-end asse
   - [Stop runaway agent loops](https://spendveto.com/guides/stop-runaway-ai-agent-loop.html): loop detection, kill switch, rate limits, budgets.
   - [AI agent budgets](https://spendveto.com/guides/ai-agent-budget.html): per agent, per team or customer tag, delegated.
   - [x402 spending limits](https://spendveto.com/guides/x402-spending-limits.html): caps, approvals, payee and chain allowlists enforced at the payment gate.
+  - [MPP spending controls](https://spendveto.com/guides/mpp-spending-controls.html): Stripe and Tempo's Machine Payments Protocol governed inside the mppx client — session deposits, split payees, subscriptions.
   - [AI agent card controls](https://spendveto.com/guides/ai-agent-card-controls.html): Stripe Issuing and Lithic real-time authorization decisions.
   - [Human approval for agent payments](https://spendveto.com/guides/human-approval-agent-payments.html): thresholds and new-payee approvals that fail closed.
   - [Accept payments only from governed agents](https://spendveto.com/guides/verify-governed-ai-agents.html): sellers verify governed-spend attestations offline; how they relate to AP2 mandates and Mastercard Verifiable Intent.

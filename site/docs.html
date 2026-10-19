@@ -91,7 +91,7 @@
 
   <article>
     <h1>Documentation</h1>
-    <p class="lede">SpendVeto is a governance gate in front of a catalog of paid (x402/USDC) endpoints, reachable three ways — CLI, delegated child agents, and any MCP client. Everything on this page is exercised by the 466-assertion suite in <code>npm run verify</code>.</p>
+    <p class="lede">SpendVeto is a governance gate in front of a catalog of paid (x402/USDC) endpoints, reachable three ways — CLI, delegated child agents, and any MCP client. Everything on this page is exercised by the 476-assertion suite in <code>npm run verify</code>.</p>
 
     <h2 id="quickstart">Quickstart</h2>
     <pre class="block"><span class="p">$</span> git clone https://github.com/revanthrajeev/spendveto.git &amp;&amp; cd spendveto &amp;&amp; npm install
@@ -112,7 +112,7 @@
         <tr><td><code>npm run policy [-- apply &lt;pack&gt;]</code></td><td>List or apply policy packs (cautious / standard / production)</td></tr>
         <tr><td><code>npm run apikey -- [role] [label]</code></td><td>Mint an admin-surface API key (role: viewer / approver / admin). First key flips the server to auth-required.</td></tr>
         <tr><td><code>npx github:revanthrajeev/spendveto</code> · <code>npm start</code></td><td>The <code>spendveto</code> CLI: starts the server on loopback and prints the one-line setup for Claude Code, Codex and the SDKs; also <code>spendveto budget &lt;usd/day&gt;</code>, <code>status</code>, <code>observe</code> / <code>enforce</code>, <code>freeze</code> / <code>unfreeze &lt;agent&gt;</code>, <code>connect</code>, <code>mcp</code>, <code>validate [policy.json] [--strict]</code> (lint a policy against the open schema; exit 1 on errors — the same check the GitHub Action runs). State lives in <code>SPENDVETO_DATA_DIR</code> (default <code>~/.spendveto</code> for an installed copy)</td></tr>
-        <tr><td><code>npm run verify</code></td><td>466 end-to-end assertions, headless</td></tr>
+        <tr><td><code>npm run verify</code></td><td>476 end-to-end assertions, headless</td></tr>
         <tr><td><code>npm run site</code></td><td>Serve this marketing site (:8403)</td></tr>
       </tbody>
     </table></div>
@@ -206,6 +206,8 @@ const tools = await createSpendVetoTools({ agentToken: "tg_…" });
         <tr><td><code>GET/POST /api/freezes</code> · <code>POST /api/freezes/:id/unfreeze</code></td><td>Kill switch</td></tr>
         <tr><td><code>GET /api/trust/:address</code></td><td>Agent trust score (0–100 + grade) from governance history</td></tr>
         <tr><td><code>POST /api/acp/checkout</code></td><td>ACP: check a checkout session against the shared payment token that funds it — merchant, ceiling, category, currency, and whether the declared total matches its own line items</td></tr>
+        <tr><td><code>POST /api/mpp/evaluate</code></td><td>MPP (Stripe + Tempo): send the 402&#x27;s <code>WWW-Authenticate</code> value (or the challenges mppx parsed); every offer is priced or refused, MPP&#x27;s own rules run (splits as payees, session escrow and deposit cap, subscriptions to a human, expired or malformed challenges), then the policy engine. Returns the offer to pay plus a <code>chargeId</code> or <code>sessionId</code> — allowed money is held at once.</td></tr>
+        <tr><td><code>POST /api/mpp/charges/:id/report</code> · <code>POST /api/mpp/sessions/:id/voucher</code> · <code>/close</code> · <code>GET /api/mpp</code></td><td>Report a charge paid (with the server&#x27;s <code>Payment-Receipt</code>) or failed; record cumulative vouchers (never backwards, never past the approved deposit); close a session to book what it consumed. Unreported charges are booked as paid when their challenge expires.</td></tr>
         <tr><td><code>POST /api/integrity/bind</code> · <code>POST /api/integrity/verify</code></td><td>Request integrity: bind an authorization to a canonical digest of the request, then refuse at execution if the payload changed. Single-use, TTL-bounded, agent-scoped</td></tr>
         <tr><td><code>GET /api/disputes/:entryHash/evidence</code> · <code>POST /api/disputes/verify</code></td><td>Dispute evidence pack: the spend pinned in its hash chain, the policy in force, the approval and the signed consents — one bundle, signed over its own digest</td></tr>
         <tr><td><code>POST /api/upto/authorize</code></td><td>x402 <code>upto</code> scheme: record a variable-amount authorization. Policy decides on <code>maxUSD</code> — the ceiling the signature permits — not the price the seller quoted, and the open ceiling is held against the budget until it resolves</td></tr>
@@ -246,7 +248,7 @@ app.get("/api/report", requireGovernedAgent({ trustedIssuers: ["0xBuyerIssuer…
     <p><b>simulate</b> (default): real keypairs, real signature verification, nonce replay protection, local settlement — zero setup. <b>testnet</b>: the real x402 v2 packages, facilitator-adaptive: the gate asks its facilitator what it can settle at boot and brings every supported registry chain live (multi-chain 402s, per-chain USDC). The public facilitator settles Base Sepolia — fund one wallet at faucet.circle.com and set <code>SPENDVETO_MODE=testnet</code>; a CDP facilitator key unlocks its mainnet chains with zero code changes.</p>
 
     <h2 id="verify">Verification</h2>
-    <p><code>npm run verify</code> boots everything headlessly and runs <b>466 assertions</b>: forged-signature rejection, all three approval outcomes, cascading caps, tool + chain scoping, chain-scoped signatures with per-chain balances, burst auto-freeze, manual freeze/unfreeze, signed-receipt verification, CSV export, per-chain analytics, webhook delivery to a live receiver, and a real MCP stdio JSON-RPC session.</p>
+    <p><code>npm run verify</code> boots everything headlessly and runs <b>476 assertions</b>: forged-signature rejection, all three approval outcomes, cascading caps, tool + chain scoping, chain-scoped signatures with per-chain balances, burst auto-freeze, manual freeze/unfreeze, signed-receipt verification, CSV export, per-chain analytics, webhook delivery to a live receiver, and a real MCP stdio JSON-RPC session.</p>
   </article>
 </div>
 

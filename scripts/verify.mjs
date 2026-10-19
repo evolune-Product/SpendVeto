@@ -39,6 +39,7 @@ const PORT = 8402;
 const BASE = `http://localhost:${PORT}`;
 
 let failures = 0;
+let mppSeller = null;
 let verifyStats = null;
 function check(label, ok, detail) {
   console.log(`${ok ? "PASS" : "FAIL"}  ${label}${detail ? ` — ${detail}` : ""}`);
@@ -3665,6 +3666,177 @@ try {
     `typo=${actionTypo.status} strict=${actionWarnStrict.status} lenient=${actionWarn.status} ${actionTypo.stderr.slice(0, 120)}`
   );
 
+  // --- MPP (Machine Payments Protocol — Stripe + Tempo): offers decided before mppx signs (server/mpp.js) ---
+  // Every challenge here is produced by the official SDK (mppx, pinned), so
+  // the parser is tested against what real MPP servers send, not a re-typing
+  // of the spec. The paying client in the last check is mppx itself; only its
+  // payment method is a stand-in that builds the credential offline (no chain).
+  const { Challenge: MppChallenge, Credential: MppCredential, Receipt: MppReceipt, Method: MppMethod, z: mppz } = await import("mppx");
+  const { Methods: TempoMethods } = await import("mppx/tempo");
+  const { Mppx } = await import("mppx/client");
+  const { governMppx } = await import("../integrations/mppx.js");
+  const OUSD = "0x20c0000000000000000000006a37DA5C996874BE";
+  const MPP_PAYEE = "0x" + "a11c".repeat(10);
+  const MPP_SPLIT = "0x" + "5b11".repeat(10);
+  const MPP_REALM = "api.mpp-seller.test";
+  const mppAgent = privateKeyToAccount(generatePrivateKey());
+  const mppSoon = () => new Date(Date.now() + 5 * 60_000).toISOString();
+  const mppCharge = (amount, extra = {}, expires = mppSoon()) => MppChallenge.fromMethod(TempoMethods.charge, { secretKey: "verify", realm: MPP_REALM, expires, request: { amount, decimals: 6, currency: OUSD, recipient: MPP_PAYEE, chainId: 42431, ...extra } });
+  const mppSession = (suggestedDeposit, escrowContract = "0x4d50500000000000000000000000000000000000") => MppChallenge.fromMethod(TempoMethods.session, { secretKey: "verify", realm: MPP_REALM, expires: mppSoon(), request: { amount: "0.000025", decimals: 6, unitType: "llm_token", suggestedDeposit, currency: OUSD, recipient: MPP_PAYEE, chainId: 42431, escrowContract, sessionProtocol: "v2" } });
+  const mppHeader = (...cs) => {
+    const h = new Headers();
+    for (const c of cs) h.append("WWW-Authenticate", typeof c === "string" ? c : MppChallenge.serialize(c));
+    return h.get("www-authenticate");
+  };
+  const mppEval = (challengeHeader, extra = {}) => jsonReq("/api/mpp/evaluate", { address: mppAgent.address, wwwAuthenticate: challengeHeader, ...extra });
+  const mppHolds = () => fetch(`${BASE}/api/upto/holds/${mppAgent.address}`).then((r) => r.json());
+  const mppLedger = async () => (await fetch(`${BASE}/api/ledger`).then((r) => r.json())).entries.filter((e) => e.mode === "mpp" && e.address === mppAgent.address);
+  const MPP_POLICY = { ...LOOSE_POLICY, maxPerCallUSD: 0.5, maxPerHourUSD: 0.8, requireApprovalAboveUSD: 0.5, mpp: { maxSessionDepositUSD: 0.6 } };
+  writeFileSync(`${ROOT}data/policy.json`, JSON.stringify(MPP_POLICY, null, 2));
+
+  const mppFirst = await mppEval(mppHeader(mppCharge("0.04"), 'Bearer realm="api", error="invalid_token"', mppCharge("0.09")));
+  check(
+    "an MPP 402 carrying several offers in one header (fetch joins them, a Bearer challenge between) parses into its Payment offers, and the cheapest Tempo charge is priced from its stablecoin — OUSD on Moderato, 6-decimal base units",
+    mppFirst.body.decision === "allow" && mppFirst.body.offers?.length === 2 && mppFirst.body.offer?.exposureUSD === 0.04 && mppFirst.body.offer.network === "tempo-moderato" &&
+      mppFirst.body.offer.currency.symbol === "OUSD" && mppFirst.body.maxAmount === "40000" && /^mppc_/.test(mppFirst.body.chargeId || "") && !!mppFirst.body.signature,
+    `${mppFirst.body.decision} ${mppFirst.body.code || ""} offers=${mppFirst.body.offers?.length}`
+  );
+  const heldBeforeReport = await mppHolds();
+  const mppReceipt = MppReceipt.serialize(MppReceipt.from({ method: "tempo", reference: "0x" + "cd".repeat(32), status: "success", timestamp: new Date().toISOString() }));
+  const paidReport = await jsonReq(`/api/mpp/charges/${mppFirst.body.chargeId}/report`, { outcome: "paid", receipt: mppReceipt });
+  const paidTwice = await jsonReq(`/api/mpp/charges/${mppFirst.body.chargeId}/report`, { outcome: "paid" });
+  const mppSecond = await mppEval(mppHeader(mppCharge("0.05")));
+  const failedReport = await jsonReq(`/api/mpp/charges/${mppSecond.body.chargeId}/report`, { outcome: "failed" });
+  const heldAfterReports = await mppHolds();
+  const bookedCharge = (await mppLedger()).filter((e) => e.mppChargeId === mppFirst.body.chargeId);
+  check(
+    "money MPP is allowed to move is held against the budget at once, a reported payment is booked once with the server's Payment-Receipt kept as evidence, and a failed one releases its hold",
+    heldBeforeReport.mppUSD === 0.04 && paidReport.status === 200 && paidReport.body.charge.receipt === mppReceipt && paidTwice.status === 409 && paidTwice.body.code === "mpp_charge_resolved" &&
+      bookedCharge.length === 1 && bookedCharge[0].amount === 0.04 && bookedCharge[0].status === "paid" && failedReport.body.charge?.status === "failed" && heldAfterReports.mppUSD === 0,
+    `held ${heldBeforeReport.mppUSD} → ${heldAfterReports.mppUSD}, booked ${bookedCharge.length}`
+  );
+
+  const mppShortLived = await mppEval(mppHeader(mppCharge("0.03", {}, new Date(Date.now() + 1500).toISOString())));
+  await sleep(1800);
+  const mppHeldAfterExpiry = await mppHolds();
+  const mppAssumedPaid = (await mppLedger()).filter((e) => e.mppChargeId === mppShortLived.body.chargeId);
+  const mppLateReport = await jsonReq(`/api/mpp/charges/${mppShortLived.body.chargeId}/report`, { outcome: "failed" });
+  check(
+    "an allowed MPP charge nobody reports doesn't vanish from the budget: once its challenge expires it is booked as paid, dated when it was allowed, and a late report can't undo it",
+    mppShortLived.body.decision === "allow" && mppHeldAfterExpiry.mppUSD === 0 && mppAssumedPaid.length === 1 && mppAssumedPaid[0].amount === 0.03 && /assumed paid/.test(mppAssumedPaid[0].reason || "") &&
+      Date.parse(mppAssumedPaid[0].ts) < Date.now() - 1500 && mppLateReport.status === 409 && mppLateReport.body.code === "mpp_charge_resolved",
+    `booked ${mppAssumedPaid.length} at ${mppAssumedPaid[0]?.ts}, late report ${mppLateReport.status}`
+  );
+
+  const mppCodes = {
+    expired: (await mppEval(mppHeader(mppCharge("0.01", {}, new Date(Date.now() - 60_000).toISOString())))).body.code,
+    header: (await mppEval(mppHeader(MppChallenge.from({ id: "hdr", realm: MPP_REALM, method: "tempo", intent: "charge", header: "X-Pay", expires: mppSoon(), request: { amount: "10000", currency: OUSD, recipient: MPP_PAYEE, methodDetails: { chainId: 42431 } } })))).body.code,
+    noChain: (await mppEval(mppHeader(MppChallenge.from({ id: "nochain", realm: MPP_REALM, method: "tempo", intent: "charge", expires: mppSoon(), request: { amount: "10000", currency: OUSD, recipient: MPP_PAYEE } })))).body.code,
+    token: (await mppEval(mppHeader(mppCharge("0.01", { currency: "0x20c000000000000000000000f37de3740ADec032" })))).body.code,
+    method: (await mppEval(mppHeader(MppChallenge.from({ id: "ln", realm: MPP_REALM, method: "lightning", intent: "charge", expires: mppSoon(), request: { amount: "1000", currency: "sat", recipient: "lnbc1" } })))).body.code,
+  };
+  check(
+    "what mppx's own parser lets through is refused before signing: an expired challenge, a credential header other than Authorization/Payment-Authorization, a Tempo offer with no chainId (the drafts disagree on the default), a token SpendVeto can't price, and a method it can't price",
+    mppCodes.expired === "mpp_challenge_expired" && mppCodes.header === "mpp_credential_header_invalid" && mppCodes.noChain === "mpp_chain_unspecified" && mppCodes.token === "mpp_currency_unpriced" && mppCodes.method === "mpp_method_unpriced",
+    JSON.stringify(mppCodes)
+  );
+
+  writeFileSync(`${ROOT}data/policy.json`, JSON.stringify({ ...MPP_POLICY, allowedPayees: [MPP_PAYEE] }, null, 2));
+  const viaSplit = await mppEval(mppHeader(mppCharge("0.04", { splits: [{ amount: "0.03", recipient: MPP_SPLIT }] })));
+  const noSplit = await mppEval(mppHeader(mppCharge("0.04")));
+  if (noSplit.body.chargeId) await jsonReq(`/api/mpp/charges/${noSplit.body.chargeId}/report`, { outcome: "failed" });
+  writeFileSync(`${ROOT}data/policy.json`, JSON.stringify(MPP_POLICY, null, 2));
+  check(
+    "a charge's splits are payees too: one routing $0.03 of a $0.04 charge to a recipient outside allowedPayees is refused, though the main recipient is allowed and the same charge without the split passes",
+    viaSplit.body.decision === "deny" && viaSplit.body.code === "payee_not_allowed" && /split recipient/.test(viaSplit.body.reason || "") && noSplit.body.decision === "allow",
+    `${viaSplit.body.code}: ${viaSplit.body.reason}`
+  );
+
+  const bigDeposit = await mppEval(mppHeader(mppSession("2")));
+  const rogueEscrow = await mppEval(mppHeader(mppSession("0.3", "0x" + "e5c0".repeat(10))));
+  const session = await mppEval(mppHeader(mppSession("0.3")));
+  check(
+    "a session is decided on the deposit it locks, not its per-unit price: over policy.mpp.maxSessionDepositUSD it is refused, with an escrow other than Tempo's channel reserve it is refused, and otherwise allowed with the deposit to hand mppx as maxDeposit",
+    bigDeposit.body.code === "per_call_cap" && rogueEscrow.body.code === "mpp_session_escrow_untrusted" && session.body.decision === "allow" && /^mpps_/.test(session.body.sessionId || "") &&
+      session.body.maxDeposit === "300000" && session.body.offer.unitUSD === 0.000025 && session.body.offer.exposureUSD === 0.3,
+    `${bigDeposit.body.code} / ${rogueEscrow.body.code} / ${session.body.decision} ${session.body.maxDeposit}`
+  );
+
+  const v1 = await jsonReq(`/api/mpp/sessions/${session.body.sessionId}/voucher`, { cumulative: "100000" });
+  const vBack = await jsonReq(`/api/mpp/sessions/${session.body.sessionId}/voucher`, { cumulative: "50000" });
+  const vOver = await jsonReq(`/api/mpp/sessions/${session.body.sessionId}/voucher`, { cumulative: "400000" });
+  const whileOpen = await mppEval(mppHeader(mppCharge("0.49")));
+  const closed = await jsonReq(`/api/mpp/sessions/${session.body.sessionId}/close`, {});
+  const afterClose = await mppEval(mppHeader(mppCharge("0.49")));
+  if (afterClose.body.chargeId) await jsonReq(`/api/mpp/charges/${afterClose.body.chargeId}/report`, { outcome: "failed" });
+  const bookedSession = (await mppLedger()).filter((e) => e.mppSessionId === session.body.sessionId);
+  check(
+    "vouchers are cumulative and capped by the approved deposit (one going backwards or past it is refused); an open session's whole deposit counts against the hourly budget — a $0.49 charge is refused while it's open and allowed once closing books the $0.10 consumed and releases the rest",
+    v1.body.remainingUSD === 0.2 && vBack.body.code === "mpp_voucher_regressed" && vOver.body.code === "mpp_voucher_over_deposit" && whileOpen.body.code === "hourly_usd_cap" &&
+      closed.body.session?.status === "closed" && closed.body.session.releasedUSD === 0.2 && bookedSession.length === 1 && bookedSession[0].amount === 0.1 && afterClose.body.decision === "allow",
+    `voucher ${v1.body.remainingUSD} back=${vBack.body.code} over=${vOver.body.code} open=${whileOpen.body.code} close=${closed.body.session?.status} after=${afterClose.body.decision}`
+  );
+
+  const mppSub = (periodUnit) => MppChallenge.from({ id: `sub-${periodUnit}`, realm: MPP_REALM, method: "tempo", intent: "subscription", expires: mppSoon(), request: { amount: "20000", currency: OUSD, periodCount: "1", periodUnit, recipient: MPP_PAYEE, subscriptionExpires: new Date(Date.now() + 28 * 86400_000 + 3600_000).toISOString(), methodDetails: { chainId: 42431, accessKey: { accessKeyAddress: MPP_SPLIT, keyType: "secp256k1" } } } });
+  const subAsk = await mppEval(mppHeader(mppSub("week")));
+  const subMonthly = await mppEval(mppHeader(mppSub("month")));
+  const subApproval = (await jsonReq("/api/approvals", { address: mppAgent.address, ...subAsk.body.approval })).body;
+  await jsonReq(`/api/approvals/${subApproval.id}/decide`, { decision: "approved" });
+  const subAllowed = await mppEval(mppHeader(mppSub("week")));
+  const subAgain = await mppEval(mppHeader(mppSub("week")));
+  if (subAllowed.body.chargeId) await jsonReq(`/api/mpp/charges/${subAllowed.body.chargeId}/report`, { outcome: "failed" });
+  check(
+    "a subscription is a standing commitment: even at $0.02 a week it needs a human, with the total until it ends ($0.10 over five weeks); Tempo can't bill monthly; and the approval is consumed by the first allow, so it can't authorize a second subscription",
+    subAsk.body.decision === "requires_approval" && subAsk.body.code === "mpp_subscription_needs_approval" && subAsk.body.offer?.commitmentUSD === 0.1 && subAsk.body.approval?.resource === `mpp:${MPP_REALM}:tempo:subscription` &&
+      subMonthly.body.code === "mpp_challenge_malformed" && subAllowed.body.decision === "allow" && subAllowed.body.approvalId === subApproval.id && subAgain.body.decision === "requires_approval",
+    `${subAsk.body.code} commitment=${subAsk.body.offer?.commitmentUSD} monthly=${subMonthly.body.code} approved=${subAllowed.body.decision} again=${subAgain.body.decision}`
+  );
+
+  // A local MPP seller and the official mppx client, governed through its
+  // onChallenge hook. The seller sends a real Tempo charge challenge and
+  // answers a request carrying a Payment credential with 200 + a receipt.
+  const mppSellerSaw = [];
+  let mppSellerPrice = "0.6";
+  mppSeller = createServer((req, res) => {
+    const auth = req.headers.authorization || "";
+    mppSellerSaw.push(auth);
+    if (auth.startsWith("Payment ")) {
+      res.writeHead(200, { "content-type": "application/json", "payment-receipt": mppReceipt });
+      return res.end(JSON.stringify({ report: "ok" }));
+    }
+    res.writeHead(402, { "www-authenticate": MppChallenge.serialize(mppCharge(mppSellerPrice)), "content-type": "application/problem+json" });
+    res.end(JSON.stringify({ type: "https://paymentauth.org/problems/payment-required", status: 402 }));
+  });
+  mppSeller.listen(8385);
+  const offlineTempo = MppMethod.toClient(
+    MppMethod.from({ name: "tempo", intent: "charge", schema: { credential: { payload: mppz.object({ type: mppz.string(), hash: mppz.string() }) }, request: mppz.record(mppz.string(), mppz.unknown()) } }),
+    { async createCredential({ challenge }) { return MppCredential.serialize({ challenge, payload: { type: "hash", hash: "0x" + "ab".repeat(32) } }); } }
+  );
+  const mppGoverned = governMppx({ address: mppAgent.address, spendveto: BASE });
+  const mppxClient = Mppx.create({ methods: [offlineTempo], onChallenge: mppGoverned.onChallenge, polyfill: false });
+  const refusedPay = await mppGoverned.fetch(mppxClient, "http://localhost:8385/report").then(() => null, (e) => e);
+  const credentialOnRefusal = mppSellerSaw.some((a) => a.startsWith("Payment "));
+  mppSellerPrice = "0.02";
+  const paidPay = await mppGoverned.fetch(mppxClient, "http://localhost:8385/report");
+  await sleep(100);
+  const mppxBooked = (await mppLedger()).filter((e) => e.status === "paid" && e.amount === 0.02 && e.mppChargeId);
+  check(
+    "the official mppx client, governed through its onChallenge hook: an over-cap offer is refused before a credential exists (the seller never sees one), and an allowed one is paid by mppx and booked from the seller's receipt",
+    /SpendVeto refused this MPP payment \(per_call_cap\)/.test(refusedPay?.message || "") && !credentialOnRefusal && paidPay.status === 200 && mppSellerSaw.at(-1).startsWith("Payment ") && mppxBooked.length === 1,
+    `refused=${refusedPay?.message?.slice(0, 60)} credentialOnRefusal=${credentialOnRefusal} paid=${paidPay.status} booked=${mppxBooked.length}`
+  );
+  mppSeller.close();
+  mppSeller = null;
+
+  const mppSchema = validatePolicy({ allowedChains: ["base-sepolia", "tempo-moderato"], mpp: { maxSessionDepositUSD: 2, allowedMethods: ["tempo", "stripe"] } });
+  const mppTypo = validatePolicy({ mpp: { maxSessionDepositUsd: 2 } });
+  check(
+    "the policy standard covers MPP: an mpp section validates and Tempo networks are chains a policy may allow, while a mis-cased limit there is caught with a did-you-mean instead of silently failing open",
+    mppSchema.valid && mppTypo.errors.some((e) => e.path === "/mpp/maxSessionDepositUsd" && e.message.includes('did you mean "maxSessionDepositUSD"')),
+    JSON.stringify(mppSchema.errors.concat(mppTypo.errors).map((e) => e.path))
+  );
+  writeFileSync(`${ROOT}data/policy.json`, JSON.stringify(LOOSE_POLICY, null, 2));
+
   // --- Multi-chain live settlement wiring (facilitator-adaptive) ---
   // In testnet mode the gate asks its facilitator (GET /supported) what it can
   // settle and brings every matching registry chain live: per-chain scheme
@@ -3841,6 +4013,7 @@ try {
   if (proxyProc) proxyProc.kill();
   if (testnetProc) testnetProc.proc.kill();
   if (mockFacil) mockFacil.close();
+  if (mppSeller) mppSeller.close();
   server.kill();
   alertServer.close();
   writeFileSync(

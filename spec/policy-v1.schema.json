@@ -172,6 +172,17 @@
         "allowedOperators": { "type": ["array", "null"], "items": { "$ref": "#/$defs/evmAddress" } }
       }
     },
+    "mpp": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Buyer-side rules for Machine Payments Protocol (Stripe + Tempo) offers, decided by POST /api/mpp/evaluate before the agent pays.",
+      "properties": {
+        "maxSessionDepositUSD": { "$ref": "#/$defs/usd", "description": "The most one session may lock in escrow (its per-call cap). Defaults to maxPerCallUSD." },
+        "maxUnitPriceUSD": { "$ref": "#/$defs/usd", "description": "Refuse sessions priced above this per unit." },
+        "allowCustomEscrow": { "type": "boolean", "description": "Let a Tempo session name an escrow other than the TIP-1034 channel reserve. Default false." },
+        "allowedMethods": { "type": "array", "items": { "enum": ["tempo", "evm", "stripe", "card"] }, "description": "Payment methods agents may pay with. Omit to allow every priced method." }
+      }
+    },
     "attestations": {
       "type": "object",
       "additionalProperties": false,

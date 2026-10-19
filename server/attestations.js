@@ -29,7 +29,7 @@ export const ATTESTATION_HEADER = "X-SpendVeto-Attestation";
 export const ATTESTATION_MESSAGE_PREFIX = "spendveto-attestation:v1:";
 export const ATTESTATION_DEFAULT_TTL_SECONDS = 300;
 export const ATTESTATION_MAX_TTL_SECONDS = 900;
-export const ATTESTATION_RAILS = ["x402", "card", "payout", "llm", "api", "ap2", "acp"];
+export const ATTESTATION_RAILS = ["x402", "card", "payout", "llm", "api", "ap2", "acp", "mpp"];
 
 const b64url = (s) => Buffer.from(s, "utf8").toString("base64url");
 const unb64url = (s) => Buffer.from(s, "base64url").toString("utf8");

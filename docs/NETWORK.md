@@ -50,7 +50,7 @@ sva1.<payload>.<signature>
 | `res` | string | The resource being paid for |
 | `amt` | decimal string | The USD ceiling the policy allowed |
 | `cur` | string | `"USD"` |
-| `rail` | string | `x402`, `card`, `payout`, `llm`, `api`, `ap2` or `acp` |
+| `rail` | string | `x402`, `card`, `payout`, `llm`, `api`, `ap2`, `acp` or `mpp` |
 | `chain` | string | Optional settlement chain id |
 | `pol` | hex string | SHA-256 of the policy in force (canonical key order) |
 | `dec` | string | `allowed`, or `approved` when a human signed off |

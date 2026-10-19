@@ -20,7 +20,7 @@ Every newly-paid tool makes the **buyer side** — the agent doing the spending 
 
 ## Product (working today, not a plan)
 
-Open-source (Apache-2.0) Node.js stack, every claim below covered by a 466-assertion end-to-end verification suite:
+Open-source (Apache-2.0) Node.js stack, every claim below covered by a 476-assertion end-to-end verification suite:
 
 1. **Payment rails** — real x402 (HTTP 402 + USDC) gating a catalog of priced tools; runs against the live Base Sepolia facilitator, plus a zero-setup simulate mode with real ECDSA signing and replay protection.
 2. **Policy engine** — the agent's own rules, enforced *before* payment: per-call cap, hourly budget, call-rate limit, checked against live spend history.
@@ -66,10 +66,11 @@ Open-source (Apache-2.0) Node.js stack, every claim below covered by a 466-asser
 41. **Governed-spend attestations — 3-D Secure, for agents (v0.29.0)** — when the buyer's policy allows a payment (and, above the approval line, only after a human approved), SpendVeto signs a five-minute token naming payer, payee, resource, USD ceiling and policy version; every governed x402 payment carries it. A seller verifies it **offline** against the issuer address it pins — one Express middleware (`requireGovernedAgent`), no call to SpendVeto, no data shared — and can refuse agents nobody governs. Single-use, bound to the paying wallet, fail closed without a trust list; the seller learns the policy version, never the buyer's limits. This is the first SpendVeto feature whose value comes from *other* companies adopting it: each buyer that can prove governance makes requiring it cheaper for the next seller.
 42. **Federated counterparty reputation (v0.29.0)** — report a scam or fraudulent counterparty once (crypto address, UPI VPA, IBAN, email, domain, card merchant id) and the policy engine, payouts and card authorizations refuse it on every rail; publish reports as a signed feed of hashes (no identifiers, reasons, amounts or customers); another company imports the feed only if it explicitly trusts the publisher, and edited or rolled-back feeds are refused. Every publisher improves every subscriber's protection: a data network effect that spans rails no single processor sees.
 43. **An open policy standard for agent budgets (v0.29.0)** — the policy file is a published JSON Schema (`spendveto.com/schemas/policy-v1.json`) with a validator in the CLI, the API, the server's boot check and a GitHub Action that lints policies in anyone's CI with no install. A misspelled limit fails open, so unknown keys are errors with a did-you-mean. Standards are how a reference implementation becomes the default: FOCUS did it for cloud cost data, OpenAPI for APIs.
+44. **Stripe and Tempo's Machine Payments Protocol, governed (v0.30.0)** — MPP is x402's sibling (charge, session and subscription offers over HTTP 402), and its official client pays by itself. SpendVeto now decides inside mppx's own `onChallenge` hook, before a credential exists: every offer priced or refused, a charge's splits treated as payees, a session decided on the deposit it locks (and its escrow pinned to Tempo's channel reserve), a subscription sent to a human, and every allowed dollar held against the same budget as x402, cards, payouts and model tokens until it's reported. One policy, now across both 402 protocols.
 
 ### Two audited R&D prototypes — built, tested, independently attacked, *not yet shipped*
 
-Not counted in the 466 and not claimed as product above the line, because neither is wired into anything a user runs today — stated here exactly that plainly, the same honesty bar the rest of this document holds everywhere else:
+Not counted in the 476 and not claimed as product above the line, because neither is wired into anything a user runs today — stated here exactly that plainly, the same honesty bar the rest of this document holds everywhere else:
 
 - **A portable WASM policy core** (`wasm-policy/`) — the deterministic half of `checkPolicy` ported to AssemblyScript and compiled to an actual WebAssembly binary, so governance could run with zero network call inside a browser extension, an edge function, or a sandboxed agent process that can't reach a server — proven by disconnecting the internet and watching it keep deciding correctly. An independent adversarial review found and fixed two real fail-open bugs (a type-confusion truthy check, a numeric-string coercion gap) and a memory leak (unbounded growth under the `stub` runtime, fixed by switching to `incremental` with GC-rooted buffers). 41-assertion parity suite against a from-scratch JS reference, including 50,000 randomized fuzz cases, run three times clean.
 - **A universal interception gateway** (`intercept/`) — a local HTTPS man-in-the-middle proxy (built on mockttp, the same engine behind HTTP Toolkit) that governs x402 payments from an agent that never integrated SpendVeto at all, zero code changes required on the agent's side. Proven against a mock third-party seller carrying zero SpendVeto imports: a denied payment never reaches the seller, an allowed one passes through correctly, both over a real TLS connection the gateway terminated with its own dynamically generated certificate. An independent adversarial review found and fixed two critical issues before this was called done — a host-scoping bypass via `127.0.0.1`/`[::1]`/trailing-dot string mismatches, and a generic-payment-header path that trusted an unverified claimed wallet address (a real impersonation vector) — both now closed and regression-tested. 10/10 across three runs, full findings in `intercept/AUDIT_REPORT.md`.
@@ -80,7 +81,7 @@ Both are genuine engineering, not slideware; neither enforces a single real paym
 
 > Stripe moves money. SpendVeto decides whether the agent should be allowed to move it.
 
-Think **Open Policy Agent, for agent spending** — rail-agnostic by design, and now rail-agnostic **in the code**: `rails/` defines one `pay()` contract with x402 live behind it (simulate + Base Sepolia) and AP2 / OpenAI ACP / Stripe MPP as declared adapter slots, so new rails are adapters, not rewrites. The policy layer never learns which rail settled.
+Think **Open Policy Agent, for agent spending** — rail-agnostic by design, and now rail-agnostic **in the code**: `rails/` defines one `pay()` contract with x402 live behind it (simulate + Base Sepolia) and AP2, OpenAI ACP and Stripe/Tempo's MPP governed through their own evaluators with their settlement adapters as declared slots, so new rails are adapters, not rewrites. The policy layer never learns which rail settled.
 
 **One policy engine for everything an agent spends — tokens, API calls, and stablecoins.** The long-game framing: **SpendVeto is the trust and governance layer for autonomous AI agents** — it sits between an agent and any action that moves money, decides whether that action is allowed, records why, and enforces organizational policy across rails and frameworks. Spend governance is the wedge; the control plane is the company.
 
@@ -95,7 +96,7 @@ Think **Open Policy Agent, for agent spending** — rail-agnostic by design, and
 | Coinbase Spend Permissions / Agentic Wallets | Allowances per period; caps per session and per transaction; OFAC screening | Coinbase wallets only |
 | Coinbase x402 ecosystem | The rail itself (protocol, facilitator, middleware) | No buyer-side policy, budgets, or approvals |
 | Cloudflare Monetization Gateway (Jul 2026) | Seller-side: charge for anything behind Cloudflare | Nothing for the paying agent |
-| Stripe MPP | Seller-side machine payments | Same |
+| Stripe + Tempo MPP (Mar 2026) | The protocol and its mppx client, with per-client knobs (deposit cap, allowed chains, escrow pin) | One client's settings; SpendVeto governs MPP offers against the same budgets, approvals and payee rules as every other rail (v0.30.0) |
 | Skyfire ($9.5M total raised, incl. $8.5M seed — Coinbase Ventures, a16z CSX) | Wallets + identity + payment execution | Not a policy/governance SDK |
 | Nevermined | Seller-side agent monetization & metering | Buyer governance not the focus |
 | Payman | **Closest**: spend limits, approvals, allowlists | Fiat/enterprise, closed platform — not open-source, not x402/MCP-native |
@@ -186,7 +187,7 @@ Why the standard-setter scenario is earnable rather than fantasy: governance lay
 
 ## The ask
 
-Accelerator-stage: $500K to go from verified prototype to hosted product — multi-rail adapters (AP2, Stripe MPP), richer anomaly models and real-time alerting on top of the shipped detector, SOC 2 path, and the hosted governance dashboard that is the business.
+Accelerator-stage: $500K to go from verified prototype to hosted product — settlement adapters for AP2 and MPP, richer anomaly models and real-time alerting on top of the shipped detector, SOC 2 path, and the hosted governance dashboard that is the business.
 
 ---
 

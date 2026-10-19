@@ -47,6 +47,10 @@ const CHAIN_FAMILY = {
   optimism: "evm",
   avalanche: "evm",
   "arc-testnet": "evm",
+  // Tempo (MPP's home chain, server/mpp.js) is EVM-compatible: the same key
+  // controls the same 0x address there, so OFAC's EVM addresses apply.
+  tempo: "evm",
+  "tempo-moderato": "evm",
   "solana-devnet": "solana",
   xrpl: "xrp",
 };

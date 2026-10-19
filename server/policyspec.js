@@ -17,6 +17,7 @@
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { CHAINS } from "../shared-config.js";
+import { MPP_NETWORK_IDS } from "./mpp.js";
 
 export const POLICY_SCHEMA_PATH = fileURLToPath(new URL("../spec/policy-v1.schema.json", import.meta.url));
 export const POLICY_SCHEMA_ID = "https://spendveto.com/schemas/policy-v1.json";
@@ -136,7 +137,8 @@ function validateNode(value, schema, path, root, errors) {
 // Checks the schema can't state: references to things that must exist, and
 // limits that contradict each other (legal JSON, but almost always a mistake).
 function semanticChecks(p, errors, warnings) {
-  const chainIds = new Set(CHAINS.map((c) => c.id));
+  // MPP's Tempo networks are chains a policy can allow too (server/mpp.js), though x402 never settles there.
+  const chainIds = new Set([...CHAINS.map((c) => c.id), ...MPP_NETWORK_IDS]);
   if (Array.isArray(p.allowedChains)) {
     p.allowedChains.forEach((c, i) => {
       if (typeof c === "string" && !chainIds.has(c)) errors.push({ path: `/allowedChains/${i}`, message: `"${c}" is not a registered chain id (see GET /api/chains)` });
