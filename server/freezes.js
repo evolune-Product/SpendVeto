@@ -42,7 +42,7 @@ export function createFreeze({ address, reason, source }) {
     id: randomUUID(),
     address,
     reason: reason || "manually frozen from the dashboard",
-    source: ["anomaly", "llm-loop"].includes(source) ? source : "manual",
+    source: ["anomaly", "llm-loop", "out-of-band"].includes(source) ? source : "manual",
     createdAt: new Date().toISOString(),
     unfrozen: false,
   };

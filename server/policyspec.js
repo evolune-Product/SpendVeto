@@ -139,6 +139,13 @@ function validateNode(value, schema, path, root, errors) {
 function semanticChecks(p, errors, warnings) {
   // MPP's Tempo networks are chains a policy can allow too (server/mpp.js), though x402 never settles there.
   const chainIds = new Set([...CHAINS.map((c) => c.id), ...MPP_NETWORK_IDS]);
+  // Out-of-band detection reads ERC-20 logs, so it can only watch a registered EVM chain with a USDC contract.
+  if (Array.isArray(p.outOfBand?.chains)) {
+    p.outOfBand.chains.forEach((c, i) => {
+      const chain = CHAINS.find((x) => x.id === c);
+      if (typeof c === "string" && !(chain && /^eip155:/.test(chain.caip2 || "") && chain.usdc)) errors.push({ path: `/outOfBand/chains/${i}`, message: `"${c}" is not a registered EVM chain with a USDC contract — out-of-band detection can't watch it` });
+    });
+  }
   if (Array.isArray(p.allowedChains)) {
     p.allowedChains.forEach((c, i) => {
       if (typeof c === "string" && !chainIds.has(c)) errors.push({ path: `/allowedChains/${i}`, message: `"${c}" is not a registered chain id (see GET /api/chains)` });

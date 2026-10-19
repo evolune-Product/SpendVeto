@@ -135,7 +135,8 @@ async function governedCallUnlocked(tool, account, { onStatus = () => {}, approv
     const attestation = await requestAttestation(tool, account, chain);
     const data = await rail.pay({ tool, account, chain, baseUrl: BASE_URL, query, attestation });
     if (MODE === "testnet") {
-      await logEvent({ address: account.address, resource: tool.path, price: tool.price, chain, status: "paid" });
+      const settlement = data?.[Symbol.for("spendveto.settlement")];
+      await logEvent({ address: account.address, resource: tool.path, price: tool.price, chain, status: "paid", ...(settlement?.transaction ? { txHash: settlement.transaction } : {}) });
     }
     return { ok: true, stage: "paid", data, policyCheck };
   } catch (err) {

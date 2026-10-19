@@ -4,7 +4,7 @@
 
 [**Live site + playground**](https://spendveto.com) · [**Docs**](https://spendveto.com/docs.html) · Apache-2.0 · x402 + MCP native
 
-**Every claim in this README is executed before it ships.** `npm run verify` runs **476 end-to-end assertions** from a clean clone — real secp256k1 keypairs, real ECDSA verification, a real MCP stdio JSON-RPC session, and a synthetic runaway agent frozen mid-burst. If a claim isn't a test, it doesn't ship; features that can't work locally yet are declared slots that refuse honestly, never stubs that pretend.
+**Every claim in this README is executed before it ships.** `npm run verify` runs **482 end-to-end assertions** from a clean clone — real secp256k1 keypairs, real ECDSA verification, a real MCP stdio JSON-RPC session, and a synthetic runaway agent frozen mid-burst. If a claim isn't a test, it doesn't ship; features that can't work locally yet are declared slots that refuse honestly, never stubs that pretend.
 
 What *isn't* true yet is stated just as plainly: no external security audit, no customers. Settlement is testnet and simulate only, by default, for every chain. XRPL mainnet settlement (real money, RLUSD) is fully wired but **disabled unless an operator explicitly opts in** — that's their decision and their risk; we don't run, monitor, or control anyone's deployment. Funding positioning and market numbers live in [`PITCH.md`](./PITCH.md).
 
@@ -97,6 +97,21 @@ const res = await governed.fetch(mppx, "https://api.example.com/search");
 
 Tested against challenges produced by the official SDK, and with the real mppx client paying a local seller (its payment method a stand-in that builds the credential offline, so the suite needs no chain). SpendVeto decides; mppx and the server settle.
 
+## Out-of-band spend: caps that hold when the agent pays around the gate
+
+SpendVeto governs every payment that passes through it. An agent that holds its own key can also pay around it — a direct USDC transfer, another facilitator, a second MCP server with its own rail — and every in-gate call still passes while the budget is exceeded in aggregate. So the governed wallets (the agent wallet, every delegated child, any the policy names) are reconciled against their on-chain transfers (`server/outofband.js`):
+
+- A transfer SpendVeto recorded — same settlement hash, or the same payer, payee, amount and chain moments apart — is already counted.
+- One it never saw is **unmanaged spend**: booked against the same hourly budget and delegation caps, alerted, and with `"onDetect": "freeze"` the wallet is frozen until a human looks.
+- `POST /api/outofband/scan` (or the background poller) reads ERC-20 Transfer logs from each chain's RPC; `POST /api/outofband/transfers` takes deliveries from an indexer or address-activity webhook.
+- SpendVeto's own payments don't raise false alarms: testnet x402 payments record the facilitator's settlement hash, and a fresh unmatched transfer waits a grace period for its ledger record. Transfers to your own treasury (`ignoreTo`) are left alone.
+
+```json
+"outOfBand": { "enabled": true, "onDetect": "freeze", "chains": ["base-sepolia"], "ignoreTo": ["0xYourTreasury…"] }
+```
+
+This is detection, not prevention: an agent holding its own key can always sign something. The guarantee that nothing gets around the gate is custody — the keyless enforcement proxy below — or sellers that require governed-spend attestations.
+
 ## India: UPI mandate governance
 
 `POST /api/upi/evaluate` decides allow / requires_approval / deny for an agent's UPI mandate debit with the RBI Digital Payments E-mandate Framework (2026) rules — human authentication on the first debit and above ₹15,000 (₹1,00,000 for insurance, mutual funds, card bills), 24 h pre-debit notice, withdrawn and expired mandates refused — deterministic, INR end to end, verdict ECDSA-signed, payee VPA masked. **Evaluator only:** it does not initiate or settle UPI, is not a PSP, and claims no NPCI/RBI approval (NPCI's agent protocol is not live). "Requires approval" always means a human completes the customer's authentication. Try the rules in your browser at `site/upi.html`. Operator policy goes under `policy.upi` (`maxPerTxnINR`, `maxPerDayINR`, `allowedPayeeVpas`, `allowedCategories`).
@@ -133,9 +148,9 @@ npm run call -- summarize      # $0.02 — above the approval line: go approve/d
 npm run call -- translate      # $0.005
 ```
 
-`npm run verify` runs the whole thing headlessly — **476 end-to-end assertions**: catalog, forged-signature rejection, hard policy blocks, all three approval outcomes (approved / denied / timed-out-fails-closed), delegation caps including the n-level cascade, tool + chain scoping, multichain settlement (chain-scoped signatures, per-chain balances, chain allowlists), runaway-burst auto-freeze, the manual kill switch, signed-receipt verification, CSV export, per-tool/per-wallet/per-chain analytics, webhook alerts actually arriving at a live receiver, structured self-correcting denials, side-effect-free dry runs, TTL grant expiry, one-click approval links, the stats endpoint, AP2 mandate-chain drift detection, human-not-present authority, governed Bazaar discovery, ACP shared-payment-token scope, request-integrity binding (including a payload swapped after authorization), signed dispute evidence packs and their tamper detection, OpenTelemetry span export under an inbound traceparent, governed-spend attestations verified offline by a seller (replay, payer binding, tampering), signed reputation feeds crossing organizations (trust, rollback, digest), policy-schema validation in the CLI and the GitHub Action, and a real MCP stdio JSON-RPC round trip.
+`npm run verify` runs the whole thing headlessly — **482 end-to-end assertions**: catalog, forged-signature rejection, hard policy blocks, all three approval outcomes (approved / denied / timed-out-fails-closed), delegation caps including the n-level cascade, tool + chain scoping, multichain settlement (chain-scoped signatures, per-chain balances, chain allowlists), runaway-burst auto-freeze, the manual kill switch, signed-receipt verification, CSV export, per-tool/per-wallet/per-chain analytics, webhook alerts actually arriving at a live receiver, structured self-correcting denials, side-effect-free dry runs, TTL grant expiry, one-click approval links, the stats endpoint, AP2 mandate-chain drift detection, human-not-present authority, governed Bazaar discovery, ACP shared-payment-token scope, request-integrity binding (including a payload swapped after authorization), signed dispute evidence packs and their tamper detection, OpenTelemetry span export under an inbound traceparent, governed-spend attestations verified offline by a seller (replay, payer binding, tampering), signed reputation feeds crossing organizations (trust, rollback, digest), policy-schema validation in the CLI and the GitHub Action, and a real MCP stdio JSON-RPC round trip.
 
-> **On the number:** a fresh clone runs **476** assertions. Three more exercise a real cross-project integration against [Basis](https://github.com/revanthrajeev/basis) and run only when `../prediction-copilot` is checked out beside this repo — the suite prints `(skipped: cross-project Basis integration test …)` when it isn't. Every published number is the 476 anyone can reproduce.
+> **On the number:** a fresh clone runs **482** assertions. Three more exercise a real cross-project integration against [Basis](https://github.com/revanthrajeev/basis) and run only when `../prediction-copilot` is checked out beside this repo — the suite prints `(skipped: cross-project Basis integration test …)` when it isn't. Every published number is the 482 anyone can reproduce.
 
 **Marketing site**: `npm run site` serves the deploy-ready landing page (Three.js hero, animated product walkthrough) at http://localhost:8403 — `site/` is fully static and self-contained, drop it on Vercel/Netlify as-is. Includes an **interactive playground** (`site/playground.html`) that runs the real policy-decision logic client-side — set a budget, fire agent spend, watch it pass/pause/block — and a **use-cases** page grounded in real 2026 agent-spend scenarios.
 
@@ -449,6 +464,7 @@ server/
   policyspec.js             the policy-v1 validator: strict keys with did-you-mean, semantic checks
   mpp.js                    MPP (Stripe + Tempo) offers: parse, price, MPP's own rules, holds, sessions, vouchers
   optional.js               chain SDKs as optional peers: loadOptional(), the install command when one is missing
+  outofband.js              out-of-band spend: governed wallets' on-chain transfers reconciled against the ledger
 spec/
   policy-v1.schema.json     the open policy standard (JSON Schema 2020-12), hosted at spendveto.com/schemas/
 integrations/             LangChain, OpenAI Agents, ElizaOS adapters, mppx.js (govern the MPP client) + seller-express.js (require governed agents)
@@ -476,7 +492,7 @@ scripts/
   policy.mjs                list/apply policy packs
   site.mjs                  serves the marketing site on :8403
   sdk-python/               Python client (pip install ./sdk-python), same surface as the npm SDK
-  verify.mjs                476 end-to-end assertions incl. MCP stdio round trip + multichain + auto-freeze
+  verify.mjs                482 end-to-end assertions incl. MCP stdio round trip + multichain + auto-freeze
 data/
   policy.json               editable spend rules incl. anomaly burst threshold + alertWebhookUrl
   policy-packs/             importable governance presets (cautious/standard/production)

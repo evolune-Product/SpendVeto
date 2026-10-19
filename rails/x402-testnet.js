@@ -2,6 +2,8 @@ import { findChain } from "../shared-config.js";
 import { getSvmSigner, getAptosSigner, getStellarSigner, getHederaSigner, getXrplSigner } from "../client/wallet.js";
 import { loadOptional, railFamilies } from "../server/optional.js";
 
+export const SETTLEMENT = Symbol.for("spendveto.settlement");
+
 // x402 v2 live settlement — registry-driven, not hardcoded to one chain. The
 // client side signs for whichever registry chain the call asks for; whether
 // settlement actually happens is decided by the REAL boundary: the server's
@@ -66,6 +68,20 @@ export default {
     if (!response.ok) {
       throw new Error(`request failed: ${response.status}`);
     }
-    return response.json();
+    const data = await response.json();
+    // The facilitator's settlement — its transaction hash is how out-of-band
+    // detection (server/outofband.js) recognises this payment on-chain as one
+    // SpendVeto governed. Attached under a symbol so a seller's JSON is never
+    // altered; client/pay.js reads it.
+    const header = response.headers.get("payment-response") || response.headers.get("x-payment-response");
+    if (header && data && typeof data === "object") {
+      try {
+        const { decodePaymentResponseHeader } = await loadOptional("@x402/core/http");
+        Object.defineProperty(data, SETTLEMENT, { value: decodePaymentResponseHeader(header), enumerable: false });
+      } catch {
+        // A malformed header loses the hash, not the payment: matching falls back to payer, amount and time.
+      }
+    }
+    return data;
   },
 };

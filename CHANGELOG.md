@@ -2,6 +2,18 @@
 
 Every feature listed here is exercised by the end-to-end suite (`npm run verify`) — the suite grew from 33 assertions at the first public cut to **114** at v0.7.0. If a claim isn't an assertion, it doesn't ship.
 
+## 0.31.0 — 2026-10-19
+
+Out-of-band spend detection: caps that hold when the agent pays around the gate (GitHub issue #1). SpendVeto governed every payment that passed through it. An agent holding its own key could also send USDC straight from its wallet, pay through another facilitator, or use a second MCP server's rail — every in-gate call would pass while the budget was exceeded in aggregate.
+
+- **`server/outofband.js`** reconciles the governed wallets — the agent wallet, every delegated child, and any the policy names — against their on-chain stablecoin transfers. A transfer SpendVeto recorded (same settlement hash, or the same payer, payee, amount and chain moments apart) is managed. One it never saw is **unmanaged spend**: booked against the same hourly budget and delegation caps, alerted (`unmanaged_spend`), and under `policy.outOfBand.onDetect: "freeze"` the wallet is frozen.
+- **Two ways in.** `POST /api/outofband/scan`, plus a background poller when `enabled`, reads ERC-20 Transfer logs on each watched chain's USDC, filtered by sender, resuming after a per-chain cursor (RPC from `SPENDVETO_RPC_<CHAIN>`, else the registry's). `POST /api/outofband/transfers` takes deliveries from an indexer or an address-activity webhook.
+- **No false alarms from SpendVeto's own payments.** Testnet x402 payments now record the facilitator's settlement hash (x402's PAYMENT-RESPONSE header) for an exact match. A fresh unmatched transfer waits `graceSeconds` (default 120) for its ledger record before it is judged. Reconciliation is idempotent; transfers to `ignoreTo` addresses (the operator's own treasury) are left alone; a token SpendVeto can't price is recorded as unpriced, never as dollars.
+- **Visible everywhere.** Unmanaged spend is in `/api/stats`, `/metrics` (`spendveto_unmanaged_usd_total`), `GET /api/outofband`, and the console overview ("Paid around the gate"). The overview's stat row folds total attempts into "Stopped attempts".
+- **Policy standard:** an `outOfBand` section; a chain it can't watch is an error.
+- **What it is not:** prevention. A wallet whose key the agent holds can always sign. Prevention is custody — the keyless enforcement proxy — or sellers that require governed-spend attestations.
+- **Verify: 482** (+6). The chain path reads a local JSON-RPC node speaking the real wire format. 485 with `../prediction-copilot` alongside.
+
 ## 0.30.0 — 2026-10-19
 
 Stripe and Tempo's Machine Payments Protocol, governed. MPP (launched March 18, 2026) is x402's sibling: a server answers 402 with one `WWW-Authenticate: Payment` challenge per offer — a one-off charge, a session that streams vouchers against an escrowed deposit, or a subscription — and the official client, mppx, pays by itself. SpendVeto now decides before mppx creates a credential.

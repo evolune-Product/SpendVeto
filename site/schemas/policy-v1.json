@@ -183,6 +183,23 @@
         "allowedMethods": { "type": "array", "items": { "enum": ["tempo", "evm", "stripe", "card"] }, "description": "Payment methods agents may pay with. Omit to allow every priced method." }
       }
     },
+    "outOfBand": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Out-of-band spend detection: governed wallets' on-chain stablecoin transfers reconciled against the ledger; anything SpendVeto never authorized is unmanaged spend, counted against the same budgets.",
+      "properties": {
+        "enabled": { "type": "boolean", "description": "Scan the chains in the background every pollSeconds. Manual scans and webhook deliveries work either way." },
+        "onDetect": { "enum": ["alert", "freeze"], "description": "What an unmanaged transfer does besides counting against the budget. Default alert." },
+        "pollSeconds": { "type": "integer", "minimum": 0 },
+        "chains": { "$ref": "#/$defs/stringList", "description": "Registered EVM chains to watch (their registry USDC). Default base-sepolia." },
+        "wallets": { "type": "array", "items": { "$ref": "#/$defs/evmAddress" }, "description": "Wallets to watch besides the agent wallet and its delegated children." },
+        "ignoreTo": { "type": "array", "items": { "$ref": "#/$defs/evmAddress" }, "description": "Recipients whose transfers are legitimate movements (the operator's own treasury)." },
+        "lookbackBlocks": { "type": "integer", "minimum": 1 },
+        "maxBlockRange": { "type": "integer", "minimum": 1 },
+        "matchWindowSeconds": { "type": "integer", "minimum": 0 },
+        "graceSeconds": { "type": "integer", "minimum": 0, "description": "How long a fresh unmatched transfer waits for SpendVeto's own ledger record before it is judged. Default 120." }
+      }
+    },
     "attestations": {
       "type": "object",
       "additionalProperties": false,

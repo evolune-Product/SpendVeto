@@ -5,6 +5,7 @@ import { readFileSync } from "node:fs";
 import express from "express";
 import { loadOptional } from "./optional.js";
 import { parseChallenges, assessChallenge, mppHoldUSD, authorizeCharge, reportCharge, openSession, recordVoucher, closeSession, mppState } from "./mpp.js";
+import { outOfBandSettings, reconcile, scanChains, outOfBandState } from "./outofband.js";
 import { MODE, PORT, TOOLS, CHAINS, FACILITATOR_URL, findChain, DEFAULT_CHAIN, dataPath, PACKAGE_DATA_DIR } from "../shared-config.js";
 import { randomUUID } from "node:crypto";
 import { writeFileSync } from "node:fs";
@@ -485,9 +486,13 @@ app.get("/api/ledger/verify-chain", (req, res) => {
 });
 
 app.post("/api/ledger/event", (req, res) => {
-  const { address, resource, price, chain, category, status, reason } = req.body || {};
+  const { address, resource, price, chain, category, status, reason, txHash, payTo } = req.body || {};
   if (!address || !status) return res.status(400).json({ error: "address and status are required" });
-  appendLedgerEntry({ address, resource, amount: price, ...(chain ? { chain } : {}), ...(category ? { category } : {}), status, reason });
+  // The settlement's transaction hash (testnet x402) is what lets out-of-band
+  // detection (server/outofband.js) recognise this payment on-chain exactly.
+  const tx = typeof txHash === "string" && /^0x[0-9a-fA-F]{64}$/.test(txHash) ? txHash.toLowerCase() : null;
+  const payee = typeof payTo === "string" && /^0x[0-9a-fA-F]{40}$/.test(payTo) ? payTo : null;
+  appendLedgerEntry({ address, resource, amount: price, ...(chain ? { chain } : {}), ...(category ? { category } : {}), status, reason, ...(tx ? { txHash: tx } : {}), ...(payee ? { payTo: payee } : {}) });
   if (status === "blocked") sendAlert("blocked", { address, resource, price, chain, reason });
   maybeFreezeForBurst(address);
   res.status(204).end();
@@ -737,6 +742,8 @@ app.get("/api/stats", (req, res) => {
     paid: bucket("paid"),
     blocked: bucket("blocked"),
     failed: bucket("failed"),
+    // Spend that never passed the gate, found on-chain (server/outofband.js).
+    unmanaged: bucket("unmanaged"),
     frozenWallets: listFreezes().filter((f) => !f.unfrozen).length,
     totalAttempts: entries.length,
   });
@@ -768,6 +775,7 @@ app.get("/metrics", (req, res) => {
     ...metric("spendveto_blocked_usd_total", "Total USD governance refused to spend.", "counter", blocked.usd),
     ...metric("spendveto_blocked_calls_total", "Total calls governance blocked.", "counter", blocked.count),
     ...metric("spendveto_failed_calls_total", "Total calls that failed for a reason other than a policy block.", "counter", failed.count),
+    ...metric("spendveto_unmanaged_usd_total", "Total USD governed wallets spent around the gate, found on-chain (out-of-band).", "counter", bucket("unmanaged").usd),
     ...metric("spendveto_frozen_wallets", "Wallets currently frozen (kill switch, manual or anomaly-triggered).", "gauge", listFreezes().filter((f) => !f.unfrozen).length),
     ...metric("spendveto_attempts_total", "All governed spend attempts seen (paid + blocked + failed).", "counter", entries.length),
     "# HELP spendveto_category_usd_total USD paid or blocked, broken down by spend category.",
@@ -1162,6 +1170,77 @@ app.post("/api/acp/checkout", async (req, res) => {
     ...signed,
   });
 });
+
+// ---- Out-of-band spend (server/outofband.js): what governed wallets paid without asking ----
+// The governed wallets — the agent wallet, every delegated child, and any the
+// policy names — are reconciled against their on-chain stablecoin transfers.
+// A transfer the ledger never recorded is unmanaged spend: booked against the
+// same budgets and caps, alerted, and frozen under onDetect "freeze".
+const outOfBandWallets = (settings) => [...new Set([mainAccount.address, ...listDelegations().map((d) => d.childAddress), ...settings.wallets].filter((a) => /^0x[0-9a-fA-F]{40}$/.test(a || "")).map((a) => a.toLowerCase()))];
+let outOfBandQueue = Promise.resolve();
+// One reconciliation at a time: a background scan and a webhook delivery
+// arriving together must not both book the same transfer.
+const serially = (fn) => (outOfBandQueue = outOfBandQueue.then(fn, fn));
+function bookOutOfBand(result, settings) {
+  for (const { transfer: t, usd } of result.unmanaged) {
+    appendLedgerEntry({
+      ...(t.blockTime ? { ts: t.blockTime } : {}),
+      address: t.from, resource: `out-of-band:${t.to}`, amount: usd ?? 0, chain: t.chain, payTo: t.to,
+      status: "unmanaged", mode: "out-of-band", txHash: t.txHash, logIndex: t.logIndex, token: t.token,
+      ...(usd == null ? { unpriced: true, value: t.value } : {}),
+      reason: usd == null ? "outgoing transfer of a token SpendVeto can't price, never authorized here" : "outgoing transfer SpendVeto never authorized",
+      policyHash: policyHash(),
+    });
+    sendAlert("unmanaged_spend", { address: t.from, to: t.to, usd, chain: t.chain, txHash: t.txHash, unpriced: usd == null });
+    if (settings.onDetect === "freeze") createFreeze({ address: t.from, reason: `out-of-band transfer ${t.txHash.slice(0, 12)}… to ${t.to} (${usd == null ? "unpriced token" : `$${usd}`}) — paid around the gate`, source: "out-of-band" });
+  }
+  return {
+    managed: result.managed.length, unmanaged: result.unmanaged.length, ignored: result.ignored.length, deferred: result.deferred,
+    duplicates: result.duplicates, invalid: result.invalid, foreign: result.foreign,
+    unmanagedUSD: Math.round(result.unmanaged.reduce((s, u) => s + (u.usd || 0), 0) * 1e6) / 1e6,
+  };
+}
+function reconcileNow(transfers, settings) {
+  return bookOutOfBand(reconcile(transfers, { ledger: getLedger(), watched: outOfBandWallets(settings), ignoreTo: settings.ignoreTo, matchWindowSeconds: settings.matchWindowSeconds, graceSeconds: settings.graceSeconds }), settings);
+}
+async function scanOutOfBand(settings) {
+  const { transfers, scanned } = await scanChains({ chains: settings.chains, wallets: outOfBandWallets(settings), lookbackBlocks: settings.lookbackBlocks, maxBlockRange: settings.maxBlockRange });
+  return { scanned, ...reconcileNow(transfers, settings) };
+}
+app.get("/api/outofband", (req, res) => {
+  const settings = outOfBandSettings(loadPolicy());
+  const st = outOfBandState();
+  const unmanaged = getLedger().filter((e) => e.status === "unmanaged");
+  res.json({
+    settings, wallets: outOfBandWallets(settings), cursors: st.cursors, lastScan: st.lastScan, pending: st.pending.length,
+    unmanaged: { count: unmanaged.length, usd: Math.round(unmanaged.reduce((s, e) => s + Number(e.amount || 0), 0) * 1e6) / 1e6, recent: unmanaged.slice(-50).reverse() },
+  });
+});
+// Read the chains now (the background poller does the same every pollSeconds when enabled).
+app.post("/api/outofband/scan", requireAuth("admin"), async (req, res) => {
+  const settings = outOfBandSettings(loadPolicy());
+  try {
+    res.json(await serially(() => scanOutOfBand(settings)));
+  } catch (err) {
+    res.status(502).json({ error: `chain scan failed: ${err.shortMessage || err.message}` });
+  }
+});
+// Deliveries from an indexer or an address-activity webhook, as
+// { transfers: [{ chain, txHash, logIndex, from, to, token, value, blockTime }] }.
+app.post("/api/outofband/transfers", requireAuth("admin"), async (req, res) => {
+  const transfers = (req.body || {}).transfers;
+  if (!Array.isArray(transfers) || transfers.length > 1000) return res.status(400).json({ error: "send { transfers: [...] } — at most 1000 per delivery" });
+  const settings = outOfBandSettings(loadPolicy());
+  res.json(await serially(() => reconcileNow(transfers, settings)));
+});
+(function pollOutOfBand() {
+  const settings = outOfBandSettings(loadPolicy());
+  const next = () => setTimeout(pollOutOfBand, Math.max(5, Number(settings.pollSeconds) || 60) * 1000).unref();
+  if (!settings.enabled || !(Number(settings.pollSeconds) > 0)) return next();
+  serially(() => scanOutOfBand(settings))
+    .catch((err) => console.error(`[out-of-band] scan failed: ${err.shortMessage || err.message}`))
+    .finally(next);
+})();
 
 // ---- MPP (Machine Payments Protocol — Stripe + Tempo's HTTP 402 standard), buyer side (server/mpp.js) ----
 // The agent's client hands over the 402's WWW-Authenticate value (or the

@@ -7,12 +7,12 @@
     "source": "github"
   },
   "websiteUrl": "https://spendveto.com",
-  "version": "0.30.0",
+  "version": "0.31.0",
   "packages": [
     {
       "registryType": "npm",
       "identifier": "spendveto",
-      "version": "0.30.0",
+      "version": "0.31.0",
       "runtimeHint": "npx",
       "transport": {
         "type": "stdio"

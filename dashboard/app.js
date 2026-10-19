@@ -38,10 +38,10 @@ function renderOverview() {
     $("stat-row").innerHTML = [
       ["Governed spend", money(s.paid.usd), "green"],
       ["Blocked before it moved", money(s.blocked.usd), "copper"],
-      ["Stopped attempts", s.blocked.count, "copper"],
+      ["Paid around the gate", money(s.unmanaged?.usd || 0), s.unmanaged?.usd ? "rust" : ""],
+      ["Stopped attempts", `${s.blocked.count} <span class="hint">of ${s.totalAttempts}</span>`, "copper"],
       ["Failed attempts", s.failed.count, "rust"],
       ["Wallets frozen", s.frozenWallets, s.frozenWallets ? "rust" : ""],
-      ["Total attempts", s.totalAttempts, ""],
     ].map(([k, v, c]) => `<div class="stat"><div class="k">${k}</div><div class="v ${c}">${v}</div></div>`).join("");
   }
   $("ov-catalog").innerHTML = S.tools.map((t) =>

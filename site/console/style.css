@@ -70,6 +70,7 @@ h2 { font-size: 0.82rem; text-transform: uppercase; letter-spacing: 0.12em; colo
 .status-paid { color: var(--green); font-weight: 650; }
 .status-blocked { color: var(--copper); font-weight: 650; }
 .status-failed { color: var(--rust); font-weight: 650; }
+.status-unmanaged { color: var(--rust); font-weight: 650; }
 .tag { font-size: 0.68rem; border: 1px solid var(--line); border-radius: 5px; padding: 0.06rem 0.4rem; color: var(--faint); white-space: nowrap; }
 .tag.green { color: var(--green); border-color: var(--green-deep); }
 .tag.rust { color: var(--rust); border-color: rgba(224, 100, 74, 0.4); }

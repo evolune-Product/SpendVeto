@@ -17,6 +17,7 @@ data/rebilling.json
 data/attestations.json
 data/reputation.json
 data/mpp.json
+data/outofband.json
 data/policy.json.bak
 data/sanctions/
 *.log

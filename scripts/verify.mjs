@@ -40,6 +40,7 @@ const BASE = `http://localhost:${PORT}`;
 
 let failures = 0;
 let mppSeller = null;
+let oobRpc = null;
 let verifyStats = null;
 function check(label, ok, detail) {
   console.log(`${ok ? "PASS" : "FAIL"}  ${label}${detail ? ` — ${detail}` : ""}`);
@@ -119,7 +120,7 @@ class McpStdio {
 }
 
 // Fresh state for a deterministic run.
-for (const f of ["data/ledger.json", "data/balances.json", "data/delegations.json", "data/children.json", "data/freezes.json", "data/waitlist.json", "data/tools.json", "data/agents.json", "data/shadow-policy.json", "data/shadow-log.json", "data/api-keys.json", "data/consents.json", "data/upto.json", "data/authcapture.json", "data/cards.json", "data/payouts.json", "data/rebilling.json", "data/attestations.json", "data/reputation.json"]) {
+for (const f of ["data/ledger.json", "data/balances.json", "data/delegations.json", "data/children.json", "data/freezes.json", "data/waitlist.json", "data/tools.json", "data/agents.json", "data/shadow-policy.json", "data/shadow-log.json", "data/api-keys.json", "data/consents.json", "data/upto.json", "data/authcapture.json", "data/cards.json", "data/payouts.json", "data/rebilling.json", "data/attestations.json", "data/reputation.json", "data/mpp.json", "data/outofband.json"]) {
   const p = `${ROOT}${f}`;
   if (existsSync(p)) unlinkSync(p);
 }
@@ -171,6 +172,9 @@ const server = spawn("node", ["server/index.js"], {
     SPENDVETO_ANTHROPIC_UPSTREAM: "http://localhost:8497",
     SPENDVETO_OPENAI_UPSTREAM: "http://localhost:8497",
     SPENDVETO_ANTHROPIC_KEY: "sk-ant-verify-server-only-key",
+    // Out-of-band detection reads Base Sepolia through a local JSON-RPC node
+    // (port 8384) that speaks the real wire format — never a public RPC.
+    SPENDVETO_RPC_BASE_SEPOLIA: "http://localhost:8384",
     SPENDVETO_OPENAI_KEY: "",
     // Card authorization webhooks (server/cards.js), with test-only secrets.
     STRIPE_ISSUING_WEBHOOK_SECRET: "whsec_verify_stripe_secret",
@@ -3837,6 +3841,136 @@ try {
   );
   writeFileSync(`${ROOT}data/policy.json`, JSON.stringify(LOOSE_POLICY, null, 2));
 
+  // --- Out-of-band spend (server/outofband.js): what a governed wallet pays around the gate (GitHub issue #1) ---
+  // A delegated child pays $0.01 through SpendVeto, then sends $0.03 straight
+  // from its wallet. Every in-gate call passed; the cap must still see $0.04.
+  const { randomBytes: oobRandom } = await import("node:crypto");
+  const oobTx = () => "0x" + oobRandom(32).toString("hex");
+  const oobParent = privateKeyToAccount(generatePrivateKey());
+  const oobChild = privateKeyToAccount(generatePrivateKey()).address;
+  const OOB_SELLER = "0x" + "0bb5".repeat(10);
+  const OOB_ELSEWHERE = "0x" + "e15e".repeat(10);
+  const OOB_TREASURY = "0x" + "7ea5".repeat(10);
+  const OOB_USDC = "0x036CbD53842c5426634e7929541eC2318f3dCF7e";
+  const oobAgo = (s) => Math.floor(Date.now() / 1000) - s;
+  const oobTransfer = (txHash, to, value, extra = {}) => ({ chain: "base-sepolia", txHash, logIndex: 0, from: oobChild, to, token: OOB_USDC, value: String(value), blockTime: oobAgo(60), ...extra });
+  // The same call the testnet client makes after a settlement (client/pay.js), carrying the facilitator's hash; it answers 204.
+  const oobLogPayment = (txHash) => fetch(`${BASE}/api/ledger/event`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ address: oobChild, resource: "/api/agent/review", price: 0.01, chain: "base-sepolia", status: "paid", txHash }) });
+  const OOB_POLICY = { ...LOOSE_POLICY, outOfBand: { chains: ["base-sepolia"], ignoreTo: [OOB_TREASURY], graceSeconds: 0, lookbackBlocks: 100 } };
+  writeFileSync(`${ROOT}data/policy.json`, JSON.stringify(OOB_POLICY, null, 2));
+  await jsonReq("/api/delegations", { parentAddress: oobParent.address, childAddress: oobChild, capUSD: 0.05, label: "oob-child" });
+  const oobBefore = await checkPolicy(oobChild, 0.02, "summarize", "base-sepolia");
+  const oobGovernedTx = oobTx();
+  await oobLogPayment(oobGovernedTx);
+  const oobDirectTx = oobTx();
+  const oobUnpricedTx = oobTx();
+  const oobDelivery = await jsonReq("/api/outofband/transfers", { transfers: [
+    oobTransfer(oobGovernedTx, OOB_SELLER, 10000),
+    oobTransfer(oobDirectTx, OOB_ELSEWHERE, 30000),
+    oobTransfer(oobTx(), OOB_ELSEWHERE, 50000, { from: "0x" + "f0e1".repeat(10) }),
+    oobTransfer(oobTx(), OOB_TREASURY, 70000),
+    oobTransfer(oobUnpricedTx, OOB_ELSEWHERE, "5000000000000000000", { token: "0x" + "70c3".repeat(10) }),
+  ] });
+  await sleep(300);
+  const oobLedger = async () => (await fetch(`${BASE}/api/ledger`).then((r) => r.json())).entries.filter((e) => e.status === "unmanaged" && e.address?.toLowerCase() === oobChild.toLowerCase());
+  const oobBooked = await oobLedger();
+  const oobDirect = oobBooked.find((e) => e.txHash === oobDirectTx);
+  const oobUnpriced = oobBooked.find((e) => e.txHash === oobUnpricedTx);
+  const oobAlerts = alertsReceived.filter((a) => a.type === "unmanaged_spend" && a.address?.toLowerCase() === oobChild.toLowerCase());
+  check(
+    "out-of-band transfers are reconciled against the ledger: the one SpendVeto recorded (same settlement hash) is managed, the direct one is booked as unmanaged spend with its hash and payee, another wallet's and the operator's treasury transfers are left alone, an unknown token is recorded unpriced — never as dollars — and each unmanaged one alerts",
+    oobDelivery.body.managed === 1 && oobDelivery.body.unmanaged === 2 && oobDelivery.body.ignored === 1 && oobDelivery.body.foreign === 1 && oobDelivery.body.unmanagedUSD === 0.03 &&
+      oobDirect?.amount === 0.03 && oobDirect.payTo === OOB_ELSEWHERE.toLowerCase() && oobDirect.mode === "out-of-band" && oobUnpriced?.unpriced === true && oobUnpriced.amount === 0 && oobAlerts.length === 2,
+    JSON.stringify({ ...oobDelivery.body, alerts: oobAlerts.length })
+  );
+  const oobAfter = await checkPolicy(oobChild, 0.02, "summarize", "base-sepolia");
+  check(
+    "caps hold when the agent finds another way to pay: before the direct transfer a $0.02 governed call fits the child's $0.05 cap; after it, the same call is refused — $0.01 governed plus $0.03 paid around the gate",
+    oobBefore.allowed === true && oobAfter.allowed === false && oobAfter.code === "delegation_cap",
+    `${oobBefore.allowed} → ${oobAfter.code}: ${oobAfter.reason}`
+  );
+  const oobAgain = await jsonReq("/api/outofband/transfers", { transfers: [oobTransfer(oobDirectTx, OOB_ELSEWHERE, 30000)] });
+  writeFileSync(`${ROOT}data/policy.json`, JSON.stringify({ ...OOB_POLICY, outOfBand: { ...OOB_POLICY.outOfBand, graceSeconds: 120 } }, null, 2));
+  const oobFreshTx = oobTx();
+  const oobFresh = await jsonReq("/api/outofband/transfers", { transfers: [oobTransfer(oobFreshTx, OOB_SELLER, 10000, { blockTime: oobAgo(2) })] });
+  await oobLogPayment(oobFreshTx);
+  const oobRetry = await jsonReq("/api/outofband/transfers", { transfers: [] });
+  check(
+    "reconciliation is idempotent, and a payment SpendVeto itself just made isn't mistaken for out-of-band spend: a re-delivered transfer is a duplicate, and a fresh unmatched one waits out the grace period, then matches once its ledger record lands",
+    oobAgain.body.duplicates === 1 && oobAgain.body.unmanaged === 0 && oobFresh.body.deferred === 1 && oobFresh.body.unmanaged === 0 && oobRetry.body.managed === 1 && oobRetry.body.unmanaged === 0 &&
+      !(await oobLedger()).some((e) => e.txHash === oobFreshTx),
+    `again=${JSON.stringify(oobAgain.body)} fresh=${oobFresh.body.deferred} retry=${oobRetry.body.managed}`
+  );
+
+  // The chain path: ERC-20 Transfer logs from a JSON-RPC node, filtered by sender.
+  const OOB_TRANSFER_TOPIC = "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef";
+  const oobPad = (a) => "0x" + a.toLowerCase().replace(/^0x/, "").padStart(64, "0");
+  const oobScanTx = oobTx();
+  let oobLatest = 5000;
+  const oobGetLogs = [];
+  oobRpc = createServer((req, res) => {
+    let body = "";
+    req.on("data", (d) => (body += d));
+    req.on("end", () => {
+      const call = JSON.parse(body);
+      const answer = (c) => {
+        if (c.method === "eth_chainId") return "0x14a34";
+        if (c.method === "eth_blockNumber") return "0x" + oobLatest.toString(16);
+        if (c.method === "eth_getBlockByNumber") return { number: c.params[0], hash: "0x" + "b1".repeat(32), parentHash: "0x" + "b0".repeat(32), timestamp: "0x" + oobAgo(600).toString(16), transactions: [], gasLimit: "0x1", gasUsed: "0x0", miner: "0x" + "00".repeat(20), extraData: "0x", logsBloom: "0x" + "00".repeat(256), nonce: "0x0000000000000000", difficulty: "0x0", size: "0x1", stateRoot: "0x" + "00".repeat(32), receiptsRoot: "0x" + "00".repeat(32), transactionsRoot: "0x" + "00".repeat(32), sha3Uncles: "0x" + "00".repeat(32), uncles: [] };
+        if (c.method === "eth_getLogs") {
+          const f = c.params[0];
+          oobGetLogs.push(f);
+          const senders = [].concat(f.topics?.[1] || []).map((t) => t.toLowerCase());
+          const from = parseInt(f.fromBlock, 16);
+          const to = parseInt(f.toBlock, 16);
+          const block = 4950;
+          if (String(f.address).toLowerCase() !== OOB_USDC.toLowerCase() || f.topics?.[0] !== OOB_TRANSFER_TOPIC || !senders.includes(oobPad(oobChild)) || block < from || block > to) return [];
+          return [{ address: OOB_USDC.toLowerCase(), topics: [OOB_TRANSFER_TOPIC, oobPad(oobChild), oobPad(OOB_ELSEWHERE)], data: "0x" + (20000).toString(16).padStart(64, "0"), blockNumber: "0x" + block.toString(16), blockHash: "0x" + "b1".repeat(32), transactionHash: oobScanTx, transactionIndex: "0x0", logIndex: "0x3", removed: false }];
+        }
+        return null;
+      };
+      const reply = Array.isArray(call) ? call.map((c) => ({ jsonrpc: "2.0", id: c.id, result: answer(c) })) : { jsonrpc: "2.0", id: call.id, result: answer(call) };
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end(JSON.stringify(reply));
+    });
+  });
+  oobRpc.listen(8384);
+  writeFileSync(`${ROOT}data/policy.json`, JSON.stringify(OOB_POLICY, null, 2));
+  const oobScan1 = await jsonReq("/api/outofband/scan", {});
+  oobLatest = 5003;
+  const oobScan2 = await jsonReq("/api/outofband/scan", {});
+  const oobScanned = (await oobLedger()).find((e) => e.txHash === oobScanTx);
+  check(
+    "the chain path: a scan reads the governed wallets' ERC-20 Transfer logs on the registry's USDC from a JSON-RPC node (filtered by sender), books the unmatched one at its block time, and the next scan resumes after its cursor instead of re-reading",
+    oobScan1.body.unmanaged === 1 && oobScan1.body.scanned?.[0]?.toBlock === "5000" && oobScanned?.amount === 0.02 && oobScanned.logIndex === 3 && Date.parse(oobScanned.ts) < Date.now() - 500_000 &&
+      parseInt(oobGetLogs[0]?.fromBlock, 16) === 4900 && parseInt(oobGetLogs.at(-1)?.fromBlock, 16) === 5001 && oobScan2.body.unmanaged === 0,
+    `scan1=${JSON.stringify(oobScan1.body)} ranges=${oobGetLogs.map((f) => `${parseInt(f.fromBlock, 16)}-${parseInt(f.toBlock, 16)}`).join(",")}`
+  );
+  oobRpc.close();
+  oobRpc = null;
+
+  writeFileSync(`${ROOT}data/policy.json`, JSON.stringify({ ...OOB_POLICY, outOfBand: { ...OOB_POLICY.outOfBand, onDetect: "freeze" } }, null, 2));
+  await jsonReq("/api/outofband/transfers", { transfers: [oobTransfer(oobTx(), OOB_ELSEWHERE, 1000)] });
+  const oobFreeze = (await fetch(`${BASE}/api/freezes`).then((r) => r.json())).freezes.find((f) => !f.unfrozen && f.address.toLowerCase() === oobChild.toLowerCase());
+  const oobFrozenCall = await checkPolicy(oobChild, 0.001, "review", "base-sepolia");
+  const oobStats = await fetch(`${BASE}/api/stats`).then((r) => r.json());
+  const oobMetrics = await fetch(`${BASE}/metrics`).then((r) => r.text());
+  const oobView = await fetch(`${BASE}/api/outofband`).then((r) => r.json());
+  if (oobFreeze) await fetch(`${BASE}/api/freezes/${oobFreeze.id}/unfreeze`, { method: "POST" });
+  check(
+    "strict mode: under onDetect \"freeze\" one transfer around the gate freezes the wallet, so its next governed call is refused — and unmanaged spend is a first-class number in /api/stats, /metrics and the console, next to blocked spend",
+    oobFreeze?.source === "out-of-band" && oobFrozenCall.code === "frozen" && oobStats.unmanaged?.count >= 4 && oobStats.unmanaged.usd >= 0.051 &&
+      /spendveto_unmanaged_usd_total \d/.test(oobMetrics) && oobView.wallets.includes(oobChild.toLowerCase()) && oobView.unmanaged.count === oobStats.unmanaged.count,
+    `freeze=${oobFreeze?.source} call=${oobFrozenCall.code} stats=${JSON.stringify(oobStats.unmanaged)}`
+  );
+  const oobSchema = validatePolicy({ outOfBand: { enabled: true, onDetect: "freeze", chains: ["base-sepolia", "solana-devnet"], ignoreTo: [OOB_TREASURY] } });
+  check(
+    "the policy standard covers out-of-band detection: an outOfBand section validates, and a chain it can't watch (no ERC-20 logs to read) is an error, not a silent gap",
+    oobSchema.errors.length === 1 && oobSchema.errors[0].path === "/outOfBand/chains/1",
+    JSON.stringify(oobSchema.errors)
+  );
+  writeFileSync(`${ROOT}data/policy.json`, JSON.stringify(LOOSE_POLICY, null, 2));
+
   // --- Multi-chain live settlement wiring (facilitator-adaptive) ---
   // In testnet mode the gate asks its facilitator (GET /supported) what it can
   // settle and brings every matching registry chain live: per-chain scheme
@@ -4014,6 +4148,7 @@ try {
   if (testnetProc) testnetProc.proc.kill();
   if (mockFacil) mockFacil.close();
   if (mppSeller) mppSeller.close();
+  if (oobRpc) oobRpc.close();
   server.kill();
   alertServer.close();
   writeFileSync(

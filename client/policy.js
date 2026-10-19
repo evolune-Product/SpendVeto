@@ -167,8 +167,11 @@ export async function checkPolicy(address, proposedPriceUSD, toolId, chain, cate
     const res = await fetch(`http://localhost:${PORT}/api/ledger`);
     ({ entries } = await res.json());
     const cutoff = Date.now() - 60 * 60 * 1000;
+    // Unmanaged spend — paid around the gate, found on-chain by
+    // server/outofband.js — counts the same as governed spend: a budget that
+    // ignored it would only be a budget for the payments the agent chose to show.
     const mine = entries.filter(
-      (e) => e.status === "paid" && e.address?.toLowerCase() === address.toLowerCase() && new Date(e.ts).getTime() >= cutoff
+      (e) => (e.status === "paid" || e.status === "unmanaged") && e.address?.toLowerCase() === address.toLowerCase() && new Date(e.ts).getTime() >= cutoff
     );
     recent = { totalUSD: mine.reduce((s, e) => s + Number(e.amount || 0), 0), count: mine.length };
   } catch {
@@ -212,7 +215,7 @@ export async function checkPolicy(address, proposedPriceUSD, toolId, chain, cate
       .sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt))[0] || null;
   const paidSpendOf = (addr, sinceMs = 0) =>
     entries
-      .filter((e) => e.status === "paid" && e.address?.toLowerCase() === addr.toLowerCase() && new Date(e.ts).getTime() >= sinceMs)
+      .filter((e) => (e.status === "paid" || e.status === "unmanaged") && e.address?.toLowerCase() === addr.toLowerCase() && new Date(e.ts).getTime() >= sinceMs)
       .reduce((s, e) => s + Number(e.amount || 0), 0);
   // Subtree = the address plus everything ever delegated beneath it. Revoked
   // grants still count for spend accounting — money already spent is spent.

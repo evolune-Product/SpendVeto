@@ -1,6 +1,6 @@
 {
   "name": "spendveto",
-  "version": "0.30.0",
+  "version": "0.31.0",
   "description": "Spend controls for AI agents: a budget, loop detection and a kill switch in front of every model call (Claude Code, Codex, OpenAI/Anthropic SDKs), x402 payment and card authorization — open source, self-hosted.",
   "license": "Apache-2.0",
   "author": "Revanth Rajeev",

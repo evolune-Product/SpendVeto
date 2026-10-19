@@ -82,7 +82,7 @@ Never present the simulate-mode demo data in the Console as usage.
 >
 > SpendVeto sits between your agent and the model provider. Start it with `npx github:revanthrajeev/spendveto`, then run `ANTHROPIC_BASE_URL=http://127.0.0.1:8402 claude` (or set `OPENAI_BASE_URL` for Codex and the OpenAI SDKs). Every request is checked against a per-agent budget before it reaches the provider; if the same tool call keeps returning the same result, the agent is frozen until you look. The cost is booked from the provider's own usage numbers. Your key passes through and is never stored.
 >
-> It's open source (Apache-2.0), self-hosted, and the same engine also governs x402 payments and card authorizations (Stripe Issuing, Lithic), so one agent can have one budget across all three. 476 end-to-end tests run from a clean clone.
+> It's open source (Apache-2.0), self-hosted, and the same engine also governs x402 payments and card authorizations (Stripe Issuing, Lithic), so one agent can have one budget across all three. 482 end-to-end tests run from a clean clone.
 >
 > Honest limits: the pre-check uses an estimate, so the last request under a budget can overshoot by one request; there's no hosted version yet. I'd love to hear where it breaks for your setup.
 
