@@ -14,3 +14,4 @@ data/policy.json.bak
 data/sanctions/
 *.log
 .DS_Store
+__pycache__/

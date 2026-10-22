@@ -1,0 +1,11 @@
+DROP TABLE IF EXISTS sv_webhook_outbox;
+DROP TRIGGER IF EXISTS sv_events_no_update_delete ON sv_events;
+DROP TABLE IF EXISTS sv_events;
+DROP FUNCTION IF EXISTS sv_events_append_only();
+DROP TABLE IF EXISTS sv_approvals;
+DROP TABLE IF EXISTS sv_reservations;
+DROP TABLE IF EXISTS sv_burst_counters;
+DROP TABLE IF EXISTS sv_budget_windows;
+DROP TABLE IF EXISTS sv_budgets;
+DROP TABLE IF EXISTS sv_api_keys;
+DROP TABLE IF EXISTS sv_tenants;

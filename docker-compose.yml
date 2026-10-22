@@ -36,5 +36,44 @@ services:
     depends_on:
       - server
 
+  # Governance API (/v1, :8405) — reserve-then-settle spend control backed by
+  # Postgres. Opt-in so the zero-setup `docker compose up` above is unchanged:
+  #
+  #   GOVERN_DB_PASSWORD=... docker compose --profile govern up
+  #   docker compose exec govern node govern/cli.js create-tenant --name "Acme"
+  govern-db:
+    image: postgres:16-alpine
+    profiles: ["govern"]
+    environment:
+      POSTGRES_USER: spendveto
+      POSTGRES_PASSWORD: ${GOVERN_DB_PASSWORD:-spendveto_dev}
+      POSTGRES_DB: spendveto
+    volumes:
+      - spendveto-govern-db:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U spendveto -d spendveto"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  govern:
+    build: .
+    profiles: ["govern"]
+    command: ["node", "govern/server.js"]
+    ports:
+      - "8405:8405"
+    environment:
+      SPENDVETO_DATABASE_URL: postgres://spendveto:${GOVERN_DB_PASSWORD:-spendveto_dev}@govern-db:5432/spendveto
+      # cloud = webhook targets on private/loopback addresses are refused.
+      # Set self_hosted when the webhook receiver lives on the same network.
+      SPENDVETO_DEPLOYMENT: ${SPENDVETO_DEPLOYMENT:-cloud}
+    env_file:
+      - path: .env.local
+        required: false
+    depends_on:
+      govern-db:
+        condition: service_healthy
+
 volumes:
   spendveto-data:
+  spendveto-govern-db:

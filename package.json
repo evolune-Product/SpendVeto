@@ -18,7 +18,10 @@
     "proxy": "node proxy/server.js",
     "policy": "node scripts/policy.mjs",
     "quickstart:ai": "node scripts/quickstart-ai.mjs",
-    "sanctions:update": "node scripts/fetch-sanctions-list.mjs"
+    "sanctions:update": "node scripts/fetch-sanctions-list.mjs",
+    "govern": "node govern/server.js",
+    "govern:admin": "node govern/cli.js",
+    "test:govern": "node govern/tests/preflight.mjs && node --test --test-concurrency=1 \"govern/tests/*.test.mjs\""
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.110.0",
@@ -36,6 +39,7 @@
     "@x402/xrpl": "^2.23.0",
     "dotenv": "^17.4.2",
     "express": "^4.21.2",
+    "pg": "^8.23.1",
     "three": "^0.185.1",
     "viem": "^2.54.6",
     "zod": "^4.4.3"

@@ -16,8 +16,12 @@ import os
 import urllib.error
 import urllib.request
 
-__all__ = ["SpendVeto", "SpendVetoDenialError"]
-__version__ = "0.1.0"
+__all__ = [
+    "SpendVeto", "SpendVetoDenialError",
+    # Governance API (/v1) — see spendveto/govern.py
+    "Governance", "GovernedSpend", "SpendVetoError", "SpendVetoUnavailableError", "SpendVetoApprovalRequired", "usd_to_micros",
+]
+__version__ = "0.2.0"
 
 
 class SpendVetoDenialError(Exception):
@@ -87,3 +91,9 @@ class SpendVeto:
 
     def health(self):
         return self._request(f"{self.proxy_url}/proxy/health")[1]
+
+
+# Imported last: govern.py reuses SpendVetoDenialError from this module.
+from .govern import (  # noqa: E402
+    Governance, GovernedSpend, SpendVetoError, SpendVetoUnavailableError, SpendVetoApprovalRequired, usd_to_micros,
+)
