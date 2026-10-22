@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // spendveto — one command to put a budget in front of your AI agents.
 //
-//   npx github:revanthrajeev/spendveto          # start (console + LLM spend guard)
+//   npx spendveto                               # start (console + LLM spend guard)
 //   spendveto budget 10                         # $10/day per agent
 //   spendveto status                            # what every agent spent today
 //   spendveto observe | enforce                 # watch-only vs blocking

@@ -5,7 +5,7 @@
 ## The honest starting point
 
 - Users today: **zero** in production. Investors have noticed.
-- What changed in v0.27.0: any developer can now use SpendVeto in **one line**, with no crypto — `npx github:revanthrajeev/spendveto`, then `ANTHROPIC_BASE_URL=http://127.0.0.1:8402 claude`. Their key passes through and is never stored. Verified with the real Claude Code client.
+- What changed in v0.27.0: any developer can now use SpendVeto in **one line**, with no crypto — `npx spendveto`, then `ANTHROPIC_BASE_URL=http://127.0.0.1:8402 claude`. Their key passes through and is never stored. Verified with the real Claude Code client.
 - So the bottleneck has moved from product to **distribution**. The next 90 days are about putting this in front of the people who already feel the pain, and measuring what happens.
 
 ## Positioning
@@ -80,7 +80,7 @@ Never present the simulate-mode demo data in the Console as usage.
 **Body:**
 > AI agents can spend money on their own now, and the common failure isn't fraud, it's loops: an agent retrying the same failing tool call for hours. I kept reading about $1,800 and $6,000 overnight bills, and provider caps are monthly and lag.
 >
-> SpendVeto sits between your agent and the model provider. Start it with `npx github:revanthrajeev/spendveto`, then run `ANTHROPIC_BASE_URL=http://127.0.0.1:8402 claude` (or set `OPENAI_BASE_URL` for Codex and the OpenAI SDKs). Every request is checked against a per-agent budget before it reaches the provider; if the same tool call keeps returning the same result, the agent is frozen until you look. The cost is booked from the provider's own usage numbers. Your key passes through and is never stored.
+> SpendVeto sits between your agent and the model provider. Start it with `npx spendveto`, then run `ANTHROPIC_BASE_URL=http://127.0.0.1:8402 claude` (or set `OPENAI_BASE_URL` for Codex and the OpenAI SDKs). Every request is checked against a per-agent budget before it reaches the provider; if the same tool call keeps returning the same result, the agent is frozen until you look. The cost is booked from the provider's own usage numbers. Your key passes through and is never stored.
 >
 > It's open source (Apache-2.0), self-hosted, and the same engine also governs x402 payments and card authorizations (Stripe Issuing, Lithic), so one agent can have one budget across all three. 482 end-to-end tests run from a clean clone.
 >
@@ -88,7 +88,7 @@ Never present the simulate-mode demo data in the Console as usage.
 
 ### X thread (5 posts)
 1. Someone burned ~$6,000 of Claude usage overnight with one command. Agent loops are the new runaway cloud bill. I built a one-line fix. 🧵
-2. `npx github:revanthrajeev/spendveto` → `ANTHROPIC_BASE_URL=http://127.0.0.1:8402 claude`. Every model call is checked against a budget *before* it reaches the provider.
+2. `npx spendveto` → `ANTHROPIC_BASE_URL=http://127.0.0.1:8402 claude`. Every model call is checked against a budget *before* it reaches the provider.
 3. If your agent repeats the same tool call and gets the same result again and again, SpendVeto freezes it until you look. Retries of failed calls don't count.
 4. Works with Claude Code, Codex, Cursor and any OpenAI/Anthropic SDK. Your key is never stored. Free, open source.
 5. Same engine governs agent payments (x402) and agent cards (Stripe Issuing, Lithic): one budget per agent, everywhere it spends. github.com/revanthrajeev/spendveto

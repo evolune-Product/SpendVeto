@@ -71,7 +71,7 @@
 <p class="lede">An agent in a loop can burn real money before anyone looks — one developer reported ~$6,000 of Claude usage gone overnight from a single command. SpendVeto sits between your agents and the model provider. Every request is checked against a budget <em>before</em> it reaches the model, loops freeze the agent, and the actual cost is booked from the provider's own usage numbers. Your API key passes straight through and is never stored.</p>
 
 <h2>1 · Start it</h2>
-<pre class="term">npx github:revanthrajeev/spendveto
+<pre class="term">npx spendveto
 #   Console   http://127.0.0.1:8402
 #   Budget    $25.00/day · $10.00/hour · $5.00/request per agent</pre>
 <p class="src">Or from a clone: <code>git clone https://github.com/revanthrajeev/spendveto &amp;&amp; cd spendveto &amp;&amp; npm install &amp;&amp; npm start</code>. The first run installs dependencies (about two minutes); after that it starts in seconds. Node 22 or newer recommended (Node 20.18 runs it, with npm engine warnings). State lives in <code>~/.spendveto</code>.</p>

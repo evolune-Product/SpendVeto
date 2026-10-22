@@ -2,7 +2,7 @@
 
 **Spend controls for AI agents — model tokens, crypto and fiat payments, and cards.** Model providers and payment rails move an agent's money; SpendVeto decides whether the agent should be allowed to move it — budgets, loop detection, human approval, delegated caps and a kill switch, enforced *before* anything is spent. And because no single rail sees all of an agent's spending, it is also the neutral trust layer between agents and the businesses they pay: signed spend attestations a seller can check, reputation feeds shared across companies, and an open policy standard.
 
-[**Live site + playground**](https://spendveto.com) · [**Docs**](https://spendveto.com/docs.html) · Apache-2.0 · x402 + MCP native
+[**Live site + playground**](https://spendveto.com) · [**Docs**](https://spendveto.com/docs.html) · [**npm**](https://www.npmjs.com/package/spendveto) · Apache-2.0 · x402 + MCP native
 
 **Every claim in this README is executed before it ships.** `npm run verify` runs **482 end-to-end assertions** from a clean clone — real secp256k1 keypairs, real ECDSA verification, a real MCP stdio JSON-RPC session, and a synthetic runaway agent frozen mid-burst. If a claim isn't a test, it doesn't ship; features that can't work locally yet are declared slots that refuse honestly, never stubs that pretend.
 
@@ -11,10 +11,10 @@ What *isn't* true yet is stated just as plainly: no external security audit, no 
 ## Cap your AI agent's spend in one line
 
 ```bash
-npx github:revanthrajeev/spendveto        # or: git clone … && npm install && npm start
+npx spendveto                            # or: git clone … && npm install && npm start
 ```
 
-First run installs dependencies in under a minute — 150 packages, because the chain SDKs for live x402 settlement are optional ([below](#one-api-any-rail-rails)). Node 22+ recommended (Node 20.18 runs it, with npm engine warnings).
+First run installs dependencies in about 25 seconds — 150 packages, because the chain SDKs for live x402 settlement are optional ([below](#one-api-any-rail-rails)). Node 22+ recommended (Node 20.18 runs it, with npm engine warnings).
 
 Then point the agent at it — one environment variable, your provider key passes straight through and is never stored:
 
