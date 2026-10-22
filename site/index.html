@@ -4,23 +4,23 @@
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <meta name="color-scheme" content="dark" />
-<title>SpendVeto — AI Agent Payment Governance for x402 (Open Source)</title>
-<meta name="description" content="SpendVeto stops AI agents from overspending on x402 and MCP payments. Policy caps, human approvals, nested budgets, and a kill switch enforced before any payment settles. Open source, Apache-2.0, 382 assertions." />
-<meta name="keywords" content="x402, AI agent payments, AI agent governance, AI agent security, spend governance, agentic commerce, MCP, AI agent spend control, x402 security" />
+<title>SpendVeto — Spend Limits &amp; a Kill Switch for AI Agents (Open Source)</title>
+<meta name="description" content="Budgets, loop detection and a kill switch for AI agents — Claude Code, Codex, OpenAI/Anthropic SDKs, x402, cards and payouts. Open source; 482 tested claims." />
+<meta name="keywords" content="AI agent spending limit, AI agent budget, Claude Code cost limit, Codex budget, LLM budget proxy, AI agent kill switch, runaway agent loop, agent payments governance, x402, agentic commerce, AI FinOps, spend attestation, MCP" />
 <link rel="canonical" href="https://spendveto.com/" />
 <meta name="robots" content="index, follow, max-image-preview:large, max-snippet:-1" />
 <meta property="og:type" content="website" />
 <meta property="og:site_name" content="SpendVeto" />
 <meta property="og:locale" content="en_US" />
 <meta property="og:url" content="https://spendveto.com/" />
-<meta property="og:title" content="SpendVeto — AI Agent Payment Governance for x402 (Open Source)" />
-<meta property="og:description" content="SpendVeto stops AI agents from overspending on x402 and MCP payments. Policy caps, human approvals, nested budgets, and a kill switch enforced before any payment settles. Open source, Apache-2.0, 382 assertions." />
+<meta property="og:title" content="SpendVeto — Spend Limits & a Kill Switch for AI Agents (Open Source)" />
+<meta property="og:description" content="Budgets, loop detection and a kill switch for AI agents — Claude Code, Codex, OpenAI/Anthropic SDKs, x402, cards and payouts. Open source; 482 tested claims." />
 <meta property="og:image" content="https://spendveto.com/assets/generated/og-default.png" />
 <meta property="og:image:width" content="1200" />
 <meta property="og:image:height" content="630" />
 <meta name="twitter:card" content="summary_large_image" />
-<meta name="twitter:title" content="SpendVeto — AI Agent Payment Governance for x402 (Open Source)" />
-<meta name="twitter:description" content="SpendVeto stops AI agents from overspending on x402 and MCP payments. Policy caps, human approvals, nested budgets, and a kill switch enforced before any payment settles. Open source, Apache-2.0, 382 assertions." />
+<meta name="twitter:title" content="SpendVeto — Spend Limits & a Kill Switch for AI Agents (Open Source)" />
+<meta name="twitter:description" content="Budgets, loop detection and a kill switch for AI agents — Claude Code, Codex, OpenAI/Anthropic SDKs, x402, cards and payouts. Open source; 482 tested claims." />
 <meta name="twitter:image" content="https://spendveto.com/assets/generated/og-default.png" />
 <link rel="icon" href="./assets/favicon.svg" />
 <style>
@@ -594,6 +594,7 @@
       "name": "SpendVeto",
       "applicationCategory": "DeveloperApplication",
       "applicationSubCategory": "AI agent spend governance",
+      "softwareVersion": "0.31.0",
       "operatingSystem": "Cross-platform (Node.js)",
       "url": "https://spendveto.com",
       "downloadUrl": "https://github.com/revanthrajeev/spendveto",
@@ -610,11 +611,20 @@
         "Hash-chained tamper-evident audit ledger with signed receipts",
         "Request integrity: authorizations bound to a canonical digest of the request",
         "ACP shared-payment-token and AP2 mandate-chain scope checks",
+        "Machine Payments Protocol (Stripe + Tempo) governance inside the mppx client: charges, session deposits, subscriptions",
+        "Out-of-band spend detection: payments a governed wallet makes around the gate, found on-chain and counted against the same caps",
         "Dispute evidence packs for agent-initiated chargebacks",
         "OpenTelemetry decision spans and Prometheus metrics",
         "MCP server, Node SDK, LangChain and OpenAI Agents adapters",
         "Regional payment-mandate governance for India (UPI), EU (SEPA/PSD2), UK (Faster Payments), Brazil (Pix) and the US (ACH)",
-        "OFAC sanctions/denylist screening wired into the live policy gate"
+        "OFAC sanctions/denylist screening wired into the live policy gate",
+        "LLM spend guard for Claude Code, Codex and OpenAI/Anthropic SDKs: per-agent budgets, loop detection, rate limits, kill switch",
+        "Card authorization decisions for Stripe Issuing and Lithic",
+        "Governed fiat payouts through Stripe, RazorpayX (UPI, IMPS, NEFT, RTGS), PayPal and Modern Treasury (ACH, RTP, wire)",
+        "AI FinOps: tag allocation, tag budgets, FOCUS v1.4 export, Stripe Billing rebilling",
+        "Governed-spend attestations a seller verifies offline",
+        "Federated counterparty reputation feeds shared as signed hashes",
+        "Open policy standard (JSON Schema) with a CLI, API and GitHub Action validator"
       ],
       "offers": [
         {
@@ -653,7 +663,7 @@
           "name": "Is this a real product or a demo?",
           "acceptedAnswer": {
             "@type": "Answer",
-            "text": "Real and open source (Apache-2.0). It runs on your machine today: real ECDSA signatures, real x402 settlement on Base Sepolia, and a 382-assertion end-to-end suite (npm run verify) that exercises every claim on this page. The hosted platform — managed custody, orgs, SSO — is a waitlist today, not yet a live product."
+            "text": "Real and open source (Apache-2.0). It runs on your machine today: real ECDSA signatures, real x402 settlement on six testnets, and a 482-assertion end-to-end suite (npm run verify) that exercises every claim on this page. The hosted platform — managed custody, orgs, SSO — is a waitlist today, not yet a live product."
           }
         },
         {
@@ -669,7 +679,7 @@
           "name": "Which chains work today?",
           "acceptedAnswer": {
             "@type": "Answer",
-            "text": "All eight registered chains run the full governed pipeline end to end — chain-scoped signatures, per-chain balances, chain allowlists — with settlement simulated locally. On-chain settlement is live on Base Sepolia and Solana devnet via x402’s public facilitator — two different signature schemes, not just two chains; the remaining EVM mainnets go live the moment a CDP facilitator key is configured, zero code changes needed. Every chain’s canonical USDC contract is already in the registry."
+            "text": "Twenty registered chains across eight signature families run the full governed pipeline end to end — chain-scoped signatures, per-chain balances, chain allowlists. On-chain settlement is live on six testnets (Base Sepolia, Solana devnet, Aptos, Stellar, Hedera and XRPL testnet) through x402’s public facilitator; the rest settle locally until a facilitator supports them. XRPL mainnet is wired but off unless an operator opts in."
           }
         },
         {
@@ -685,7 +695,7 @@
           "name": "What does “simulate mode” actually simulate?",
           "acceptedAnswer": {
             "@type": "Answer",
-            "text": "Only the settlement. Keypairs, ECDSA signing and verification, nonce replay protection, signed receipts — all real cryptography; balances just settle in a local file instead of on-chain. Forged signatures are rejected, and that rejection is one of the 382 tested assertions. Flip one env var for real x402 on Base Sepolia."
+            "text": "Only the settlement. Keypairs, ECDSA signing and verification, nonce replay protection, signed receipts — all real cryptography; balances just settle in a local file instead of on-chain. Forged signatures are rejected, and that rejection is one of the 482 tested assertions. Flip one env var for real x402 on Base Sepolia."
           }
         },
         {
@@ -702,6 +712,47 @@
           "acceptedAnswer": {
             "@type": "Answer",
             "text": "Both. A dependency-free Node SDK (sdk/ — .pay(), .dryRun(), .chat(), throws a typed denial with the fix attached) and a LangChain adapter (integrations/) ship in the repo alongside the CLI and MCP server — same governed pipeline underneath all four. Code samples in the docs."
+          }
+        }
+,
+        {
+          "@type": "Question",
+          "name": "How do I set a spending limit for Claude Code or Codex?",
+          "acceptedAnswer": {
+            "@type": "Answer",
+            "text": "Run npx spendveto, then start Claude Code with ANTHROPIC_BASE_URL=http://127.0.0.1:8402 (Codex: OPENAI_BASE_URL=http://127.0.0.1:8402/v1). Every request is checked against a per-agent daily, hourly, per-request and per-session budget before it reaches the provider, and the actual cost is booked from the provider's own usage report. spendveto budget 10 sets $10 a day per agent. Your API key passes through and is never stored."
+          }
+        },
+        {
+          "@type": "Question",
+          "name": "How do I stop a runaway AI agent loop from running up a bill?",
+          "acceptedAnswer": {
+            "@type": "Answer",
+            "text": "SpendVeto's loop detector freezes an agent that keeps making the same successful tool call and getting the same result, so the loop stops before the next model call is paid for; retries of a failed request don't count. A requests-per-minute limit answers bursts with a real 429, budgets cap the damage, and any agent can be frozen from the Console or with spendveto freeze."
+          }
+        },
+        {
+          "@type": "Question",
+          "name": "Is SpendVeto tied to one payment provider?",
+          "acceptedAnswer": {
+            "@type": "Answer",
+            "text": "No. One policy and one ledger decide spend on model tokens, x402 stablecoin payments on 20 chains, Stripe Issuing and Lithic cards, and Stripe, RazorpayX, PayPal and Modern Treasury payouts. A provider's own controls see only its own rail, while an agent's budget has to cover all of them. Its attestations, reputation feeds and policy schema are open formats anyone can verify or implement."
+          }
+        },
+        {
+          "@type": "Question",
+          "name": "Can a seller check that an AI agent's spending is governed?",
+          "acceptedAnswer": {
+            "@type": "Answer",
+            "text": "Yes. When the buyer's policy allows a payment, SpendVeto signs a short-lived governed-spend attestation naming the payer, payee, resource and ceiling, and sends it with the payment. The seller verifies it offline against the issuer address it trusts, with one Express middleware and no call to SpendVeto. The seller learns which policy version governed the spend, not the buyer's limits."
+          }
+        },
+        {
+          "@type": "Question",
+          "name": "Do reputation feeds share my data with other companies?",
+          "acceptedAnswer": {
+            "@type": "Answer",
+            "text": "Only what you choose to publish, and only as hashes: a feed lists hashed counterparty identifiers with a kind and severity — no raw addresses, reasons, amounts or customers. Another company imports it only if it explicitly trusts your issuer address, and edited or rolled-back feeds are refused."
           }
         }
       ]
@@ -727,6 +778,7 @@
     <a href="./use-cases.html">Use cases</a>
     <a href="./ai-spend.html">AI spend</a>
     <a class="nav-rotator" href="./upi.html">Regions · <span class="rot"><em>India</em><em>EU</em><em>UK</em><em>Brazil</em><em>US</em></span></a>
+    <a href="./network.html">Network</a>
     <a href="#compare">Compare</a>
     <a href="./pricing.html">Pricing</a>
     <a href="./docs.html">Docs</a>
@@ -739,16 +791,16 @@
   <canvas id="bg" aria-hidden="true"></canvas>
   <img class="hero-grip" src="./assets/hero-grip.jpg" alt="" aria-hidden="true" />
   <div class="hero-inner">
-    <div class="live-chip"><i></i><span id="live-stats">382 end-to-end checks · verified build</span></div>
+    <div class="live-chip"><i></i><span id="live-stats">482 end-to-end checks · verified build</span></div>
     <h1>Your agents can spend.<br /><span class="accent">SpendVeto decides.</span></h1>
     <p class="hero-sub">
-      AI agents now pay for tools, APIs, and each other — autonomously, at machine speed.
-      <strong>Payment rails move an agent's money; SpendVeto decides whether it should be allowed to move it.</strong>
+      AI agents now spend money on their own — model tokens, paid APIs, other agents, card checkouts — at machine speed.
+      <strong>SpendVeto puts a budget, a loop detector and a kill switch in front of every one of them, and decides before anything is spent.</strong>
     </p>
     <div class="cta-row">
-      <a class="btn btn-primary" href="./playground.html">Try the live playground</a>
+      <a class="btn btn-primary" href="./ai-spend.html">Cap your agent's spend in one line</a>
+      <a class="btn btn-ghost" href="./playground.html">Try the live playground</a>
       <a class="btn btn-ghost" href="./console/">Open the console demo</a>
-      <a class="btn btn-ghost" href="#quickstart">Run it in 60 seconds</a>
     </div>
   </div>
 
@@ -787,8 +839,10 @@
     <span><b>$4.5T</b> stablecoin volume in Q1 2026</span>
     <span><b>$3–5T</b> agentic commerce by 2030 — McKinsey</span>
     <span><b>0</b> dollars move without a policy decision</span>
+    <span><b>Signed</b> spend attestations · sellers verify offline</span>
+    <span><b>Shared</b> fraud reports across companies · hashes, never data</span>
     <span><b>MCP</b> · governance the model can't opt out of</span>
-    <span><b>Multi-chain</b> · 15 chains governed, eight signature families · chain-scoped signatures · per-chain balances · five testnets live on-chain</span>
+    <span><b>Multi-chain</b> · 20 chains governed, eight signature families · chain-scoped signatures · per-chain balances · six testnets live on-chain</span>
   </div>
 </div>
 
@@ -851,7 +905,7 @@
   <div class="shell" data-num="02">
     <p class="counter reveal"><b>02 / 06</b> Product — working today, not a roadmap</p>
     <h2 class="reveal">Eight controls between your agent and its money.</h2>
-    <p class="lede reveal">Every one of them is exercised by a 382-assertion end-to-end verification suite on every change — real payments, real signatures, real JSON-RPC. Nothing below is a mockup.</p>
+    <p class="lede reveal">Every one of them is exercised by a 482-assertion end-to-end verification suite on every change — real payments, real signatures, real JSON-RPC. Nothing below is a mockup.</p>
     <div class="grid8">
       <div class="cell reveal">
         <span class="mini-chip">PRE-PAYMENT</span>
@@ -915,7 +969,7 @@
           <circle class="arc" cx="110" cy="110" r="100" fill="none" stroke-width="10" stroke-linecap="round" stroke-dasharray="471 628" />
         </svg>
         <div class="gauge-center">
-          <div class="gauge-num"><em>382</em>/382</div>
+          <div class="gauge-num"><em>402</em>/402</div>
           <div class="gauge-cap">end-to-end checks passing</div>
         </div>
       </div>
@@ -1014,6 +1068,10 @@
           <tr><td>Chain-scoped budgets (multichain governance)</td><td class="hl yes">✓</td><td class="no">—</td><td class="no">—</td><td class="no">—</td></tr>
           <tr><td>Runaway auto-freeze / kill switch</td><td class="hl yes">✓</td><td class="no">—</td><td class="no">—</td><td class="no">—</td></tr>
           <tr><td>MCP-native (agents' actual stack)</td><td class="hl yes">✓</td><td class="no">—</td><td class="no">seller side</td><td class="no">—</td></tr>
+          <tr><td>One budget across tokens, stablecoins, cards and bank payouts</td><td class="hl yes">✓</td><td class="no">own rail</td><td class="no">—</td><td class="no">tokens + cards + bills (Ramp)</td></tr>
+          <tr><td>Seller-verifiable proof the buyer's policy allowed the spend</td><td class="hl yes">✓ attestations</td><td class="no">user mandates (AP2) · agent identity (Visa TAP)</td><td class="no">—</td><td class="no">—</td></tr>
+          <tr><td>Fraud reports shared across companies</td><td class="hl yes">✓ signed hash feeds</td><td class="no">—</td><td class="no">—</td><td class="no">—</td></tr>
+          <tr><td>Open policy standard</td><td class="hl yes">✓ JSON Schema</td><td class="no">—</td><td class="no">—</td><td class="no">—</td></tr>
           <tr><td>Open source</td><td class="hl yes">✓ Apache-2.0</td><td class="no">protocols</td><td class="no">—</td><td class="no">—</td></tr>
           <tr><td>On-chain-enforced settlement (Safe AllowanceModule)</td><td class="hl" style="color:var(--copper)">roadmap</td><td class="no">—</td><td class="no">—</td><td class="no">—</td></tr>
         </tbody>
@@ -1024,7 +1082,7 @@
 
 <section id="chains" style="border-top: 1px solid var(--line);">
   <div class="shell" style="padding-top: 4.5rem; padding-bottom: 4.5rem;">
-    <p class="counter reveal"><b>RAILS</b> Governed on fifteen chains, eight signature families</p>
+    <p class="counter reveal"><b>RAILS</b> Governed on twenty chains, eight signature families</p>
     <div class="logo-marquee reveal" aria-hidden="true">
       <div class="logo-track">
         <span class="logo-item"><svg viewBox="0 0 32 32"><circle cx="16" cy="16" r="13" fill="#0052FF"/></svg><span>Base</span></span>
@@ -1063,6 +1121,7 @@
       <span class="chain-chip live"><i>●</i> Aptos Testnet <b>LIVE</b></span>
       <span class="chain-chip live"><i>●</i> Stellar Testnet <b>LIVE</b></span>
       <span class="chain-chip live"><i>●</i> Hedera Testnet <b>LIVE</b></span>
+      <span class="chain-chip live"><i>●</i> XRPL Testnet <b>LIVE</b></span>
       <span class="chain-chip">XRPL <b>READY (mainnet, opt-in)</b></span>
       <span class="chain-chip">Arc Testnet <b>READY</b></span>
       <span class="chain-chip">Algorand Testnet <b>READY (governed, not signable)</b></span>
@@ -1073,8 +1132,41 @@
       <span class="chain-chip">Arbitrum <b>READY</b></span>
       <span class="chain-chip">Optimism <b>READY</b></span>
       <span class="chain-chip">Avalanche <b>READY</b></span>
+      <span class="chain-chip">Monad <b>READY</b></span>
+      <span class="chain-chip">Celo <b>READY</b></span>
+      <span class="chain-chip">Sei <b>READY</b></span>
+      <span class="chain-chip">Stable <b>READY (USDT0)</b></span>
     </div>
-    <p class="reveal" style="color: var(--dim); max-width: 58ch; line-height: 1.7; font-size: 0.95rem;">The chain rides <em>inside</em> every signed authorization — a payment signed for Polygon cannot settle anywhere else — and every wallet keeps a separate balance per chain. Policies and delegated grants pin which chains an agent may settle on. On-chain settlement is live today on five testnets across five signature schemes: Base Sepolia (secp256k1), Solana devnet (ed25519), Aptos testnet (Move), Stellar testnet, and Hedera testnet (account-id addressing). <b>XRPL mainnet</b> is fully wired but <b>disabled by default</b> — real money, in RLUSD rather than USDC — an operator has to explicitly opt in to enable it, entirely at their own risk; we don't run or control anyone's deployment. <b>Arc testnet</b> is registry-wired (Circle's native-USDC L1) and settlement-ready, awaiting a facilitator that names it. <b>Algorand testnet</b> is governed here — policy, allowlists, per-chain balances all apply — but not signable, since no client signature package for it is published yet; the registry says so per chain. <b>Cardano preprod</b> is governed the same way, one step earlier — the x402 spec added Cardano support 2026-09-09, but as of registration neither the public facilitator nor npm has anything for it yet, so it's not signable or settleable anywhere. The remaining EVM chains are <em>settlement-ready</em>: the gate asks its configured facilitator what it can settle at boot and brings every supported chain live automatically — multi-chain 402s, per-chain scheme registration, canonical stablecoin addresses all wired (tested against a mock facilitator advertising all fifteen). Pointing at a CDP facilitator with an API key and a funded wallet flips its EVM mainnets on with zero code changes, at that operator's own discretion.</p>
+    <p class="reveal" style="color: var(--dim); max-width: 58ch; line-height: 1.7; font-size: 0.95rem;">The chain rides <em>inside</em> every signed authorization — a payment signed for Polygon cannot settle anywhere else — and every wallet keeps a separate balance per chain. Policies and delegated grants pin which chains an agent may settle on. On-chain settlement is live today on six testnets across six signature schemes: Base Sepolia (secp256k1), Solana devnet (ed25519), Aptos testnet (Move), Stellar testnet, Hedera testnet (account-id addressing) and XRPL testnet. <b>XRPL mainnet</b> is fully wired but <b>disabled by default</b> — real money, in RLUSD rather than USDC — an operator has to explicitly opt in to enable it, entirely at their own risk; we don't run or control anyone's deployment. <b>Arc testnet</b> is registry-wired (Circle's native-USDC L1) and settlement-ready, awaiting a facilitator that names it. <b>Algorand testnet</b> is governed here — policy, allowlists, per-chain balances all apply — but not signable, since no client signature package for it is published yet; the registry says so per chain. <b>Cardano preprod</b> is governed the same way, one step earlier — the x402 spec added Cardano support 2026-09-09, but as of registration neither the public facilitator nor npm has anything for it yet, so it's not signable or settleable anywhere. The remaining EVM chains are <em>settlement-ready</em>: the gate asks its configured facilitator what it can settle at boot and brings every supported chain live automatically — multi-chain 402s, per-chain scheme registration, canonical stablecoin addresses all wired (tested against a mock facilitator advertising all twenty). Pointing at a CDP facilitator with an API key and a funded wallet flips its EVM mainnets on with zero code changes, at that operator's own discretion.</p>
+  </div>
+</section>
+
+<section id="beyond" style="border-top: 1px solid var(--line);">
+  <div class="shell" style="padding-top: 4.5rem; padding-bottom: 4.5rem;">
+    <p class="counter reveal"><b>BEYOND CRYPTO</b> Tokens, cards, bank rails — one budget per agent</p>
+    <h2 class="reveal">Every way an agent spends, decided before it's spent.</h2>
+    <div class="reveal" style="display:grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 1rem; margin-top: 1.6rem;">
+      <div style="border:1px solid var(--line); border-radius:14px; padding:1.3rem 1.4rem; background:rgba(12,17,14,0.6);"><b style="color:#eef3ed">Model tokens</b><p style="color:var(--dim); line-height:1.65; font-size:0.92rem; margin-top:0.5rem;">One environment variable puts Claude Code, Codex or any OpenAI/Anthropic SDK behind a budget, a loop detector and a kill switch. <a href="./ai-spend.html" style="color:var(--green)">How →</a></p></div>
+      <div style="border:1px solid var(--line); border-radius:14px; padding:1.3rem 1.4rem; background:rgba(12,17,14,0.6);"><b style="color:#eef3ed">Fiat payouts</b><p style="color:var(--dim); line-height:1.65; font-size:0.92rem; margin-top:0.5rem;">Agents paying vendors and people through Stripe, RazorpayX (UPI, IMPS, NEFT, RTGS), PayPal and ACH / RTP / wire — caps, budgets, and a human approves every new payee.</p></div>
+      <div style="border:1px solid var(--line); border-radius:14px; padding:1.3rem 1.4rem; background:rgba(12,17,14,0.6);"><b style="color:#eef3ed">Agent cards</b><p style="color:var(--dim); line-height:1.65; font-size:0.92rem; margin-top:0.5rem;">Stripe Issuing and Lithic ask SpendVeto in real time: merchant categories, caps, budgets and the kill switch decide every swipe.</p></div>
+      <div style="border:1px solid var(--line); border-radius:14px; padding:1.3rem 1.4rem; background:rgba(12,17,14,0.6);"><b style="color:#eef3ed">AI FinOps &amp; rebilling</b><p style="color:var(--dim); line-height:1.65; font-size:0.92rem; margin-top:0.5rem;">Tag spend by team or customer, cap it per tag, export it as FOCUS v1.4 for your FinOps tools — and bill customers for their AI usage through Stripe Billing at your markup.</p></div>
+    </div>
+  </div>
+</section>
+
+<section id="network" style="border-top: 1px solid var(--line);">
+  <div class="shell" style="padding-top: 4.5rem; padding-bottom: 4.5rem;">
+    <p class="counter reveal"><b>THE NETWORK</b> Proof that travels with the payment</p>
+    <h2 class="reveal">A platform can copy a feature. It can't copy a network it doesn't own.</h2>
+    <p class="lede reveal">Every payment platform can cap spend on its own rail. An agent's spending crosses all of them, and the businesses it pays can't see whether anyone is in control. SpendVeto's open network layer gets more useful with every other company that runs it.</p>
+    <div class="reveal" style="display:grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 1rem; margin-top: 1.6rem;">
+      <div style="border:1px solid var(--line); border-radius:14px; padding:1.3rem 1.4rem; background:rgba(12,17,14,0.6);"><b style="color:#eef3ed">Spend attestations</b><p style="color:var(--dim); line-height:1.65; font-size:0.92rem; margin-top:0.5rem;">When your policy says yes, the payment carries a signed, five-minute proof of it. Sellers verify it offline with one middleware and can refuse agents nobody governs: 3-D Secure, for agents.</p></div>
+      <div style="border:1px solid var(--line); border-radius:14px; padding:1.3rem 1.4rem; background:rgba(12,17,14,0.6);"><b style="color:#eef3ed">Shared reputation</b><p style="color:var(--dim); line-height:1.65; font-size:0.92rem; margin-top:0.5rem;">Flag a scam payee once and every company that trusts you refuses it, on every rail: crypto addresses, UPI VPAs, IBANs, card merchants. Feeds carry hashes, never data.</p></div>
+      <div style="border:1px solid var(--line); border-radius:14px; padding:1.3rem 1.4rem; background:rgba(12,17,14,0.6);"><b style="color:#eef3ed">An open policy standard</b><p style="color:var(--dim); line-height:1.65; font-size:0.92rem; margin-top:0.5rem;">Agent budgets as a published JSON Schema. Lint them in CI with one GitHub Action, so a typo can't silently remove a limit.</p></div>
+    </div>
+    <div class="cta-row reveal" style="margin-top:1.6rem;">
+      <a class="btn btn-ghost" href="./network.html">How the network works →</a>
+    </div>
   </div>
 </section>
 
@@ -1106,7 +1198,8 @@
       <div><span class="p">$</span> npm run call -- summarize &nbsp;<span class="c"># go approve it</span></div>
       <div><span class="p">$</span> npm run delegate -- 0.03 "intern" --tools translate --chains base-sepolia</div>
       <div><span class="p">$</span> claude mcp add spendveto -- node mcp/server.js</div>
-      <div><span class="p">$</span> npm run verify &nbsp;<span class="c"># 382 assertions, end to end</span></div>
+      <div><span class="p">$</span> node bin/spendveto.mjs validate data/policy.json &nbsp;<span class="c"># lint budgets, CI-ready</span></div>
+      <div><span class="p">$</span> npm run verify &nbsp;<span class="c"># 482 assertions, end to end</span></div>
     </div>
   </div>
 </section>
@@ -1116,12 +1209,17 @@
     <p class="counter reveal"><b>FAQ</b> Straight answers</p>
     <h2 class="reveal">Asked before you had to ask.</h2>
     <div class="faq" style="margin-top: 1.5rem;">
-      <details class="reveal"><summary>Is this a real product or a demo?</summary><p>Real and open source (Apache-2.0). It runs on your machine today: real ECDSA signatures, real x402 settlement on Base Sepolia, and a <b>382-assertion end-to-end suite</b> (<span class="mono">npm run verify</span>) that exercises every claim on this page. The hosted platform — managed custody, orgs, SSO — is a waitlist today, not yet a live product.</p></details>
+      <details class="reveal"><summary>Is this a real product or a demo?</summary><p>Real and open source (Apache-2.0). It runs on your machine today: real ECDSA signatures, real x402 settlement on six testnets, and a <b>482-assertion end-to-end suite</b> (<span class="mono">npm run verify</span>) that exercises every claim on this page. The hosted platform — managed custody, orgs, SSO — is a waitlist today, not yet a live product.</p></details>
       <details class="reveal"><summary>Does SpendVeto hold my keys?</summary><p>Your choice of two trust models, both self-hosted. <b>Library mode:</b> agents hold their own wallets and the governance pipeline runs inside their own call path. <b>Enforcement proxy:</b> agents are keyless — they POST spending intents, and the proxy’s custody wallet signs only after freeze, policy, caps, scopes, and approvals all pass. Keys never leave your machine either way.</p></details>
-      <details class="reveal"><summary>Which chains work today?</summary><p>All eight registered chains run the full governed pipeline end to end — chain-scoped signatures, per-chain balances, chain allowlists — with settlement simulated locally. <b>On-chain settlement is live on Base Sepolia</b> via x402’s public facilitator; per-chain facilitator adapters are the next funded milestone. Every chain’s canonical USDC contract is already in the registry.</p></details>
+      <details class="reveal"><summary>Which chains work today?</summary><p>Twenty registered chains across eight signature families run the full governed pipeline end to end — chain-scoped signatures, per-chain balances, chain allowlists. <b>On-chain settlement is live on six testnets</b> (Base Sepolia, Solana devnet, Aptos, Stellar, Hedera and XRPL testnet) through x402’s public facilitator; the rest settle locally until a facilitator supports them. XRPL mainnet is wired but off unless an operator opts in.</p></details>
       <details class="reveal"><summary>What happens when an agent goes rogue?</summary><p>The burst detector freezes it <b>mid-loop</b> — by default, ten payment attempts inside ten seconds trips the freeze automatically. Every wallet also has a one-click manual kill switch. A frozen wallet is refused even when it presents a correctly signed payment (403, not a fresh challenge), and its trust score collapses to an F.</p></details>
-      <details class="reveal"><summary>What does “simulate mode” actually simulate?</summary><p>Only the settlement. Keypairs, ECDSA signing and verification, nonce replay protection, signed receipts — all real cryptography; balances just settle in a local file instead of on-chain. Forged signatures are rejected, and that rejection is one of the 382 tested assertions. Flip one env var for real x402 on Base Sepolia.</p></details>
+      <details class="reveal"><summary>What does “simulate mode” actually simulate?</summary><p>Only the settlement. Keypairs, ECDSA signing and verification, nonce replay protection, signed receipts — all real cryptography; balances just settle in a local file instead of on-chain. Forged signatures are rejected, and that rejection is one of the 482 tested assertions. Flip one env var for real x402 on Base Sepolia.</p></details>
       <details class="reveal"><summary>What will the hosted platform add?</summary><p>The parts a company needs to run this for a fleet: a managed custody proxy on the money path, orgs and SSO, a Postgres audit trail, alert routing, and mainnet settlement. Join the waitlist — the chains people pick literally decide which adapters we build first.</p></details>
+      <details class="reveal"><summary>How do I set a spending limit for Claude Code or Codex?</summary><p>Run <span class="mono">npx spendveto</span>, then start Claude Code with <span class="mono">ANTHROPIC_BASE_URL=http://127.0.0.1:8402</span> (Codex: <span class="mono">OPENAI_BASE_URL=http://127.0.0.1:8402/v1</span>). Every request is checked against a per-agent daily, hourly, per-request and per-session budget <b>before</b> it reaches the provider, and the actual cost is booked from the provider's own usage report. <span class="mono">spendveto budget 10</span> sets $10 a day per agent. Your API key passes through and is never stored. <a href="./ai-spend.html">Full guide</a>.</p></details>
+      <details class="reveal"><summary>How do I stop a runaway AI agent loop from running up a bill?</summary><p>The loop detector freezes an agent that keeps making the same successful tool call and getting the same result, so the loop stops before the next model call is paid for. Retries of a failed request don't count. A requests-per-minute limit answers bursts with a real 429, budgets cap the damage, and any agent can be frozen from the Console or with <span class="mono">spendveto freeze</span>.</p></details>
+      <details class="reveal"><summary>Is SpendVeto tied to one payment provider?</summary><p>No. One policy and one ledger decide spend on model tokens, x402 stablecoin payments on 20 chains, Stripe Issuing and Lithic cards, and Stripe, RazorpayX, PayPal and Modern Treasury payouts. A provider's own controls see only its own rail, while an agent's budget has to cover all of them. The attestation, reputation-feed and policy formats are open: anyone can verify or implement them. <a href="./network.html">How the network works</a>.</p></details>
+      <details class="reveal"><summary>Can a seller check that an AI agent's spending is governed?</summary><p>Yes. When the buyer's policy allows a payment, SpendVeto signs a short-lived <b>governed-spend attestation</b> naming the payer, payee, resource and ceiling, and sends it with the payment. The seller verifies it offline against the issuer address it trusts, with one Express middleware and no call to SpendVeto. The seller learns which policy version governed the spend, not the buyer's limits.</p></details>
+      <details class="reveal"><summary>Do reputation feeds share my data with other companies?</summary><p>Only what you choose to publish, and only as hashes: a feed lists hashed counterparty identifiers with a kind and severity — no raw addresses, reasons, amounts or customers. Another company imports it only if it explicitly trusts your issuer address, and edited or rolled-back feeds are refused.</p></details>
       <details class="reveal"><summary>Is there an SDK, or just the CLI?</summary><p>Both. A dependency-free Node SDK (<code class="mono">sdk/</code> — <code class="mono">.pay()</code>, <code class="mono">.dryRun()</code>, <code class="mono">.chat()</code>, throws a typed denial with the fix attached) and a LangChain adapter (<code class="mono">integrations/</code>) ship in the repo alongside the CLI and MCP server — same governed pipeline underneath all four. Code samples in the <a href="./docs.html#sdk">docs</a>.</p></details>
     </div>
   </div>
@@ -1148,6 +1246,9 @@
     <img alt="SpendVeto - Spend governance for AI agents that pay for things | Product Hunt" width="200" height="43" src="./assets/producthunt-featured.svg" style="display:block" />
   </a>
   <div class="links"><a href="https://github.com/revanthrajeev/spendveto" target="_blank" rel="noopener">GitHub</a>
+    <a href="./guides.html">Guides</a>
+    <a href="./network.html">Network</a>
+    <a href="./ai-spend.html">AI spend</a>
     <a href="./about.html">About</a>
     <a href="./security.html">Security</a>
     <a href="./contact.html">Contact</a>

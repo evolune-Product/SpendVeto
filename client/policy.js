@@ -1,11 +1,11 @@
 import { readFileSync, writeFileSync, existsSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { fileURLToPath } from "node:url";
-import { PORT } from "../shared-config.js";
+import { PORT, dataPath } from "../shared-config.js";
 import { resolvePayeeList } from "./ens.js";
 import { screenAddress } from "../server/sanctions.js";
 
-const POLICY_PATH = fileURLToPath(new URL("../data/policy.json", import.meta.url));
+const POLICY_PATH = dataPath("policy.json");
 
 const DEFAULT_POLICY = {
   maxPerCallUSD: 0.05,
@@ -14,7 +14,7 @@ const DEFAULT_POLICY = {
   requireApprovalAboveUSD: 0.015,
 };
 
-function loadPolicy() {
+export function loadPolicy() {
   if (!existsSync(POLICY_PATH)) {
     writeFileSync(POLICY_PATH, JSON.stringify(DEFAULT_POLICY, null, 2));
     return DEFAULT_POLICY;
@@ -100,6 +100,24 @@ export async function checkPolicy(address, proposedPriceUSD, toolId, chain, cate
     }
   }
 
+  // Federated reputation (server/reputation.js): a counterparty this
+  // organization reported — or one a publisher it explicitly trusts reported —
+  // is refused (block) or handed to a human (review) before anything is
+  // signed. Same scoping as sanctions: only external payees are checked.
+  let reputationReview = null;
+  if (payee) {
+    try {
+      const rep = await fetch(`http://localhost:${PORT}/api/reputation/check?subject=${encodeURIComponent(payee)}`).then((r) => r.json());
+      if (rep.verdict === "block") {
+        return deny("payee_reputation_block", `payee ${payee} is on a reputation block list (${rep.summary})`,
+          "do not retry against this payee; it was reported for fraud or abuse — a human can review the report in the Console", { policy, reputation: rep });
+      }
+      if (rep.verdict === "review") reputationReview = rep;
+    } catch {
+      // older server or a transient failure — reputation adds to the controls below, it doesn't replace them
+    }
+  }
+
   // Chain allowlist: a policy may pin which chains agents are allowed to pay
   // on at all — settlement rails are a governance decision, not the agent's.
   if (chain && Array.isArray(policy.allowedChains) && !policy.allowedChains.includes(chain)) {
@@ -149,8 +167,11 @@ export async function checkPolicy(address, proposedPriceUSD, toolId, chain, cate
     const res = await fetch(`http://localhost:${PORT}/api/ledger`);
     ({ entries } = await res.json());
     const cutoff = Date.now() - 60 * 60 * 1000;
+    // Unmanaged spend — paid around the gate, found on-chain by
+    // server/outofband.js — counts the same as governed spend: a budget that
+    // ignored it would only be a budget for the payments the agent chose to show.
     const mine = entries.filter(
-      (e) => e.status === "paid" && e.address?.toLowerCase() === address.toLowerCase() && new Date(e.ts).getTime() >= cutoff
+      (e) => (e.status === "paid" || e.status === "unmanaged") && e.address?.toLowerCase() === address.toLowerCase() && new Date(e.ts).getTime() >= cutoff
     );
     recent = { totalUSD: mine.reduce((s, e) => s + Number(e.amount || 0), 0), count: mine.length };
   } catch {
@@ -165,7 +186,8 @@ export async function checkPolicy(address, proposedPriceUSD, toolId, chain, cate
   // would let an agent sign ten $50 authorizations under a $60/hour cap and
   // break none of them. Open ceilings are held against the budget the way a
   // card pre-auth holds against a balance, and released on settlement or
-  // expiry (see server/upto.js).
+  // expiry (see server/upto.js). auth-capture escrows (server/authcapture.js)
+  // hold the same way until captured, voided or past their capture deadline.
   let heldUSD = 0;
   try {
     const held = await fetch(`http://localhost:${PORT}/api/upto/holds/${address}`).then((r) => r.json());
@@ -193,7 +215,7 @@ export async function checkPolicy(address, proposedPriceUSD, toolId, chain, cate
       .sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt))[0] || null;
   const paidSpendOf = (addr, sinceMs = 0) =>
     entries
-      .filter((e) => e.status === "paid" && e.address?.toLowerCase() === addr.toLowerCase() && new Date(e.ts).getTime() >= sinceMs)
+      .filter((e) => (e.status === "paid" || e.status === "unmanaged") && e.address?.toLowerCase() === addr.toLowerCase() && new Date(e.ts).getTime() >= sinceMs)
       .reduce((s, e) => s + Number(e.amount || 0), 0);
   // Subtree = the address plus everything ever delegated beneath it. Revoked
   // grants still count for spend accounting — money already spent is spent.
@@ -294,11 +316,12 @@ export async function checkPolicy(address, proposedPriceUSD, toolId, chain, cate
   }
   const committedUSD = recent.totalUSD + heldUSD;
   if (committedUSD + price > policy.maxPerHourUSD) {
-    const heldNote = heldUSD > 0 ? `, $${heldUSD.toFixed(4)} held by open upto authorizations` : "";
+    const heldNote = heldUSD > 0 ? `, $${heldUSD.toFixed(4)} held by open upto authorizations and auth-capture escrows` : "";
     return deny("hourly_usd_cap", `would exceed maxPerHourUSD $${policy.maxPerHourUSD} (spent $${recent.totalUSD.toFixed(4)} so far${heldNote})`,
       `only $${Math.max(0, policy.maxPerHourUSD - committedUSD).toFixed(4)} remains in this hour's budget — wait for the window to roll over${heldUSD > 0 ? ", settle or void an open authorization to release its hold" : ""}, or pick a cheaper tool`, { policy, recent, heldUSD });
   }
 
-  const requiresApproval = price > policy.requireApprovalAboveUSD;
-  return { allowed: true, requiresApproval, policy, recent, delegation, heldUSD };
+  // A payee flagged for review always goes to a human, whatever the amount.
+  const requiresApproval = price > policy.requireApprovalAboveUSD || Boolean(reputationReview);
+  return { allowed: true, requiresApproval, policy, recent, delegation, heldUSD, ...(reputationReview ? { reputation: reputationReview } : {}) };
 }

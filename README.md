@@ -1,20 +1,116 @@
 # SpendVeto
 
-**The spend-governance layer for AI agents that pay for things.** Payment rails move an agent's money; SpendVeto decides whether the agent should be allowed to move it — policy checks, human approval, delegated budget caps, and a runaway-agent kill switch, enforced *before* any payment happens.
+**Spend controls for AI agents — model tokens, crypto and fiat payments, and cards.** Model providers and payment rails move an agent's money; SpendVeto decides whether the agent should be allowed to move it — budgets, loop detection, human approval, delegated caps and a kill switch, enforced *before* anything is spent. And because no single rail sees all of an agent's spending, it is also the neutral trust layer between agents and the businesses they pay: signed spend attestations a seller can check, reputation feeds shared across companies, and an open policy standard.
 
-[**Live site + playground**](https://spendveto.com) · [**Docs**](https://spendveto.com/docs.html) · Apache-2.0 · x402 + MCP native
+[**Live site + playground**](https://spendveto.com) · [**Docs**](https://spendveto.com/docs.html) · [**npm**](https://www.npmjs.com/package/spendveto) · Apache-2.0 · x402 + MCP native
 
-**Every claim in this README is executed before it ships.** `npm run verify` runs **382 end-to-end assertions** from a clean clone — real secp256k1 keypairs, real ECDSA verification, a real MCP stdio JSON-RPC session, and a synthetic runaway agent frozen mid-burst. If a claim isn't a test, it doesn't ship; features that can't work locally yet are declared slots that refuse honestly, never stubs that pretend.
+**Every claim in this README is executed before it ships.** `npm run verify` runs **482 end-to-end assertions** from a clean clone — real secp256k1 keypairs, real ECDSA verification, a real MCP stdio JSON-RPC session, and a synthetic runaway agent frozen mid-burst. If a claim isn't a test, it doesn't ship; features that can't work locally yet are declared slots that refuse honestly, never stubs that pretend.
 
 What *isn't* true yet is stated just as plainly: no external security audit, no customers. Settlement is testnet and simulate only, by default, for every chain. XRPL mainnet settlement (real money, RLUSD) is fully wired but **disabled unless an operator explicitly opts in** — that's their decision and their risk; we don't run, monitor, or control anyone's deployment. Funding positioning and market numbers live in [`PITCH.md`](./PITCH.md).
 
-## Try it in 60 seconds: AI spend control
+## Cap your AI agent's spend in one line
 
 ```bash
-npm run quickstart:ai      # an agent gets a hard LLM budget, spends it, and the next call is refused before the model is called
+npx spendveto                            # or: git clone … && npm install && npm start
 ```
 
-JavaScript (`spendveto-sdk`) and Python (`sdk-python/`, stdlib only) clients. See `site/ai-spend.html`.
+First run installs dependencies in about 25 seconds — 150 packages, because the chain SDKs for live x402 settlement are optional ([below](#one-api-any-rail-rails)). Node 22+ recommended (Node 20.18 runs it, with npm engine warnings).
+
+Then point the agent at it — one environment variable, your provider key passes straight through and is never stored:
+
+```bash
+ANTHROPIC_BASE_URL=http://127.0.0.1:8402 claude          # Claude Code
+OPENAI_BASE_URL=http://127.0.0.1:8402/v1 codex           # Codex CLI
+OPENAI_BASE_URL=http://127.0.0.1:8402/v1                 # OpenAI SDKs, Cursor, LangChain, Aider…
+ANTHROPIC_BASE_URL=http://127.0.0.1:8402                 # Anthropic SDKs
+```
+
+Every request is checked **before** it reaches the provider (`server/llmguard.js`): a per-agent daily, hourly, per-request and per-session budget; a requests-per-minute limit (a real `429` with `retry-after`); a model allow/block list; the kill switch; and **loop detection** — the same tool call returning the same result again and again freezes the agent until a human looks (retries of a *failed* request don't count). The actual cost is booked afterwards from the provider's own `usage` report — read out of the stream as it passes, cache reads and 5-minute/1-hour cache writes priced separately (`server/llm-pricing.js`, current Claude and OpenAI prices as of 2026-10-18, overridable; an unknown model is priced at the provider's flagship rate and flagged, never guessed low). **Observe mode** records what it would have blocked and blocks nothing. **Team mode**: give an agent a `tg_…` token instead of a provider key and the guard swaps in a key only it holds. An agent bound to a delegated budget spends tokens, x402 payments and card authorizations against the **same** cascading cap.
+
+It follows Claude Code's gateway compatibility guide: bodies forwarded byte-for-byte, every `anthropic-*` header passed through, streams relayed event by event with keep-alive pings, upstream errors unmodified. Checked by hand with the real client on 2026-10-18 — Claude Code v2.1.300 ran through the guard unconfigured and its main request was booked at $0.012638 (a 63,180-token system prompt written to the one-hour cache, billed at 2× input). The automated suite exercises the same wire format against a local mock provider.
+
+```bash
+spendveto budget 10        # $10/day per agent      spendveto status        # who spent what today
+spendveto observe          # watch-only             spendveto freeze bot-1  # the kill switch
+```
+
+Honest limits: the pre-check uses an estimate (input sized from the request, output from its `max_tokens`), so the last request allowed under a budget can overshoot it by that one request's difference; Claude-subscription traffic is metered at API-equivalent prices; Message Batches and other endpoints the guard can't meter are refused rather than passed through ungoverned. The older SDK route still works: `npm run quickstart:ai` (JavaScript `spendveto-sdk`, Python `sdk-python/`).
+
+## Card authorizations: Stripe Issuing and Lithic
+
+Point Stripe Issuing's real-time authorization webhook at `POST /api/cards/stripe/authorization` (secret: `STRIPE_ISSUING_WEBHOOK_SECRET`) or Lithic Auth Stream Access at `POST /api/cards/lithic/asa` (`LITHIC_ASA_SECRET`) and every swipe on an agent's card is decided by the same engine (`server/cards.js`): signature verified with replay protection, kill switch, per-authorization cap, rolling daily budget, hourly velocity, a merchant-category allow/block list (gambling, quasi-cash/crypto purchases, money transfer and stored-value loads blocked by default), and — for a card registered to a delegated wallet (`POST /api/cards`) — the cascading delegation caps. Answers in each provider's own format (`{ approved }` with `Stripe-Version`; `{ result: "APPROVED" | <decline code>, token }`). USD only: an authorization in another currency is declined rather than compared across currencies with a guessed rate. It decides authorizations; captures and refunds aren't consumed yet.
+
+## Payments beyond crypto: governed fiat payouts
+
+Finance agents pay people and vendors in real money. `POST /api/payouts` decides first, then executes on four real providers (`server/payouts.js`), each in its own documented format:
+
+| Provider | Rails | Request |
+|---|---|---|
+| Stripe | Connect transfers to a connected account | `POST /v1/transfers`, amount in cents, `Idempotency-Key` |
+| RazorpayX | UPI, IMPS, NEFT, RTGS (India) | `POST /v1/payouts`, amount in paise, `X-Payout-Idempotency` |
+| PayPal | Payouts to an email, phone or PayPal ID | OAuth client credentials, `POST /v1/payments/payouts`, `PayPal-Request-Id` |
+| Modern Treasury | ACH, RTP, wire, book (US) | `POST /api/payment_orders`, amount in cents, `Idempotency-Key` |
+
+Before money moves: an accountable agent identity (a registered agent's `tg_` token, by default), the kill switch, a per-payout cap, a rolling daily budget, hourly velocity, a purpose allowlist and delegation caps — and a **new payee** (not on `policy.payouts.allowedPayees`) or a large amount **waits for a human**: the request returns 202, the payout executes the moment someone approves it in the Console, and never if they deny it. Unauthenticated one-click approval links can't approve real money. Agent retries with the same `idempotencyKey` replay the original payout — nobody is paid twice. Money in another currency counts against the USD budgets only at an **operator-declared** rate (`policy.payouts.fxRates`); without one the payout is refused. A provider with no credentials refuses honestly. Not yet: consuming providers' asynchronous status webhooks (a reversal or an ACH return) — `POST /api/payouts/:id/status` records one from your own glue.
+
+## AI FinOps: allocation, FOCUS export, rebilling
+
+Every rail lands in one ledger, so it doubles as a cost system (`server/finops.js`):
+
+- **Allocation** — tag any model request with `x-spendveto-tags: team=search,customer=cus_123` (or `x-spendveto-team` / `x-spendveto-customer`); `GET /api/costs?groupBy=rail|team|customer|agent|model|provider` reports spend across model tokens, x402 tools, cards and payouts. **Tag budgets** (`policy.llm.tagBudgets`, e.g. `"customer=cus_123": { "dailyUSD": 5 }`) cap a team's or customer's spend across every agent carrying the tag.
+- **FOCUS v1.4 export** — `GET /api/costs/focus.csv`: the FinOps Foundation's open billing format, all 21 mandatory columns, one row per priced token component (input, cache read, cache write, output), hourly charge periods — so AI spend lands in the cost tools a FinOps team already runs. Cards and payouts are spend, not technology consumption, so they stay out of the FOCUS file.
+- **Rebilling** — with `policy.rebilling.enabled`, model spend tagged with a Stripe customer id becomes a **Stripe Billing meter event** (cost + your markup, in micro-dollars so sub-cent requests lose nothing to rounding, with an identifier for de-duplication); `GET /api/rebilling` shows cost, billed and margin per customer. Price the Stripe meter at $0.000001 per unit.
+
+## The network layer: proof a seller can check, reputation that crosses companies, an open policy standard
+
+Three pieces that get more useful with every other organization running SpendVeto (`server/attestations.js`, `server/reputation.js`, `server/policyspec.js`; the formats are specified in [`docs/NETWORK.md`](./docs/NETWORK.md)):
+
+- **Governed-spend attestations.** After the policy check passes — and above the approval line, only once a human has approved — `POST /api/attestations` signs a short-lived token (`sva1.…`, five minutes by default) naming the payer, the payee, the resource, a USD ceiling and the policy version in force. `governedCall`, and so the MCP server and the proxy, attaches one to every x402 payment as `X-SpendVeto-Attestation`. A seller checks it **offline** against the issuer address it pins (`GET /.well-known/spendveto-issuer.json`): one secp256k1 signature, no call to SpendVeto, no data shared. `integrations/seller-express.js` is the seller's one-line gate — `requireGovernedAgent({ trustedIssuers, audience, price })` — single-use, bound to the payer, and it refuses to start with no trusted issuers. `policy.attestations.requireOnCatalog` turns the same gate on for this server's own catalog. The seller learns the policy's hash, deliberately not its limits: a seller who could read a buyer's budget could price to it.
+- **Federated counterparty reputation.** Report a counterparty — crypto address, UPI VPA, IBAN, email, domain, or `card-merchant:<network id>` — as `block` or `review` (`POST /api/reputation/reports`), and the policy engine, payouts and card authorizations refuse it, or send it to a human, on every rail. `GET /api/reputation/feed` publishes your reports as a signed list of hashes, with no identifiers and no reasons. Another SpendVeto imports it (`POST /api/reputation/import`) only if your address is on its `policy.reputation.trustedPublishers`. Edited feeds break their digest, and an older feed can't be replayed over a newer one. Honest limit: hashing keeps identifiers away from a casual reader, not from someone who can guess them.
+- **An open policy standard.** The policy file is a published JSON Schema ([`spec/policy-v1.schema.json`](./spec/policy-v1.schema.json), served at `https://spendveto.com/schemas/policy-v1.json`). `spendveto validate policy.json` — or `POST /api/policy/validate`, or the GitHub Action — catches the typo that would otherwise fail open (`maxPerHourUsd` → *did you mean "maxPerHourUSD"?*), wrong types, unregistered chain ids and limits that contradict each other. The server also warns at boot when its own policy has a problem.
+
+```yaml
+- uses: revanthrajeev/spendveto@main      # lint agent budgets in CI: no install, nothing sent anywhere
+  with: { policy: config/agent-policy.json, strict: true }
+```
+
+## Stripe and Tempo's Machine Payments Protocol (MPP)
+
+MPP is x402's sibling, launched by Stripe and Tempo on March 18, 2026. A server answers `402` with one `WWW-Authenticate: Payment …` challenge per offer: a one-off charge, a session that streams vouchers against an escrowed deposit, or a subscription. The official client, `mppx`, pays by itself; its docs point at the `onChallenge` hook as the place to apply a spending policy. `integrations/mppx.js` puts SpendVeto there (`server/mpp.js`, `POST /api/mpp/evaluate`), so the decision happens before mppx creates a credential:
+
+```js
+import { Mppx, tempo } from "mppx/client";
+import { governMppx } from "spendveto/integrations/mppx.js";
+
+const governed = governMppx({ address: account.address });
+const mppx = Mppx.create({ methods: [tempo({ account })], onChallenge: governed.onChallenge, polyfill: false });
+const res = await governed.fetch(mppx, "https://api.example.com/search");
+```
+
+- **Every offer is priced, or refused.** Tempo offers in OUSD, pathUSD or USDC.e (mainnet and Moderato), EVM offers in the registry's USDC, Stripe and card offers in USD. A token or method SpendVeto can't price is refused rather than guessed. When a 402 carries several offers, the cheapest one the policy accepts is chosen.
+- **The same engine as every rail**: hourly budget with holds, approval line, payee allowlist, sanctions, reputation, freezes and the chain allowlist (`tempo`, `tempo-moderato`).
+- **Splits are payees.** A charge's `splits` send part of the money to other recipients, and each one must pass the payee rules too.
+- **Sessions are decided on the deposit, not the per-unit price**: capped by `policy.mpp.maxSessionDepositUSD`, refused when the escrow isn't Tempo's channel reserve, and held against the budget until the session closes. Vouchers are cumulative and can't exceed the approved deposit.
+- **Subscriptions need a human**: a standing commitment, shown with its total until it ends.
+- **What mppx lets through is refused here**: expired challenges, a credential header other than `Authorization`/`Payment-Authorization`, and a Tempo offer with no chainId (the method drafts disagree on the default).
+- **Nothing allowed disappears from the budget.** Allowed money is held at once; `governed.fetch` reports the outcome with the server's `Payment-Receipt`; an unreported charge is booked as paid when its challenge expires.
+
+Tested against challenges produced by the official SDK, and with the real mppx client paying a local seller (its payment method a stand-in that builds the credential offline, so the suite needs no chain). SpendVeto decides; mppx and the server settle.
+
+## Out-of-band spend: caps that hold when the agent pays around the gate
+
+SpendVeto governs every payment that passes through it. An agent that holds its own key can also pay around it — a direct USDC transfer, another facilitator, a second MCP server with its own rail — and every in-gate call still passes while the budget is exceeded in aggregate. So the governed wallets (the agent wallet, every delegated child, any the policy names) are reconciled against their on-chain transfers (`server/outofband.js`):
+
+- A transfer SpendVeto recorded — same settlement hash, or the same payer, payee, amount and chain moments apart — is already counted.
+- One it never saw is **unmanaged spend**: booked against the same hourly budget and delegation caps, alerted, and with `"onDetect": "freeze"` the wallet is frozen until a human looks.
+- `POST /api/outofband/scan` (or the background poller) reads ERC-20 Transfer logs from each chain's RPC; `POST /api/outofband/transfers` takes deliveries from an indexer or address-activity webhook.
+- SpendVeto's own payments don't raise false alarms: testnet x402 payments record the facilitator's settlement hash, and a fresh unmatched transfer waits a grace period for its ledger record. Transfers to your own treasury (`ignoreTo`) are left alone.
+
+```json
+"outOfBand": { "enabled": true, "onDetect": "freeze", "chains": ["base-sepolia"], "ignoreTo": ["0xYourTreasury…"] }
+```
+
+This is detection, not prevention: an agent holding its own key can always sign something. The guarantee that nothing gets around the gate is custody — the keyless enforcement proxy below — or sellers that require governed-spend attestations.
 
 ## India: UPI mandate governance
 
@@ -52,9 +148,9 @@ npm run call -- summarize      # $0.02 — above the approval line: go approve/d
 npm run call -- translate      # $0.005
 ```
 
-`npm run verify` runs the whole thing headlessly — **382 end-to-end assertions**: catalog, forged-signature rejection, hard policy blocks, all three approval outcomes (approved / denied / timed-out-fails-closed), delegation caps including the n-level cascade, tool + chain scoping, multichain settlement (chain-scoped signatures, per-chain balances, chain allowlists), runaway-burst auto-freeze, the manual kill switch, signed-receipt verification, CSV export, per-tool/per-wallet/per-chain analytics, webhook alerts actually arriving at a live receiver, structured self-correcting denials, side-effect-free dry runs, TTL grant expiry, one-click approval links, the stats endpoint, AP2 mandate-chain drift detection, human-not-present authority, governed Bazaar discovery, ACP shared-payment-token scope, request-integrity binding (including a payload swapped after authorization), signed dispute evidence packs and their tamper detection, OpenTelemetry span export under an inbound traceparent, and a real MCP stdio JSON-RPC round trip.
+`npm run verify` runs the whole thing headlessly — **482 end-to-end assertions**: catalog, forged-signature rejection, hard policy blocks, all three approval outcomes (approved / denied / timed-out-fails-closed), delegation caps including the n-level cascade, tool + chain scoping, multichain settlement (chain-scoped signatures, per-chain balances, chain allowlists), runaway-burst auto-freeze, the manual kill switch, signed-receipt verification, CSV export, per-tool/per-wallet/per-chain analytics, webhook alerts actually arriving at a live receiver, structured self-correcting denials, side-effect-free dry runs, TTL grant expiry, one-click approval links, the stats endpoint, AP2 mandate-chain drift detection, human-not-present authority, governed Bazaar discovery, ACP shared-payment-token scope, request-integrity binding (including a payload swapped after authorization), signed dispute evidence packs and their tamper detection, OpenTelemetry span export under an inbound traceparent, governed-spend attestations verified offline by a seller (replay, payer binding, tampering), signed reputation feeds crossing organizations (trust, rollback, digest), policy-schema validation in the CLI and the GitHub Action, and a real MCP stdio JSON-RPC round trip.
 
-> **On the number:** a fresh clone runs **382** assertions. Three more exercise a real cross-project integration against [Basis](https://github.com/revanthrajeev/basis) and run only when `../prediction-copilot` is checked out beside this repo — the suite prints `(skipped: cross-project Basis integration test …)` when it isn't. Every published number is the 382 anyone can reproduce.
+> **On the number:** a fresh clone runs **482** assertions. Three more exercise a real cross-project integration against [Basis](https://github.com/revanthrajeev/basis) and run only when `../prediction-copilot` is checked out beside this repo — the suite prints `(skipped: cross-project Basis integration test …)` when it isn't. Every published number is the 482 anyone can reproduce.
 
 **Marketing site**: `npm run site` serves the deploy-ready landing page (Three.js hero, animated product walkthrough) at http://localhost:8403 — `site/` is fully static and self-contained, drop it on Vercel/Netlify as-is. Includes an **interactive playground** (`site/playground.html`) that runs the real policy-decision logic client-side — set a budget, fire agent spend, watch it pass/pause/block — and a **use-cases** page grounded in real 2026 agent-spend scenarios.
 
@@ -151,7 +247,9 @@ Three controls born from the July 2026 research round (see `launch/DEEP_RESEARCH
 
 ## One API, any rail (`rails/`)
 
-Every payment rail plugs in behind the same four-line contract — `{ id, name, status, pay({ tool, account, chain, baseUrl }) }` — and the governance pipeline never learns which rail settled. Two rails are live today (`x402-simulate`, `x402-live` — the latter facilitator-adaptive across every registry chain the facilitator supports); Google AP2, OpenAI ACP, and Stripe Machine Payments are **declared adapter slots** that refuse honestly (`not implemented yet — funded-roadmap slot`) instead of pretending. `GET /api/rails` serves the registry; the proxy advertises it in `/proxy/health`. This is the "Stripe for agent spending" shape without the money-transmitter license: one integration in front of every rail, governance above, settlement below.
+Every payment rail plugs in behind the same four-line contract — `{ id, name, status, pay({ tool, account, chain, baseUrl }) }` — and the governance pipeline never learns which rail settled. Two rails are live today (`x402-simulate`, `x402-live` — the latter facilitator-adaptive across every registry chain the facilitator supports); Google AP2, OpenAI ACP and Stripe/Tempo's Machine Payments Protocol are governed through their own evaluators (`/api/ap2/*`, `/api/acp/checkout`, `/api/mpp/evaluate`), while their settlement adapters are **declared slots** that refuse honestly (`not implemented yet — funded-roadmap slot`) instead of pretending. `GET /api/rails` serves the registry; the proxy advertises it in `/proxy/health`. This is the "Stripe for agent spending" shape without the money-transmitter license: one integration in front of every rail, governance above, settlement below.
+
+**Chain SDKs are optional** (`server/optional.js`). The live x402 rail settles on six chain families, and each brings its own SDK — together they were 480 of the 630 packages a clean install downloaded (Hedera's alone pulls in React Native). They are optional peer dependencies: the LLM guard, the policy engine, the simulate rail, cards, payouts, attestations and the MCP server never load them, and the live rail loads a family's packages when it settles there. `spendveto rails` shows what's installed and prints the command for the rest (`npm install spendveto @x402/core @x402/fetch @x402/express @x402/evm …` in your project); a clone's `npm install` brings every family. Without them a live payment is refused with `rail_package_missing` and that command, and testnet mode won't boot — tested on the `npm pack` output with every one absent.
 
 ## SDK, LangChain, and concurrency-safe caps
 
@@ -273,9 +371,27 @@ curl -sX POST localhost:8402/api/upto/settle -H 'Content-Type: application/json'
 
 `GET /api/upto` reports open ceilings, released headroom, and **utilisation** — how much of each resolved ceiling the seller actually took. A seller that always settles near its maximum is quoting a price it doesn't mean.
 
+## The `auth-capture` scheme: recourse, if someone holds the seller to it
+
+`exact` payments are final — the most common objection to agents paying over x402. The spec's `auth-capture` scheme (v1.1) adds a lifecycle: the agent authorizes a **maximum** into the canonical commerce-payments escrow, the seller `capture`s (repeatably, up to the hold), `void`s the rest or `refund`s later, and if the seller does nothing by the capture deadline the buyer can `reclaim` its own hold. That recourse only exists if something on the buyer's side checks the seller against the signed terms — `server/authcapture.js`:
+
+- **Refuses hostile routes before signing** — a non-canonical escrow, a token authorization pointed at the wrong collector, out-of-order deadlines, a hold longer than `policy.authCapture.maxHoldSeconds` (default 7 days), a refund window shorter than `policy.authCapture.minRefundWindowSeconds` (buyer protection as a policy knob), a fee range with no fee recipient, and a collect-only route that publishes sync capture (the spec's own warning: it escrows the funds, then can't capture or void them).
+- **Governs the maximum and holds it** — policy decides on the authorized maximum; the open escrow holds its uncaptured remainder against the hourly budget alongside `upto` ceilings (`GET /api/upto/holds/:address` now reports both).
+- **Checks every seller call** — `ac_over_capture`, `ac_capture_after_deadline`, `ac_already_charged`, `ac_over_charge`, `ac_over_refund`, `ac_refund_after_deadline`. Only captured money enters the spend record.
+- **Finds money left behind** — `GET /api/authcapture/reclaimable` lists holds past their capture deadline that only your own `reclaim` call can recover.
+
+```bash
+curl -sX POST localhost:8402/api/authcapture/authorize -H 'Content-Type: application/json' \
+  -d '{"address":"0xYourAgent…","requirements":{ "scheme":"auth-capture", "network":"eip155:84532", "amount":"250000", … }}'
+# → { "decision": "allow", "payment": { "id": "ac_…", "status": "held" }, "heldUSD": 0.25 }
+curl -sX POST localhost:8402/api/authcapture/ac_…/capture -H 'Content-Type: application/json' -d '{"amountUSD":0.1}'
+```
+
+It does not sign, relay or submit anything, and it does not yet read escrow state onchain — it is the buyer's ledger of the terms, checked on every event.
+
 ## Multi-chain: chain-aware governance, not a logo strip
 
-Fifteen chains are registered in `shared-config.js` across eight signature families (each with its canonical stablecoin address and an RPC), surfaced at `/api/chains`. The chain is a **governed dimension of every payment**, end to end:
+Twenty chains are registered in `shared-config.js` across eight signature families (each with its canonical stablecoin address, an RPC and — for EVM chains — the token's own EIP-712 domain, all re-checkable against the live chains with `npm run check-chains`), surfaced at `/api/chains`. Six settle live by default through the public x402 facilitator: Base Sepolia, Solana devnet, Aptos, Stellar, Hedera and XRPL testnets. The chain is a **governed dimension of every payment**, end to end:
 
 - **Chain-scoped signatures** — the chain rides inside the signed payment message, so an authorization created for Polygon can never settle against another chain's balance (tested: a polygon-signed authorization is rejected on arbitrum).
 - **Per-chain balances** — every `(wallet, chain)` pair has its own simulated USDC balance; paying on Polygon debits Polygon only.
@@ -320,7 +436,7 @@ Nothing is faked to look real — simulate mode verifies genuine signatures and 
 ## Files
 
 ```
-shared-config.js         tool catalog (id/path/price), 15-chain registry across eight signature families (USDC/RLUSD/USDM contracts, RPCs), mode, port
+shared-config.js         tool catalog (id/path/price), 20-chain registry across eight signature families (USDC/RLUSD/USDM contracts, RPCs), mode, port
 server/
   index.js                Express app: catalog, ledger, stats, analytics, CSV export, policy, approvals, delegations, freezes APIs
   simulate.js              per-tool 402 gate factory: real signature verify, replay protection, freeze refusal, signed receipts
@@ -337,6 +453,25 @@ server/
   integrity.js              request binding: is this the spend I allowed? (canonical digest, single-use)
   disputes.js               signed dispute evidence packs — the agent-chargeback defence file
   otel.js                   OTLP decision spans; adopts an inbound W3C traceparent, blocked ≠ ERROR
+  llmguard.js               the LLM spend guard: drop-in Anthropic/OpenAI-compatible budget gateway, loop freeze, holds
+  llm-pricing.js            provider usage → dollars (current Claude + OpenAI price sheets, exact-match, fail-safe unknowns)
+  cards.js                  card authorization governance: Stripe Issuing + Lithic ASA webhooks
+  payouts.js                governed fiat payouts: Stripe, RazorpayX (UPI/IMPS/NEFT/RTGS), PayPal, Modern Treasury (ACH/RTP/wire)
+  finops.js                 cost allocation by tag, unified cost report, FOCUS v1.4 export, Stripe Billing rebilling
+  authcapture.js            x402 auth-capture: vet escrow routes, hold the maximum, check the seller, reclaim watch
+  attestations.js           governed-spend attestations: mint after policy, verify offline (pure, viem-only)
+  reputation.js             federated counterparty reputation: reports, signed hash feeds, trusted import
+  policyspec.js             the policy-v1 validator: strict keys with did-you-mean, semantic checks
+  mpp.js                    MPP (Stripe + Tempo) offers: parse, price, MPP's own rules, holds, sessions, vouchers
+  optional.js               chain SDKs as optional peers: loadOptional(), the install command when one is missing
+  outofband.js              out-of-band spend: governed wallets' on-chain transfers reconciled against the ledger
+spec/
+  policy-v1.schema.json     the open policy standard (JSON Schema 2020-12), hosted at spendveto.com/schemas/
+integrations/             LangChain, OpenAI Agents, ElizaOS adapters, mppx.js (govern the MPP client) + seller-express.js (require governed agents)
+action.yml                GitHub Action: validate policy files in CI
+docs/NETWORK.md           the attestation, reputation-feed and policy formats, specified
+bin/
+  spendveto.mjs            the CLI: start · budget · status · observe/enforce · freeze/unfreeze · connect · mcp · validate
 client/
   wallet.js                parent keypair + delegated child wallets (pick by label)
   policy.js                the governance wedge: freezes, hard limits, approval threshold, cascading caps
@@ -350,14 +485,14 @@ mcp/
   server.js                MCP middleware: paid catalog + spendveto_status over stdio
 proxy/
   server.js                enforcement proxy: key custody, agents POST intents (:8404)
-dashboard/                the Console: 8 pages (overview, approvals, budgets, ledger, chains, analytics, trust, policy) with create/edit/freeze/apply controls
+dashboard/                the Console: 14 pages (overview, AI spend, costs, payouts, approvals, budgets, ledger, chains, analytics, trust, network, policy, agents, report) with create/edit/freeze/apply controls
 scripts/
   delegate.mjs              grant a capped budget (--parent for deeper levels, --tools for scope)
   gen-wallets.mjs           one-time testnet wallet generation
   policy.mjs                list/apply policy packs
   site.mjs                  serves the marketing site on :8403
   sdk-python/               Python client (pip install ./sdk-python), same surface as the npm SDK
-  verify.mjs                382 end-to-end assertions incl. MCP stdio round trip + multichain + auto-freeze
+  verify.mjs                482 end-to-end assertions incl. MCP stdio round trip + multichain + auto-freeze
 data/
   policy.json               editable spend rules incl. anomaly burst threshold + alertWebhookUrl
   policy-packs/             importable governance presets (cautious/standard/production)
@@ -371,8 +506,9 @@ RESEARCH_PROMPT.md        the deep-research prompt behind feature round 2
 ## Roadmap (what funding buys — see PITCH.md)
 
 - Hosted backend (Postgres) replacing JSON-file storage; orgs, SSO, audit exports
+- Hosted network services on top of the open formats: a directory of verified attestation issuers and curated reputation feeds (the protocol and the engine stay Apache-2.0)
 - Richer anomaly signals (price-drift, new-merchant, off-hours) + webhook/Slack alerts on freeze
-- Multi-rail adapters: Google AP2, Stripe MPP, Mastercard AP4M — the policy layer shouldn't care which rail settles
+- Settlement adapters: Google AP2, MPP, Mastercard AP4M — the policy layer shouldn't care which rail settles (AP2, ACP and MPP are already governed)
 - Mainnet settlement via the CDP facilitator (x402 v2 migration: **done**) — needs a funded wallet + CDP API key
 - Framework hooks: CrewAI middleware, deeper Claude Code integration; gate a real Sentient SDLC pipeline step (LangChain: **done**, see `integrations/langchain.js`)
 

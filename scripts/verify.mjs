@@ -5,15 +5,18 @@
 // signatures, per-chain balances, chain allowlists), runaway-burst auto-freeze
 // + the manual kill switch, the stats endpoint, and the MCP server over real
 // stdio JSON-RPC — no mocking.
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { createServer, request as httpRequest } from "node:http";
 import { verifyMessage } from "viem";
 import { generatePrivateKey, privateKeyToAccount } from "viem/accounts";
 import { setTimeout as sleep } from "node:timers/promises";
-import { writeFileSync, readFileSync, readdirSync, existsSync, unlinkSync } from "node:fs";
-import { fileURLToPath } from "node:url";
+import { writeFileSync, readFileSync, readdirSync, existsSync, unlinkSync, mkdirSync, symlinkSync, rmSync } from "node:fs";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { RAILS, getRail } from "../rails/index.js";
 import { createHmac } from "node:crypto";
+import { mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { checkPolicy } from "../client/policy.js";
 import { SpendVeto, SpendVetoDenialError } from "../sdk/index.js";
 import { evaluateUpiMandate } from "../server/upi.js";
@@ -24,12 +27,20 @@ import { evaluateAchDebit } from "../server/us-ach.js";
 import { createSpendVetoTools, createSpendVetoTool } from "../integrations/langchain.js";
 import { createSpendVetoFunctionTools } from "../integrations/openai-agents.js";
 import { createSpendVetoPlugin } from "../integrations/eliza.js";
+import express from "express";
+import { governedCall } from "../client/pay.js";
+import { verifyAttestation, mintAttestation } from "../server/attestations.js";
+import { verifyFeed, subjectHash, feedDigest, FEED_MESSAGE_PREFIX } from "../server/reputation.js";
+import { validatePolicy, unsupportedKeywords } from "../server/policyspec.js";
+import { requireGovernedAgent } from "../integrations/seller-express.js";
 
 const ROOT = fileURLToPath(new URL("..", import.meta.url));
 const PORT = 8402;
 const BASE = `http://localhost:${PORT}`;
 
 let failures = 0;
+let mppSeller = null;
+let oobRpc = null;
 let verifyStats = null;
 function check(label, ok, detail) {
   console.log(`${ok ? "PASS" : "FAIL"}  ${label}${detail ? ` — ${detail}` : ""}`);
@@ -109,7 +120,7 @@ class McpStdio {
 }
 
 // Fresh state for a deterministic run.
-for (const f of ["data/ledger.json", "data/balances.json", "data/delegations.json", "data/children.json", "data/freezes.json", "data/waitlist.json", "data/tools.json", "data/agents.json", "data/shadow-policy.json", "data/shadow-log.json", "data/api-keys.json", "data/consents.json", "data/upto.json"]) {
+for (const f of ["data/ledger.json", "data/balances.json", "data/delegations.json", "data/children.json", "data/freezes.json", "data/waitlist.json", "data/tools.json", "data/agents.json", "data/shadow-policy.json", "data/shadow-log.json", "data/api-keys.json", "data/consents.json", "data/upto.json", "data/authcapture.json", "data/cards.json", "data/payouts.json", "data/rebilling.json", "data/attestations.json", "data/reputation.json", "data/mpp.json", "data/outofband.json"]) {
   const p = `${ROOT}${f}`;
   if (existsSync(p)) unlinkSync(p);
 }
@@ -150,7 +161,41 @@ writeFileSync(`${ROOT}data/policy.json`, JSON.stringify(LOOSE_POLICY, null, 2));
 // value straight through while an explicit "" does not.
 const server = spawn("node", ["server/index.js"], {
   cwd: ROOT,
-  env: { ...process.env, SPENDVETO_MODE: "simulate", WORLD_APP_ID: "", WORLD_RP_ID: "", WORLD_RP_SIGNING_KEY: "" },
+  env: {
+    ...process.env,
+    SPENDVETO_MODE: "simulate",
+    WORLD_APP_ID: "",
+    WORLD_RP_ID: "",
+    WORLD_RP_SIGNING_KEY: "",
+    // LLM spend guard → a local mock provider (never a real model API), and a
+    // server-side team key that exists only in this test run.
+    SPENDVETO_ANTHROPIC_UPSTREAM: "http://localhost:8497",
+    SPENDVETO_OPENAI_UPSTREAM: "http://localhost:8497",
+    SPENDVETO_ANTHROPIC_KEY: "sk-ant-verify-server-only-key",
+    // Out-of-band detection reads Base Sepolia through a local JSON-RPC node
+    // (port 8384) that speaks the real wire format — never a public RPC.
+    SPENDVETO_RPC_BASE_SEPOLIA: "http://localhost:8384",
+    SPENDVETO_OPENAI_KEY: "",
+    // Card authorization webhooks (server/cards.js), with test-only secrets.
+    STRIPE_ISSUING_WEBHOOK_SECRET: "whsec_verify_stripe_secret",
+    LITHIC_ASA_SECRET: "whsec_" + Buffer.from("verify-lithic-asa-secret-key").toString("base64"),
+    SPENDVETO_DATA_DIR: "",
+    // Fiat payout providers + Stripe Billing → a local mock that speaks their
+    // documented formats (port 8496), with test-only credentials.
+    STRIPE_SECRET_KEY: "sk_test_verify_only",
+    STRIPE_API_BASE: "http://localhost:8496",
+    RAZORPAYX_KEY_ID: "rzp_test_verify",
+    RAZORPAYX_KEY_SECRET: "rzp_verify_secret",
+    RAZORPAYX_ACCOUNT_NUMBER: "7878780080316316",
+    RAZORPAY_API_BASE: "http://localhost:8496",
+    PAYPAL_CLIENT_ID: "paypal_verify_id",
+    PAYPAL_CLIENT_SECRET: "paypal_verify_secret",
+    PAYPAL_API_BASE: "http://localhost:8496",
+    MODERN_TREASURY_ORG_ID: "org_verify",
+    MODERN_TREASURY_API_KEY: "mt_verify_key",
+    MODERN_TREASURY_ORIGINATING_ACCOUNT_ID: "0b0b0b0b-0000-4000-8000-000000000000",
+    MODERN_TREASURY_API_BASE: "http://localhost:8496",
+  },
   stdio: ["ignore", "pipe", "pipe"],
 });
 let serverOutput = "";
@@ -667,8 +712,9 @@ try {
   // --- Chains + waitlist: the hosted-platform funnel ---
   const { chains } = await fetch(`${BASE}/api/chains`).then((r) => r.json());
   check(
-    "chain registry lists 15 chains across eight signature families, Base Sepolia live",
-    chains.length === 15 && chains.find((c) => c.id === "base-sepolia")?.status === "live",
+    "chain registry lists 20 chains across eight signature families, six settling live by default",
+    chains.length === 20 && chains.find((c) => c.id === "base-sepolia")?.status === "live" &&
+      chains.filter((c) => c.status === "live").map((c) => c.id).sort().join(",") === "aptos-testnet,base-sepolia,hedera-testnet,solana-devnet,stellar-testnet,xrpl-testnet",
     chains.map((c) => c.id).join(", ")
   );
   check(
@@ -714,10 +760,41 @@ try {
     JSON.stringify(FALLBACK_CHAINS.map((c) => c.id).sort()) === JSON.stringify(chains.map((c) => c.id).sort()),
     `fallback=${FALLBACK_CHAINS.map((c) => c.id).join(",")}`
   );
+  // Until v0.26.0 this assertion pinned XRPL *mainnet* to "xrpl:1" — which
+  // @x402/xrpl defines as the TESTNET (mainnet is xrpl:0). The registry was
+  // wrong and this check enshrined it. Now both ids, and each network's RLUSD
+  // issuer, are read from the package itself rather than restated here.
+  const xrplPkg = await import("@x402/xrpl");
+  const xrplMain = chains.find((c) => c.id === "xrpl");
+  const xrplTest = chains.find((c) => c.id === "xrpl-testnet");
   check(
-    "XRPL is flagged as settling RLUSD on mainnet, not USDC on a testnet — the one chain here where that distinction is a safety property, not trivia",
-    chains.find((c) => c.id === "xrpl")?.stablecoin === "RLUSD" && chains.find((c) => c.id === "xrpl")?.caip2 === "xrpl:1",
-    JSON.stringify(chains.find((c) => c.id === "xrpl"))
+    "XRPL network ids and RLUSD issuers come from @x402/xrpl itself — mainnet xrpl:0 behind its own opt-in, testnet xrpl:1, never one network's issuer under the other's id",
+    xrplMain?.caip2 === xrplPkg.XRPL_MAINNET && xrplMain?.usdc === xrplPkg.RLUSD_MAINNET_ISSUER && xrplMain?.stablecoin === "RLUSD" && xrplMain?.status === "ready" && xrplMain?.mainnetOptIn === "SERVER_PAYOUT_ADDRESS_XRPL_MAINNET" &&
+      xrplTest?.caip2 === xrplPkg.XRPL_TESTNET && xrplTest?.usdc === xrplPkg.RLUSD_TESTNET_ISSUER && xrplTest?.status === "live",
+    JSON.stringify({ main: [xrplMain?.caip2, xrplMain?.usdc], test: [xrplTest?.caip2, xrplTest?.usdc] })
+  );
+  // Registry stablecoins vs x402's own default-asset table, for every EVM
+  // chain the installed @x402/evm covers — a typo'd token address here would
+  // price a chain in a contract nobody settles. (Live chain ids, EIP-3009
+  // support and EIP-712 domains are re-checked against RPC by
+  // `npm run check-chains`, which needs the network and so isn't in here.)
+  const { getDefaultAsset } = await import("@x402/evm");
+  const evmCovered = chains.filter((c) => !c.family).map((c) => { try { return [c, getDefaultAsset(c.caip2)]; } catch { return null; } }).filter(Boolean);
+  // @x402/evm ≥2.23 returns { asset, name, version }; older tables used `address`.
+  const assetAddr = (a) => a.asset ?? a.address;
+  check(
+    "every EVM chain x402's own default-asset table covers matches it exactly — stablecoin address AND EIP-712 domain (11 of 12; Optimism isn't in the table)",
+    evmCovered.length >= 11 && evmCovered.every(([c, a]) => assetAddr(a) === c.usdc && a.name === c.eip712?.name && a.version === c.eip712?.version) &&
+      ["monad", "celo", "sei", "stable"].every((id) => evmCovered.some(([c]) => c.id === id)),
+    evmCovered.map(([c, a]) => `${c.id}:${assetAddr(a) === c.usdc && a.name === c.eip712?.name ? "ok" : `${assetAddr(a)}/${a.name}`}`).join(" ")
+  );
+  const newMains = ["monad", "celo", "sei", "stable"].map((id) => chains.find((c) => c.id === id));
+  check(
+    "Monad, Celo, Sei and Stable are registered at their real chain ids, settlement-ready rather than claimed live, with Stable labelled as USDT0 not USDC",
+    newMains.every(Boolean) && newMains.map((c) => c.caip2).join(",") === "eip155:143,eip155:42220,eip155:1329,eip155:988" &&
+      newMains.every((c) => c.status === "ready" && parseInt(c.chainIdHex, 16) === Number(c.caip2.split(":")[1])) &&
+      newMains.find((c) => c.id === "stable").stablecoin === "USDT0" && newMains.filter((c) => c.id !== "stable").every((c) => !c.stablecoin),
+    newMains.map((c) => `${c?.id}:${c?.caip2}:${c?.chainIdHex}`).join(" ")
   );
   const arc = chains.find((c) => c.id === "arc-testnet");
   check(
@@ -2557,6 +2634,1343 @@ try {
     oaOutput.slice(0, 60)
   );
 
+  // --- x402 `auth-capture`: refuse hostile routes, govern the maximum, hold the escrow, check the seller ---
+  // The scheme (x402 spec v1.1; TS SDK merged 2026-10-06) gives a payment a
+  // lifecycle — authorize into the commerce-payments escrow, then capture /
+  // void / refund driven by the seller, and reclaim by the buyer after the
+  // capture deadline. server/authcapture.js is the buyer's side of it.
+  writeFileSync(`${ROOT}data/policy.json`, JSON.stringify({ ...LOOSE_POLICY, maxPerCallUSD: 1, maxPerHourUSD: 1, maxCallsPerHour: 100, requireApprovalAboveUSD: 5, authCapture: { maxHoldSeconds: 86400, minRefundWindowSeconds: 3600 } }, null, 2));
+  const acPost = (path, body) =>
+    fetch(`${BASE}/api/authcapture/${path}`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) }).then(async (r) => ({ status: r.status, body: await r.json() }));
+  const nowS = () => Math.floor(Date.now() / 1000);
+  const AC_ZERO = "0x0000000000000000000000000000000000000000";
+  const acOperator = privateKeyToAccount(generatePrivateKey()).address;
+  const acPayee = privateKeyToAccount(generatePrivateKey()).address;
+  const acRoute = (extra = {}, top = {}) => ({
+    scheme: "auth-capture", network: "eip155:84532", amount: "250000", asset: "0x036CbD53842c5426634e7929541eC2318f3dCF7e", payTo: acPayee, maxTimeoutSeconds: 60,
+    extra: { name: "USDC", version: "2", captureAuthorizer: acOperator, receiverAuthorizer: acOperator, captureDeadline: nowS() + 3600, refundDeadline: nowS() + 3600 + 86400, feeRecipient: AC_ZERO, minFeeBps: 0, maxFeeBps: 0, ...extra },
+    ...top,
+  });
+  const acEval = (requirements, more = {}) => acPost("evaluate", { address: privateKeyToAccount(generatePrivateKey()).address, requirements, ...more });
+
+  // The canonical escrow/collector set is restated in server/authcapture.js
+  // from the spec; pin it to the addresses @x402/evm itself ships, so a
+  // redeploy upstream can't leave this gate approving an escrow nobody uses.
+  const evmPkg = await import("@x402/evm");
+  const { ESCROW_DEPLOYMENTS } = await import("../server/authcapture.js");
+  check(
+    "auth-capture's canonical escrows and collectors are exactly the ones @x402/evm ships — v1.1 escrow, EIP-3009, Permit2 and refund collectors, and the v1.0 escrow and collector",
+    ESCROW_DEPLOYMENTS["v1.1"].escrow === evmPkg.AUTH_CAPTURE_ESCROW_V1_1_ADDRESS && ESCROW_DEPLOYMENTS["v1.1"].eip3009Collector === evmPkg.EIP3009_TOKEN_COLLECTOR_ADDRESS &&
+      ESCROW_DEPLOYMENTS["v1.1"].permit2Collector === evmPkg.PERMIT2_TOKEN_COLLECTOR_ADDRESS && ESCROW_DEPLOYMENTS["v1.1"].operatorRefundCollector === evmPkg.OPERATOR_REFUND_COLLECTOR_ADDRESS &&
+      ESCROW_DEPLOYMENTS["v1.0"].escrow === evmPkg.AUTH_CAPTURE_ESCROW_V1_0_ADDRESS && ESCROW_DEPLOYMENTS["v1.0"].eip3009Collector === evmPkg.EIP3009_TOKEN_COLLECTOR_V1_0_ADDRESS,
+    JSON.stringify({ v11: evmPkg.AUTH_CAPTURE_ESCROW_V1_1_ADDRESS, v10: evmPkg.AUTH_CAPTURE_ESCROW_V1_0_ADDRESS })
+  );
+  const acSmall = await acEval(acRoute());
+  const acBig = await acEval(acRoute({}, { amount: "1500000" }));
+  check(
+    "an auth-capture route is governed on the maximum it authorizes — $0.25 allowed, $1.50 refused by the per-call cap before anything is signed",
+    acSmall.status === 200 && acSmall.body.evaluation?.maxUSD === 0.25 && acSmall.body.evaluation?.escrowVersion === "v1.1" &&
+      acBig.status === 403 && acBig.body.stage === "policy" && acBig.body.code === "per_call_cap",
+    `small=${acSmall.status}/${acSmall.body.evaluation?.maxUSD} big=${acBig.status}/${acBig.body.code}`
+  );
+  const acFakeEscrow = await acEval(acRoute({ authCaptureEscrow: privateKeyToAccount(generatePrivateKey()).address }));
+  const acWrongCollector = await acEval(acRoute(), { authorizationTo: "0x0E3dF9510de65469C4518D7843919c0b8C7A7757" });
+  const acRightCollector = await acEval(acRoute(), { authorizationTo: "0x8612dfdc421f80336cd14E8EF9cb1E765dB5ab88" });
+  check(
+    "refuses to sign into a non-canonical escrow, or a token authorization pointed at another deployment's collector — the matching v1.1 collector passes",
+    acFakeEscrow.body.code === "ac_escrow_not_canonical" && acWrongCollector.body.code === "ac_collector_mismatch" && acRightCollector.status === 200,
+    `${acFakeEscrow.body.code} ${acWrongCollector.body.code} ${acRightCollector.status}`
+  );
+  const acSolana = await acEval(acRoute({}, { network: "solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1" }));
+  const acOddToken = await acEval(acRoute({}, { asset: privateKeyToAccount(generatePrivateKey()).address }));
+  check(
+    "auth-capture is priced only on a registered EVM network in that chain's registry stablecoin — a non-EVM network or an unknown token is refused",
+    acSolana.body.code === "ac_network_unsupported" && acOddToken.body.code === "ac_asset_mismatch",
+    `${acSolana.body.code} ${acOddToken.body.code}`
+  );
+  const acBackwards = await acEval(acRoute({ captureDeadline: nowS() + 7200, refundDeadline: nowS() + 3600 }));
+  const acLongHold = await acEval(acRoute({ captureDeadline: nowS() + 2 * 86400, refundDeadline: nowS() + 3 * 86400 }));
+  const acShortRefund = await acEval(acRoute({ captureDeadline: nowS() + 3600, refundDeadline: nowS() + 3600 + 60 }));
+  check(
+    "deadlines are the buyer's terms: out-of-order deadlines, a hold past policy.authCapture.maxHoldSeconds, and a refund window under minRefundWindowSeconds are each refused",
+    acBackwards.body.code === "ac_deadline_order" && acLongHold.body.code === "ac_hold_too_long" && acShortRefund.body.code === "ac_refund_window_short",
+    `${acBackwards.body.code} ${acLongHold.body.code} ${acShortRefund.body.code}`
+  );
+  const acStrands = await acEval(acRoute({ operatorType: "custom", receiverAuthorizer: undefined }));
+  const acDeferred = await acEval(acRoute({ operatorType: "custom", receiverAuthorizer: undefined, captureMode: "deferred" }));
+  check(
+    "a collect-only route that defaults to sync capture is refused — the spec says it escrows the funds and strands them until the deadline; the same route publishing deferred capture passes",
+    acStrands.body.code === "ac_route_strands_funds" && acDeferred.status === 200,
+    `${acStrands.body.code} deferred=${acDeferred.status}`
+  );
+  const acOpenFee = await acEval(acRoute({ maxFeeBps: 100 }));
+  const acBoundFee = await acEval(acRoute({ minFeeBps: 100, maxFeeBps: 100, feeRecipient: acOperator }));
+  check(
+    "a fee range granted with no fee recipient is refused (the submitter could send the fee anywhere); an agreed fixed fee to a named recipient passes",
+    acOpenFee.body.code === "ac_fee_receiver_unbound" && acBoundFee.status === 200,
+    `${acOpenFee.body.code} bound=${acBoundFee.status}`
+  );
+
+  const acWallet = privateKeyToAccount(generatePrivateKey()).address;
+  const acHeld = await acPost("authorize", { address: acWallet, requirements: acRoute(), toolId: "review" });
+  const acHolds = await fetch(`${BASE}/api/upto/holds/${acWallet}`).then((r) => r.json());
+  const acLedger0 = await fetch(`${BASE}/api/ledger`).then((r) => r.json());
+  check(
+    "an authorized escrow holds its maximum against the hourly budget and books no spend until the seller captures",
+    acHeld.status === 201 && acHeld.body.payment?.status === "held" && acHolds.authCaptureUSD === 0.25 && acHolds.heldUSD >= 0.25 &&
+      !acLedger0.entries.some((e) => e.address === acWallet && e.status === "paid"),
+    `status=${acHeld.status} held=${JSON.stringify(acHolds)}`
+  );
+  const acSqueezed = await acPost("authorize", { address: acWallet, requirements: acRoute({}, { amount: "800000" }), toolId: "review" });
+  check(
+    "the open escrow squeezes the budget: a second $0.80 maximum under a $1/hour cap is refused because $0.25 is already held",
+    acSqueezed.status === 403 && acSqueezed.body.code === "hourly_usd_cap" && /auth-capture escrows/.test(acSqueezed.body.reason || ""),
+    `${acSqueezed.status} ${acSqueezed.body.code}`
+  );
+  const acId = acHeld.body.payment.id;
+  const acCap1 = await acPost(`${acId}/capture`, { amountUSD: 0.1 });
+  const acCapOver = await acPost(`${acId}/capture`, { amountUSD: 0.2 });
+  const acLedger1 = await fetch(`${BASE}/api/ledger`).then((r) => r.json());
+  const acPaid = acLedger1.entries.filter((e) => e.address === acWallet && e.status === "paid");
+  check(
+    "a partial capture books exactly what was captured as spend; a capture past the remaining hold is refused as over-capture",
+    acCap1.status === 200 && acCap1.body.remainingUSD === 0.15 && acCapOver.status === 409 && acCapOver.body.code === "ac_over_capture" &&
+      acPaid.length === 1 && acPaid[0].amount === 0.1 && acPaid[0].mode === "auth-capture" && acPaid[0].maxUSD === 0.25,
+    `cap=${acCap1.body.remainingUSD} over=${acCapOver.body.code} paid=${JSON.stringify(acPaid.map((e) => e.amount))}`
+  );
+  const acRefund = await acPost(`${acId}/refund`, { amountUSD: 0.05 });
+  const acRefundOver = await acPost(`${acId}/refund`, { amountUSD: 0.1 });
+  check(
+    "refunds return captured money and never more: $0.05 of $0.10 captured is refundable, a further $0.10 is refused",
+    acRefund.status === 200 && acRefund.body.refundableUSD === 0.05 && acRefundOver.body.code === "ac_over_refund",
+    `${acRefund.body.refundableUSD} ${acRefundOver.body.code}`
+  );
+  const acVoid = await acPost(`${acId}/void`, {});
+  const acHoldsAfterVoid = await fetch(`${BASE}/api/upto/holds/${acWallet}`).then((r) => r.json());
+  const acVoidAgain = await acPost(`${acId}/void`, {});
+  check(
+    "void releases exactly the uncaptured remainder back to the budget, and there is nothing left to void a second time",
+    acVoid.status === 200 && acVoid.body.releasedUSD === 0.15 && acHoldsAfterVoid.authCaptureUSD === 0 && acVoidAgain.body.code === "ac_not_held",
+    `released=${acVoid.body.releasedUSD} held=${acHoldsAfterVoid.authCaptureUSD} again=${acVoidAgain.body.code}`
+  );
+  const acAuthWallet = privateKeyToAccount(generatePrivateKey()).address;
+  const acAuthFlow = await acPost("authorize", { address: acAuthWallet, requirements: acRoute({ paymentFlow: "authorization" }) });
+  const acCharge = await acPost(`${acAuthFlow.body.payment?.id}/charge`, { amountUSD: 0.2 });
+  const acCharge2 = await acPost(`${acAuthFlow.body.payment?.id}/charge`, { amountUSD: 0.01 });
+  const acAuthFlow2 = await acPost("authorize", { address: acAuthWallet, requirements: acRoute({ paymentFlow: "authorization" }) });
+  const acOverCharge = await acPost(`${acAuthFlow2.body.payment?.id}/charge`, { amountUSD: 0.3 });
+  check(
+    "the authorization flow charges once and never above the maximum: $0.20 of $0.25 charges and releases $0.05, a second charge is a replay, $0.30 is over-charge",
+    acAuthFlow.body.payment?.status === "authorized" && acCharge.body.releasedUSD === 0.05 && acCharge2.body.code === "ac_already_charged" && acOverCharge.body.code === "ac_over_charge",
+    `${acCharge.body.releasedUSD} ${acCharge2.body.code} ${acOverCharge.body.code}`
+  );
+  const acStrandWallet = privateKeyToAccount(generatePrivateKey()).address;
+  const acShort = await acPost("authorize", { address: acStrandWallet, requirements: acRoute({ captureDeadline: nowS() + 2, refundDeadline: nowS() + 2 + 3600 }) });
+  await sleep(3200);
+  const acLateCapture = await acPost(`${acShort.body.payment?.id}/capture`, { amountUSD: 0.1 });
+  const acReclaimable = await fetch(`${BASE}/api/authcapture/reclaimable?address=${acStrandWallet}`).then((r) => r.json());
+  const acStrandHolds = await fetch(`${BASE}/api/upto/holds/${acStrandWallet}`).then((r) => r.json());
+  const acReclaimed = await acPost(`${acShort.body.payment?.id}/reclaimed`, { txHash: "0xabc" });
+  const acReclaimableAfter = await fetch(`${BASE}/api/authcapture/reclaimable?address=${acStrandWallet}`).then((r) => r.json());
+  check(
+    "a hold the seller never captured by its deadline stops holding budget, can no longer be captured, and surfaces as money the buyer can reclaim — until reclaimed",
+    acShort.status === 201 && acLateCapture.body.code === "ac_capture_after_deadline" && acStrandHolds.authCaptureUSD === 0 &&
+      acReclaimable.reclaimableUSD === 0.25 && acReclaimable.count === 1 && acReclaimed.body.recoveredUSD === 0.25 && acReclaimableAfter.reclaimableUSD === 0,
+    `late=${acLateCapture.body.code} reclaimable=${acReclaimable.reclaimableUSD} holds=${acStrandHolds.authCaptureUSD} after=${acReclaimableAfter.reclaimableUSD}`
+  );
+
+  // --- LLM spend guard: a budget gateway any agent uses by changing one env var ---
+  // server/llmguard.js on the main server's own port. The provider behind it
+  // is a local mock speaking the real wire formats (Anthropic Messages JSON +
+  // SSE, OpenAI Chat Completions + Responses SSE) — never a real model API.
+  const llmSeen = [];
+  const LLM_USAGE_A = { input_tokens: 1200, cache_read_input_tokens: 3000, cache_creation_input_tokens: 500, output_tokens: 0 };
+  const llmMock = createServer((req, res) => {
+    let body = "";
+    req.on("data", (d) => (body += d));
+    req.on("end", async () => {
+      let json = {};
+      try { json = JSON.parse(body || "{}"); } catch {}
+      llmSeen.push({ url: req.url, headers: req.headers, body, json });
+      if (req.url.startsWith("/v1/messages/count_tokens")) { res.writeHead(200, { "content-type": "application/json" }); return res.end(JSON.stringify({ input_tokens: 42 })); }
+      if (req.url.startsWith("/v1/messages")) {
+        if (json.model === "fail-model") { res.writeHead(529, { "content-type": "application/json", "x-should-retry": "true" }); return res.end(JSON.stringify({ type: "error", error: { type: "overloaded_error", message: "Overloaded" } })); }
+        if (json.model === "slow-model") await sleep(1500);
+        if (json.stream) {
+          res.writeHead(200, { "content-type": "text/event-stream", "anthropic-ratelimit-unified-status": "allowed" });
+          const ev = (type, data) => res.write(`event: ${type}\ndata: ${JSON.stringify({ type, ...data })}\n\n`);
+          ev("message_start", { message: { id: "msg_1", type: "message", role: "assistant", model: json.model, usage: { ...LLM_USAGE_A, output_tokens: 1 } } });
+          ev("ping", {});
+          ev("content_block_start", { index: 0, content_block: { type: "text", text: "" } });
+          ev("content_block_delta", { index: 0, delta: { type: "text_delta", text: "Hello" } });
+          ev("content_block_stop", { index: 0 });
+          ev("message_delta", { delta: { stop_reason: "end_turn" }, usage: { output_tokens: 800 } });
+          ev("message_stop", {});
+          return res.end();
+        }
+        res.writeHead(200, { "content-type": "application/json" });
+        return res.end(JSON.stringify({ id: "msg_2", type: "message", role: "assistant", model: json.model, content: [{ type: "text", text: "Hi" }], stop_reason: "end_turn", usage: { ...LLM_USAGE_A, output_tokens: 400 } }));
+      }
+      if (req.url.startsWith("/v1/chat/completions")) {
+        const usage = { prompt_tokens: 2000, completion_tokens: 500, prompt_tokens_details: { cached_tokens: 1000 } };
+        res.writeHead(200, { "content-type": "text/event-stream" });
+        res.write(`data: ${JSON.stringify({ id: "c1", choices: [{ index: 0, delta: { content: "Hi" } }] })}\n\n`);
+        if (json.stream_options?.include_usage) res.write(`data: ${JSON.stringify({ id: "c1", choices: [], usage })}\n\n`);
+        res.write("data: [DONE]\n\n");
+        return res.end();
+      }
+      if (req.url.startsWith("/v1/responses")) {
+        res.writeHead(200, { "content-type": "text/event-stream" });
+        res.write(`event: response.completed\ndata: ${JSON.stringify({ type: "response.completed", response: { id: "r1", usage: { input_tokens: 3000, output_tokens: 700, input_tokens_details: { cached_tokens: 2000 } } } })}\n\n`);
+        return res.end();
+      }
+      res.writeHead(404);
+      res.end();
+    });
+  });
+  llmMock.listen(8497);
+  // Generous limits for the plumbing checks; each enforcement check below
+  // tightens exactly the limit it tests.
+  const LLM_BASE_POLICY = { ...LOOSE_POLICY, llm: { dailyBudgetUSD: 100, hourlyBudgetUSD: 100, maxRequestUSD: 50, maxRequestsPerMinute: 1000, loop: { enabled: true, threshold: 3, windowSeconds: 120 } } };
+  writeFileSync(`${ROOT}data/policy.json`, JSON.stringify(LLM_BASE_POLICY, null, 2));
+  const llmLedger = async () => (await fetch(`${BASE}/api/ledger`).then((r) => r.json())).entries.filter((e) => e.category === "llm");
+  const anthropicCall = (body, extra = {}, path = "/v1/messages?beta=true") =>
+    fetch(`${BASE}${path}`, { method: "POST", headers: { "content-type": "application/json", "x-api-key": "sk-ant-client-key-never-stored", "anthropic-version": "2023-06-01", "anthropic-beta": "context-1m-2025-08-07", "x-claude-code-session-id": "verify-session-1", ...extra }, body: JSON.stringify(body) });
+
+  const streamBody = { model: "claude-opus-5-5", max_tokens: 1024, stream: true, messages: [{ role: "user", content: "hello" }] };
+  const sres = await anthropicCall(streamBody, { "x-spendveto-agent": "stream-bot" });
+  const sText = await sres.text();
+  const sFwd = llmSeen[llmSeen.length - 1];
+  check(
+    "the guard relays an Anthropic stream event by event (pings included) and forwards the body byte-for-byte with every anthropic-* header and the ?beta=true query intact",
+    sres.status === 200 && sres.headers.get("content-type")?.includes("text/event-stream") && (sText.match(/event:/g) || []).length === 7 && sText.includes("event: ping") &&
+      sres.headers.get("anthropic-ratelimit-unified-status") === "allowed" && sFwd.url === "/v1/messages?beta=true" && sFwd.body === JSON.stringify(streamBody) &&
+      sFwd.headers["anthropic-beta"] === "context-1m-2025-08-07" && sFwd.headers["x-api-key"] === "sk-ant-client-key-never-stored",
+    `status=${sres.status} events=${(sText.match(/event:/g) || []).length} url=${sFwd.url} identical=${sFwd.body === JSON.stringify(streamBody)}`
+  );
+  await sleep(150);
+  const sEntry = (await llmLedger()).find((e) => e.agent === "stream-bot");
+  check(
+    "the cost booked is the provider's own usage at the price sheet — input, cache reads, 5-minute cache writes and output on Opus 5.5 = $0.0239, tagged with its source and session",
+    sEntry?.status === "paid" && sEntry.amount === 0.0239 && /anthropic price sheet/.test(sEntry.priceSource || "") && sEntry.session === "verify-session-1" && sEntry.usage?.cacheWrite5m === 500,
+    JSON.stringify({ amount: sEntry?.amount, src: sEntry?.priceSource, session: sEntry?.session })
+  );
+  const jres = await anthropicCall({ model: "claude-opus-5-5", max_tokens: 512, messages: [{ role: "user", content: "hi" }] }, { "x-spendveto-agent": "json-bot" });
+  const jBody = await jres.json();
+  check(
+    "a non-streamed response carries its booked cost back to the caller in x-spendveto-cost-usd",
+    jres.status === 200 && jres.headers.get("x-spendveto-cost-usd") === "0.0159" && jBody.content?.[0]?.text === "Hi",
+    `cost=${jres.headers.get("x-spendveto-cost-usd")}`
+  );
+  const cres = await fetch(`${BASE}/v1/chat/completions`, { method: "POST", headers: { "content-type": "application/json", authorization: "Bearer sk-openai-client-never-stored", "x-spendveto-agent": "openai-bot" }, body: JSON.stringify({ model: "gpt-5", stream: true, messages: [{ role: "user", content: "x" }] }) });
+  const cText = await cres.text();
+  const cFwd = llmSeen[llmSeen.length - 1];
+  const rres = await fetch(`${BASE}/v1/responses`, { method: "POST", headers: { "content-type": "application/json", authorization: "Bearer sk-openai-client-never-stored", "x-spendveto-agent": "openai-bot" }, body: JSON.stringify({ model: "gpt-5.1", stream: true, input: "x" }) });
+  await rres.text();
+  await sleep(150);
+  const oEntries = (await llmLedger()).filter((e) => e.agent === "openai-bot");
+  check(
+    "OpenAI streams are metered too: the guard asks for include_usage, and books gpt-5 Chat Completions ($0.006375) and gpt-5.1 Responses ($0.0085) from the reported usage, cached tokens at the cached rate",
+    cFwd.json.stream_options?.include_usage === true && cText.includes('"usage"') && oEntries.map((e) => e.amount).join(",") === "0.006375,0.0085",
+    `include_usage=${cFwd.json.stream_options?.include_usage} amounts=${oEntries.map((e) => e.amount).join(",")}`
+  );
+  const ledgerDump = JSON.stringify(await fetch(`${BASE}/api/ledger`).then((r) => r.json()));
+  check(
+    "the caller's provider key passes through to the provider and is never written anywhere SpendVeto keeps",
+    !ledgerDump.includes("sk-ant-client-key-never-stored") && !ledgerDump.includes("sk-openai-client-never-stored"),
+    "ledger scanned for both client keys"
+  );
+  const llmBefore = llmSeen.length;
+  const ctRes = await fetch(`${BASE}/v1/messages/count_tokens`, { method: "POST", headers: { "content-type": "application/json", "x-api-key": "k", "anthropic-version": "2023-06-01" }, body: JSON.stringify({ model: "claude-opus-5-5", messages: [] }) });
+  const ctBody = await ctRes.json();
+  const batchRes = await fetch(`${BASE}/v1/messages/batches`, { method: "POST", headers: { "content-type": "application/json", "x-api-key": "k", "anthropic-version": "2023-06-01" }, body: JSON.stringify({ requests: [] }) });
+  const batchBody = await batchRes.json();
+  check(
+    "free endpoints (count_tokens) pass straight through; an endpoint the guard can't meter (Message Batches) is refused rather than passed through ungoverned",
+    ctRes.status === 200 && ctBody.input_tokens === 42 && batchRes.status === 501 && batchBody.spendveto?.code === "llm_endpoint_not_governed" && llmSeen.length === llmBefore + 1,
+    `count_tokens=${ctRes.status} batches=${batchRes.status} upstreamCalls=${llmSeen.length - llmBefore}`
+  );
+  const failRes = await anthropicCall({ model: "fail-model", max_tokens: 10, messages: [{ role: "user", content: "x" }] }, { "x-spendveto-agent": "fail-bot" });
+  const failText = await failRes.text();
+  await sleep(100);
+  const failEntry = (await llmLedger()).find((e) => e.agent === "fail-bot");
+  check(
+    "an upstream error reaches the client unmodified — status, body and x-should-retry — and books $0 as failed",
+    failRes.status === 529 && failRes.headers.get("x-should-retry") === "true" && failText === JSON.stringify({ type: "error", error: { type: "overloaded_error", message: "Overloaded" } }) && failEntry?.status === "failed" && failEntry.amount === 0,
+    `status=${failRes.status} entry=${failEntry?.status}:${failEntry?.amount}`
+  );
+
+  // Enforcement.
+  writeFileSync(`${ROOT}data/policy.json`, JSON.stringify({ ...LLM_BASE_POLICY, llm: { ...LLM_BASE_POLICY.llm, dailyBudgetUSD: 0.04 } }, null, 2));
+  const budgetStatuses = [];
+  let budgetDenial = null;
+  const budgetUpstreamBefore = llmSeen.length;
+  for (let i = 0; i < 4; i++) {
+    const r = await anthropicCall({ model: "claude-opus-5-5", max_tokens: 100, messages: [{ role: "user", content: `q${i}` }] }, { "x-spendveto-agent": "budget-bot" });
+    budgetStatuses.push(r.status);
+    if (r.status !== 200) budgetDenial = { body: await r.json(), retry: r.headers.get("x-should-retry") };
+    else await r.text();
+    await sleep(60);
+  }
+  check(
+    "an exhausted daily budget refuses the next request BEFORE it reaches the provider — 402, x-should-retry: false, a machine-readable code",
+    budgetStatuses.join(",") === "200,200,200,402" && llmSeen.length - budgetUpstreamBefore === 3 && budgetDenial?.body?.spendveto?.code === "llm_daily_budget" && budgetDenial.retry === "false" && budgetDenial.body.type === "error",
+    `statuses=${budgetStatuses.join(",")} upstream=${llmSeen.length - budgetUpstreamBefore} code=${budgetDenial?.body?.spendveto?.code}`
+  );
+  writeFileSync(`${ROOT}data/policy.json`, JSON.stringify({ ...LLM_BASE_POLICY, llm: { ...LLM_BASE_POLICY.llm, maxRequestUSD: 1 } }, null, 2));
+  const capRes = await anthropicCall({ model: "claude-fable-5-1", max_tokens: 64000, messages: [{ role: "user", content: "x".repeat(60000) }] }, { "x-spendveto-agent": "cap-bot" });
+  const capBody = await capRes.json();
+  check(
+    "a single request whose worst case exceeds maxRequestUSD is refused on its estimate — Fable 5.1 with 60K characters of context and 64K max_tokens",
+    capRes.status === 402 && capBody.spendveto?.code === "llm_request_cap",
+    `${capRes.status} ${capBody.spendveto?.code}`
+  );
+  writeFileSync(`${ROOT}data/policy.json`, JSON.stringify(LLM_BASE_POLICY, null, 2));
+  const loopTurn = (n) => [
+    { role: "user", content: "make the tests pass" },
+    { role: "assistant", content: [{ type: "tool_use", id: `toolu_${n}`, name: "bash", input: { command: "npm test" } }] },
+    { role: "user", content: [{ type: "tool_result", tool_use_id: `toolu_${n}`, content: "1 failing", ...(n % 2 ? { cache_control: { type: "ephemeral" } } : {}) }] },
+  ];
+  const loopCodes = [];
+  for (let i = 0; i < 5; i++) {
+    const r = await anthropicCall({ model: "claude-haiku-4-5", max_tokens: 50, messages: loopTurn(i) }, { "x-spendveto-agent": "loop-bot" });
+    loopCodes.push(r.status === 200 ? (await r.text(), "ok") : (await r.json()).spendveto?.code);
+    await sleep(60);
+  }
+  const loopFreezes = (await fetch(`${BASE}/api/freezes`).then((r) => r.json())).freezes.filter((f) => f.source === "llm-loop" && !f.unfrozen);
+  check(
+    "an agent loop — the same tool call returning the same result — freezes the agent on the next repeat, despite changing tool ids and moving cache markers",
+    loopCodes.join(",") === "ok,ok,ok,llm_loop_detected,frozen" && loopFreezes.length === 1,
+    `codes=${loopCodes.join(",")} freezes=${loopFreezes.length}`
+  );
+  const retryCodes = [];
+  for (let i = 0; i < 5; i++) {
+    const r = await anthropicCall({ model: "fail-model", max_tokens: 10, messages: loopTurn(0) }, { "x-spendveto-agent": "retry-bot" });
+    retryCodes.push(r.status);
+    await r.text();
+  }
+  check(
+    "retrying a FAILED request is not a loop: five identical 529 retries pass through to the provider and freeze nothing",
+    retryCodes.every((c) => c === 529) && (await fetch(`${BASE}/api/freezes`).then((r) => r.json())).freezes.filter((f) => f.source === "llm-loop" && !f.unfrozen).length === 1,
+    `codes=${retryCodes.join(",")}`
+  );
+  writeFileSync(`${ROOT}data/policy.json`, JSON.stringify({ ...LLM_BASE_POLICY, llm: { ...LLM_BASE_POLICY.llm, maxRequestsPerMinute: 2 } }, null, 2));
+  const rateCodes = [];
+  let rateHeaders = null;
+  for (let i = 0; i < 3; i++) {
+    const r = await anthropicCall({ model: "claude-haiku-4-5", max_tokens: 20, messages: [{ role: "user", content: `r${i}` }] }, { "x-spendveto-agent": "rate-bot" });
+    rateCodes.push(r.status);
+    if (r.status === 429) rateHeaders = { retryAfter: r.headers.get("retry-after"), retry: r.headers.get("x-should-retry"), code: (await r.json()).spendveto?.code };
+    else await r.text();
+  }
+  check(
+    "a burst over maxRequestsPerMinute gets a 429 with an integer retry-after the client's own retry logic honours",
+    rateCodes.join(",") === "200,200,429" && /^\d+$/.test(rateHeaders?.retryAfter || "") && rateHeaders.retry === "true" && rateHeaders.code === "llm_rate_limited",
+    `codes=${rateCodes.join(",")} ${JSON.stringify(rateHeaders)}`
+  );
+  writeFileSync(`${ROOT}data/policy.json`, JSON.stringify({ ...LLM_BASE_POLICY, llm: { ...LLM_BASE_POLICY.llm, dailyBudgetUSD: 0.001, mode: "observe" } }, null, 2));
+  const obsRes = await anthropicCall({ model: "claude-opus-5-5", max_tokens: 100, messages: [{ role: "user", content: "observe" }] }, { "x-spendveto-agent": "observe-bot" });
+  await obsRes.text();
+  await sleep(100);
+  const obsEntry = (await llmLedger()).filter((e) => e.agent === "observe-bot").pop();
+  check(
+    "observe mode lets an over-budget request through and records exactly what enforce mode would have done",
+    obsRes.status === 200 && obsEntry?.status === "paid" && obsEntry.wouldBlock?.code === "llm_daily_budget",
+    `status=${obsRes.status} wouldBlock=${obsEntry?.wouldBlock?.code}`
+  );
+  writeFileSync(`${ROOT}data/policy.json`, JSON.stringify(LLM_BASE_POLICY, null, 2));
+  const unkRes = await anthropicCall({ model: "claude-future-9", max_tokens: 100, messages: [{ role: "user", content: "x" }] }, { "x-spendveto-agent": "unknown-bot" });
+  await unkRes.json();
+  await sleep(100);
+  const unkEntry = (await llmLedger()).find((e) => e.agent === "unknown-bot");
+  const { canonicalModel, lookupPrice: llmLookup, costOf: llmCost } = await import("../server/llm-pricing.js");
+  check(
+    "a model no price sheet knows is booked at the provider's flagship rate and flagged — never priced by a guessed prefix (gpt-5.6-terra is not gpt-5)",
+    unkEntry?.unknownModel === true && unkEntry.priceSource === "unknown-model-fallback" && unkEntry.amount === 0.039 &&
+      llmLookup("openai", "gpt-5.6-terra").unknown === true && canonicalModel("claude-haiku-4-5-20251001") === "claude-haiku-4-5" && llmLookup("openai", "gpt-4o-2024-08-06").model === "gpt-4o",
+    `amount=${unkEntry?.amount} src=${unkEntry?.priceSource}`
+  );
+  writeFileSync(`${ROOT}data/policy.json`, JSON.stringify({ ...LLM_BASE_POLICY, llm: { ...LLM_BASE_POLICY.llm, unknownModelRates: { anthropic: { inputPerM: 1, outputPerM: 2 } } } }, null, 2));
+  const unkRateRes = await anthropicCall({ model: "claude-future-9", max_tokens: 100, messages: [{ role: "user", content: "x" }] }, { "x-spendveto-agent": "unknown-rate-bot" });
+  await unkRateRes.json();
+  await sleep(100);
+  const unkRateEntry = (await llmLedger()).find((e) => e.agent === "unknown-rate-bot");
+  writeFileSync(`${ROOT}data/policy.json`, JSON.stringify(LLM_BASE_POLICY, null, 2));
+  check(
+    "policy.llm.unknownModelRates replaces the flagship fallback for a model no price sheet knows — booked at the operator's declared rate (1,200 in + 3,000 cache read + 500 cache write + 400 out at $1/$2 = $0.002925) and labelled as such",
+    unkRateEntry?.unknownModel === true && unkRateEntry.priceSource === "policy.llm.unknownModelRates" && unkRateEntry.amount === 0.002925,
+    `amount=${unkRateEntry?.amount} src=${unkRateEntry?.priceSource}`
+  );
+  check(
+    "provider pricing details are honoured: Haiku 5.5 bills a >100K-token prompt at its long-context rate, a 1-hour cache write at 2x input, an upstream-reported cost (OpenRouter) wins over the sheet",
+    llmCost("anthropic", "claude-haiku-5-5", { input_tokens: 150000, output_tokens: 1000 }).usd === 0.0775 &&
+      llmCost("anthropic", "claude-sonnet-5-5", { input_tokens: 0, output_tokens: 0, cache_creation: { ephemeral_5m_input_tokens: 0, ephemeral_1h_input_tokens: 1000000 } }).usd === 4 &&
+      llmCost("openai", "gpt-5", { prompt_tokens: 10, completion_tokens: 10, cost: 0.123 }).usd === 0.123,
+    "haiku long / 1h cache write / reported cost"
+  );
+  // In-flight holds: a slow request's estimate is visible in the same holds
+  // number every payment check reads.
+  const slowPromise = anthropicCall({ model: "slow-model", max_tokens: 100, messages: [{ role: "user", content: "slow" }] }, { "x-spendveto-agent": "slow-bot" }).then((r) => r.text());
+  await sleep(500);
+  const { pseudoAddress: llmPseudo } = await import("../server/llmguard.js");
+  const slowHolds = await fetch(`${BASE}/api/upto/holds/${llmPseudo("label:slow-bot")}`).then((r) => r.json());
+  await slowPromise;
+  await sleep(100);
+  const slowAfter = await fetch(`${BASE}/api/upto/holds/${llmPseudo("label:slow-bot")}`).then((r) => r.json());
+  check(
+    "a model call in flight reserves its estimate in the shared holds number payments check, and releases it when the response finishes",
+    slowHolds.llmUSD > 0 && slowHolds.heldUSD === slowHolds.llmUSD && slowAfter.llmUSD === 0,
+    `during=${slowHolds.llmUSD} after=${slowAfter.llmUSD}`
+  );
+  // Team mode + unified budgets: an agent token bound to a delegated child
+  // wallet spends tokens against the SAME cascading cap as its payments.
+  const childGrant = await fetch(`${BASE}/api/delegations/wallet`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ capUSD: 0.03, label: "llm-delegate" }) }).then((r) => r.json());
+  const teamAgent = await fetch(`${PROXY}/proxy/agents`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ label: "llm-delegate-agent", child: "llm-delegate" }) }).then((r) => r.json());
+  const teamBefore = llmSeen.length;
+  const teamCodes = [];
+  for (let i = 0; i < 3; i++) {
+    const r = await fetch(`${BASE}/v1/messages`, { method: "POST", headers: { "content-type": "application/json", "x-api-key": teamAgent.token, "anthropic-version": "2023-06-01" }, body: JSON.stringify({ model: "claude-opus-5-5", max_tokens: 100, messages: [{ role: "user", content: `t${i}` }] }) });
+    teamCodes.push(r.status === 200 ? (await r.text(), "ok") : (await r.json()).spendveto?.code);
+    await sleep(80);
+  }
+  const teamFwd = llmSeen.slice(teamBefore);
+  check(
+    "team mode: an agent authenticates with its tg_ token, the guard swaps in a provider key only it holds, and the token never reaches the provider",
+    teamFwd.length >= 1 && teamFwd.every((x) => x.headers["x-api-key"] === "sk-ant-verify-server-only-key" && !JSON.stringify(x.headers).includes(teamAgent.token)),
+    `forwarded=${teamFwd.length} key=${teamFwd[0]?.headers["x-api-key"]?.slice(0, 12)}`
+  );
+  check(
+    "one budget across rails: the delegated wallet's $0.03 cap stops its MODEL spend with the same delegation_cap code that stops its payments",
+    teamCodes.join(",") === "ok,ok,delegation_cap" && childGrant.childAddress,
+    `codes=${teamCodes.join(",")}`
+  );
+  const llmSummary = await fetch(`${BASE}/api/llm/summary`).then((r) => r.json());
+  const loopRow = llmSummary.identities.find((i) => i.label === "loop-bot");
+  check(
+    "the AI-spend summary the Console and CLI read agrees with the ledger: per-agent spend, blocks, and the loop freeze",
+    llmSummary.totals.requestsDay >= 10 && llmSummary.totals.blockedDay >= 5 && llmSummary.totals.loopFreezesDay === 1 && loopRow?.frozen?.source === "llm-loop" &&
+      llmSummary.identities.find((i) => i.label === "stream-bot")?.spentDayUSD === 0.0239,
+    JSON.stringify(llmSummary.totals)
+  );
+  llmMock.close();
+
+  // --- Card authorization governance: Stripe Issuing + Lithic ASA (server/cards.js) ---
+  const STRIPE_SECRET = "whsec_verify_stripe_secret";
+  const LITHIC_SECRET = "whsec_" + Buffer.from("verify-lithic-asa-secret-key").toString("base64");
+  const stripeAuthEvent = (cents, mcc, cardId = "ic_verify_card") => ({ id: `evt_${cents}_${mcc}`, type: "issuing_authorization.request", data: { object: { id: `iauth_${Math.random().toString(36).slice(2)}`, object: "issuing_authorization", approved: false, amount: 0, currency: "usd", status: "pending", pending_request: { amount: cents, currency: "usd", merchant_amount: cents, merchant_currency: "usd", is_amount_controllable: false }, merchant_data: { category: "computer_software_stores", category_code: mcc, name: "SaaS Co", network_id: "1" }, card: { id: cardId, last4: "4242", metadata: {} } } } });
+  const signStripe = (body, t = Math.floor(Date.now() / 1000), secret = STRIPE_SECRET) => `t=${t},v1=${createHmac("sha256", secret).update(`${t}.${body}`).digest("hex")}`;
+  const stripePost = async (evt, sig) => {
+    const body = JSON.stringify(evt);
+    const r = await fetch(`${BASE}/api/cards/stripe/authorization`, { method: "POST", headers: { "content-type": "application/json", "stripe-signature": sig ?? signStripe(body) }, body });
+    return { status: r.status, version: r.headers.get("stripe-version"), body: await r.json() };
+  };
+  const lithicPost = async (asa) => {
+    const body = JSON.stringify(asa);
+    const id = `msg_${Math.random().toString(36).slice(2)}`;
+    const ts = Math.floor(Date.now() / 1000);
+    const sig = createHmac("sha256", Buffer.from(LITHIC_SECRET.replace(/^whsec_/, ""), "base64")).update(`${id}.${ts}.${body}`).digest("base64");
+    const r = await fetch(`${BASE}/api/cards/lithic/asa`, { method: "POST", headers: { "content-type": "application/json", "webhook-id": id, "webhook-timestamp": String(ts), "webhook-signature": `v1,${sig}` }, body });
+    return { status: r.status, body: await r.json() };
+  };
+  const stripeOk = await stripePost(stripeAuthEvent(1999, "5734"));
+  const cardDecisions = async () => (await fetch(`${BASE}/api/cards/decisions`).then((r) => r.json())).decisions;
+  const okEntry = (await cardDecisions()).find((d) => d.cardId === "ic_verify_card");
+  check(
+    "a signed Stripe Issuing authorization is answered synchronously in Stripe's format — 200, Stripe-Version, { approved: true } — and booked as committed card spend",
+    stripeOk.status === 200 && stripeOk.version && stripeOk.body.approved === true && okEntry?.status === "paid" && okEntry.amount === 19.99 && okEntry.chain === "card",
+    JSON.stringify({ status: stripeOk.status, v: stripeOk.version, approved: stripeOk.body.approved, amount: okEntry?.amount })
+  );
+  const cardTamperedSig = await stripePost(stripeAuthEvent(100, "5734"), signStripe("tampered body"));
+  const cardReplayBody = JSON.stringify(stripeAuthEvent(100, "5734"));
+  const cardReplaySig = await stripePost(stripeAuthEvent(100, "5734"), signStripe(cardReplayBody, Math.floor(Date.now() / 1000) - 3600));
+  check(
+    "a Stripe authorization with a forged signature, or a genuine one replayed an hour later, is rejected before any decision is made",
+    cardTamperedSig.status === 400 && /mismatch/.test(cardTamperedSig.body.error) && cardReplaySig.status === 400 && /tolerance/.test(cardReplaySig.body.error),
+    `${cardTamperedSig.status}:${cardTamperedSig.body.error} / ${cardReplaySig.status}`
+  );
+  const cardGambling = await stripePost(stripeAuthEvent(500, "7995"));
+  const cardOverCap = await stripePost(stripeAuthEvent(60000, "5734"));
+  check(
+    "card policy declines by merchant category and by size: gambling (MCC 7995) and a $600 authorization over the $500 cap, each with its reason in the Stripe metadata",
+    cardGambling.body.approved === false && cardGambling.body.metadata?.spendveto_code === "card_mcc_blocked" && cardOverCap.body.approved === false && cardOverCap.body.metadata?.spendveto_code === "card_authorization_cap",
+    `${cardGambling.body.metadata?.spendveto_code} / ${cardOverCap.body.metadata?.spendveto_code}`
+  );
+  const lithicOk = await lithicPost({ token: "txn_verify_1", card: { token: "card_verify_lithic", last_four: "1111" }, amounts: { cardholder: { amount: 1250, currency: "USD" } }, merchant: { mcc: "5734", descriptor: "SAAS CO", state: "NY" } });
+  const lithicQuasiCash = await lithicPost({ token: "txn_verify_2", card: { token: "card_verify_lithic" }, amounts: { cardholder: { amount: 1250, currency: "USD" } }, merchant: { mcc: "6051", descriptor: "CRYPTO EXCH" } });
+  const lithicEuro = await lithicPost({ token: "txn_verify_3", card: { token: "card_verify_lithic" }, amounts: { cardholder: { amount: 1250, currency: "EUR" } }, merchant: { mcc: "5734" } });
+  check(
+    "Lithic Auth Stream Access gets its own format and decline codes: APPROVED with the transaction token, UNAUTHORIZED_MERCHANT for quasi-cash, and a euro authorization declined rather than guessed into dollars",
+    lithicOk.status === 200 && lithicOk.body.result === "APPROVED" && lithicOk.body.token === "txn_verify_1" && lithicQuasiCash.body.result === "UNAUTHORIZED_MERCHANT" && lithicEuro.body.result === "UNAUTHORIZED_MERCHANT",
+    `${lithicOk.body.result} / ${lithicQuasiCash.body.result} / ${lithicEuro.body.result}`
+  );
+  await fetch(`${BASE}/api/freezes`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ address: okEntry.address, reason: "verify: kill switch on a card" }) });
+  const frozenStripe = await stripePost(stripeAuthEvent(100, "5734"));
+  const lithicCardAddr = (await cardDecisions()).find((d) => d.cardId === "card_verify_lithic").address;
+  await fetch(`${BASE}/api/freezes`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ address: lithicCardAddr, reason: "verify: kill switch on a card" }) });
+  const frozenLithic = await lithicPost({ token: "txn_verify_4", card: { token: "card_verify_lithic" }, amounts: { cardholder: { amount: 100, currency: "USD" } }, merchant: { mcc: "5734" } });
+  check(
+    "the kill switch reaches the card rail: a frozen card is declined on Stripe and paused (CARD_PAUSED) on Lithic",
+    frozenStripe.body.approved === false && frozenStripe.body.metadata?.spendveto_code === "frozen" && frozenLithic.body.result === "CARD_PAUSED",
+    `${frozenStripe.body.metadata?.spendveto_code} / ${frozenLithic.body.result}`
+  );
+  const cardReg = await fetch(`${BASE}/api/cards`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ cardId: "ic_delegate_card", label: "llm-delegate card", child: "llm-delegate" }) });
+  const delegateCard = await stripePost(stripeAuthEvent(500, "5734", "ic_delegate_card"));
+  check(
+    "a card registered to a delegated wallet shares that wallet's cascading cap: after its model spend, a $5 card authorization is declined with delegation_cap",
+    cardReg.status === 201 && delegateCard.body.approved === false && delegateCard.body.metadata?.spendveto_code === "delegation_cap",
+    `reg=${cardReg.status} code=${delegateCard.body.metadata?.spendveto_code}`
+  );
+
+  // --- Payments beyond crypto: governed fiat payouts (server/payouts.js) ---
+  // Four real providers' documented request formats, against a local mock —
+  // Stripe Connect transfers, RazorpayX payouts, PayPal Payouts, Modern
+  // Treasury payment orders — plus Stripe Billing meter events for rebilling.
+  const fiatSeen = [];
+  const fiatMock = createServer((req, res) => {
+    let body = "";
+    req.on("data", (d) => (body += d));
+    req.on("end", () => {
+      fiatSeen.push({ url: req.url, headers: req.headers, body });
+      const json = (code, obj) => { res.writeHead(code, { "content-type": "application/json" }); res.end(JSON.stringify(obj)); };
+      if (req.url === "/v1/transfers") { const f = new URLSearchParams(body); return json(200, { id: `tr_${fiatSeen.length}`, object: "transfer", amount: Number(f.get("amount")), currency: f.get("currency"), destination: f.get("destination"), reversed: false }); }
+      if (req.url === "/v1/billing/meter_events") { const f = new URLSearchParams(body); return json(200, { object: "billing.meter_event", event_name: f.get("event_name"), identifier: f.get("identifier"), payload: { stripe_customer_id: f.get("payload[stripe_customer_id]"), value: f.get("payload[value]") } }); }
+      if (req.url === "/v1/payouts") { const b = JSON.parse(body || "{}"); return json(200, { id: "pout_verify1", entity: "payout", amount: b.amount, currency: b.currency, status: "processing", mode: b.mode }); }
+      if (req.url === "/v1/oauth2/token") return json(200, { access_token: "A21AA_verify_token", token_type: "Bearer", expires_in: 32400 });
+      if (req.url === "/v1/payments/payouts") { const b = JSON.parse(body || "{}"); const denied = b.items?.[0]?.receiver === "denied@example.com"; return json(201, { batch_header: { payout_batch_id: `PB_${fiatSeen.length}`, batch_status: denied ? "DENIED" : "PENDING" } }); }
+      if (req.url === "/api/payment_orders") { const b = JSON.parse(body || "{}"); return json(200, { id: "6f1c0b1e-0000-4000-8000-0000000000aa", type: b.type, amount: b.amount, direction: b.direction, status: "approved" }); }
+      res.writeHead(404);
+      res.end();
+    });
+  });
+  fiatMock.listen(8496);
+  const MT_PAYEE = "6f1c0b1e-aaaa-4000-8000-000000000002";
+  const FIAT_POLICY = {
+    ...LOOSE_POLICY,
+    payouts: { maxPerPayoutUSD: 1000, dailyBudgetUSD: 5000, requireApprovalAboveUSD: 500, allowedPayees: ["acct_1Vendor", "fa_00000000000001", "vendor@example.com", "denied@example.com", MT_PAYEE], fxRates: { INR: 0.012 } },
+    llm: { dailyBudgetUSD: 100, hourlyBudgetUSD: 100, maxRequestUSD: 50, maxRequestsPerMinute: 1000, tagBudgets: { "customer=cus_Small": { dailyUSD: 0.02 } } },
+    rebilling: { enabled: true, markupPct: 25, eventName: "spendveto_ai_usage", customerTag: "customer" },
+  };
+  writeFileSync(`${ROOT}data/policy.json`, JSON.stringify(FIAT_POLICY, null, 2));
+  const apAgent = await fetch(`${PROXY}/proxy/agents`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ label: "ap-agent" }) }).then((r) => r.json());
+  const payout = (body, token = apAgent.token) =>
+    fetch(`${BASE}/api/payouts`, { method: "POST", headers: { "Content-Type": "application/json", ...(token ? { Authorization: `Bearer ${token}` } : {}) }, body: JSON.stringify(body) }).then(async (r) => ({ status: r.status, body: await r.json() }));
+  const fiatCalls = (url) => fiatSeen.filter((x) => x.url === url);
+
+  const stripePay = await payout({ provider: "stripe", amount: 25.5, currency: "USD", payee: "acct_1Vendor", purpose: "vendor bill", idempotencyKey: "inv-1001", tags: { team: "ops" } });
+  const stripeReq = fiatCalls("/v1/transfers")[0];
+  const stripeForm = new URLSearchParams(stripeReq?.body || "");
+  check(
+    "a governed payout executes on Stripe in Stripe's own format — amount in cents, lowercase currency, the connected account as destination, Bearer auth, an Idempotency-Key — and is booked as committed spend",
+    stripePay.status === 201 && stripePay.body.payout?.status === "executed" && stripeForm.get("amount") === "2550" && stripeForm.get("currency") === "usd" && stripeForm.get("destination") === "acct_1Vendor" &&
+      stripeReq.headers.authorization === "Bearer sk_test_verify_only" && stripeReq.headers["idempotency-key"] === "inv-1001",
+    `status=${stripePay.status} amount=${stripeForm.get("amount")} key=${stripeReq?.headers["idempotency-key"]}`
+  );
+  const stripeReplay = await payout({ provider: "stripe", amount: 25.5, currency: "USD", payee: "acct_1Vendor", purpose: "vendor bill", idempotencyKey: "inv-1001" });
+  check(
+    "an agent retrying with the same idempotencyKey gets the same payout back — the provider is called once, nobody is paid twice",
+    stripeReplay.status === 200 && stripeReplay.body.decision === "replayed" && stripeReplay.body.payout?.id === stripePay.body.payout?.id && fiatCalls("/v1/transfers").length === 1,
+    `decision=${stripeReplay.body.decision} transfers=${fiatCalls("/v1/transfers").length}`
+  );
+  const upiPay = await payout({ provider: "razorpayx", amount: 1500, currency: "INR", payee: "fa_00000000000001", method: "UPI", purpose: "vendor bill", idempotencyKey: "rzp-verify-1" });
+  const upiReq = fiatCalls("/v1/payouts")[0];
+  const upiBody = upiReq ? JSON.parse(upiReq.body) : {};
+  check(
+    "a RazorpayX UPI payout goes out in RazorpayX's format — paise, mode UPI, the business's RazorpayX account, X-Payout-Idempotency, basic auth — and its INR counts against USD budgets only at the operator-declared rate ($18.00)",
+    upiPay.status === 201 && upiBody.amount === 150000 && upiBody.mode === "UPI" && upiBody.currency === "INR" && upiBody.account_number === "7878780080316316" && upiBody.purpose === "vendor bill" &&
+      upiReq.headers["x-payout-idempotency"] === "rzp-verify-1" && upiReq.headers.authorization === `Basic ${Buffer.from("rzp_test_verify:rzp_verify_secret").toString("base64")}` && upiPay.body.payout?.amountUSD === 18,
+    `status=${upiPay.status} paise=${upiBody.amount} usd=${upiPay.body.payout?.amountUSD}`
+  );
+  const eurPay = await payout({ provider: "stripe", amount: 50, currency: "EUR", payee: "acct_1Vendor", purpose: "vendor bill" });
+  check(
+    "a payout in a currency with no operator-declared rate is refused — SpendVeto never guesses an exchange rate for money leaving the business",
+    eurPay.status === 403 && eurPay.body.code === "payout_fx_rate_missing" && fiatCalls("/v1/transfers").length === 1,
+    `${eurPay.status} ${eurPay.body.code}`
+  );
+  const ppPay = await payout({ provider: "paypal", amount: 40, currency: "USD", payee: "vendor@example.com", purpose: "contractor payment", idempotencyKey: "pp-verify-1" });
+  const ppToken = fiatCalls("/v1/oauth2/token")[0];
+  const ppReq = fiatCalls("/v1/payments/payouts")[0];
+  const ppBody = ppReq ? JSON.parse(ppReq.body) : {};
+  const ppDenied = await payout({ provider: "paypal", amount: 10, currency: "USD", payee: "denied@example.com", purpose: "contractor payment" });
+  check(
+    "PayPal: a client-credentials OAuth token, then a batch payout with PayPal-Request-Id and a decimal-string amount; a DENIED batch is booked as failed at $0",
+    ppPay.status === 201 && ppToken?.body === "grant_type=client_credentials" && ppReq.headers["paypal-request-id"] === "pp-verify-1" && ppReq.headers.authorization === "Bearer A21AA_verify_token" &&
+      ppBody.items?.[0]?.amount?.value === "40.00" && ppBody.items?.[0]?.recipient_type === "EMAIL" && ppDenied.status === 502 && ppDenied.body.payout?.status === "failed",
+    `status=${ppPay.status} value=${ppBody.items?.[0]?.amount?.value} denied=${ppDenied.body.payout?.status}`
+  );
+  const mtPay = await payout({ provider: "moderntreasury", amount: 300, currency: "USD", payee: MT_PAYEE, method: "ach", purpose: "vendor bill" });
+  const mtReq = fiatCalls("/api/payment_orders")[0];
+  const mtBody = mtReq ? JSON.parse(mtReq.body) : {};
+  check(
+    "Modern Treasury: an ACH credit payment order in cents, from the configured originating account to the receiving account, with basic auth (organization ID : API key)",
+    mtPay.status === 201 && mtBody.type === "ach" && mtBody.amount === 30000 && mtBody.direction === "credit" && mtBody.originating_account_id === "0b0b0b0b-0000-4000-8000-000000000000" && mtBody.receiving_account_id === MT_PAYEE &&
+      mtReq.headers.authorization === `Basic ${Buffer.from("org_verify:mt_verify_key").toString("base64")}`,
+    `status=${mtPay.status} type=${mtBody.type} amount=${mtBody.amount}`
+  );
+  const transfersBefore = fiatCalls("/v1/transfers").length;
+  const strangerPay = await payout({ provider: "stripe", amount: 80, currency: "USD", payee: "acct_9Stranger", purpose: "vendor bill" });
+  const transfersWhileWaiting = fiatCalls("/v1/transfers").length;
+  const approvedPayout = await fetch(`${BASE}/api/approvals/${strangerPay.body.approvalId}/decide`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ decision: "approved" }) }).then((r) => r.json());
+  const deniedWait = await payout({ provider: "stripe", amount: 60, currency: "USD", payee: "acct_9Other", purpose: "vendor bill" });
+  const deniedPayout = await fetch(`${BASE}/api/approvals/${deniedWait.body.approvalId}/decide`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ decision: "denied" }) }).then((r) => r.json());
+  const oneClick = await payout({ provider: "stripe", amount: 70, currency: "USD", payee: "acct_9Third", purpose: "vendor bill" });
+  const oneClickRes = await fetch(`${BASE}/api/approvals/${oneClick.body.approvalId}/decide?decision=approved`);
+  check(
+    "a payee not on the allowlist waits for a human: 202, nothing reaches the provider until a human approves in the Console, then it executes; a denied one never pays; an unauthenticated one-click link can't approve real money",
+    strangerPay.status === 202 && strangerPay.body.code === "payout_requires_approval" && transfersWhileWaiting === transfersBefore && approvedPayout.payout?.status === "executed" &&
+      fiatCalls("/v1/transfers").length === transfersBefore + 1 && deniedPayout.payout?.status === "denied" && oneClickRes.status === 403,
+    `wait=${strangerPay.status} approved=${approvedPayout.payout?.status} denied=${deniedPayout.payout?.status} oneClick=${oneClickRes.status}`
+  );
+  const overCapPay = await payout({ provider: "stripe", amount: 1500, currency: "USD", payee: "acct_1Vendor", purpose: "vendor bill" });
+  const noTokenPay = await payout({ provider: "stripe", amount: 5, currency: "USD", payee: "acct_1Vendor", purpose: "vendor bill" }, null);
+  const providers = await fetch(`${BASE}/api/payouts`).then((r) => r.json());
+  check(
+    "a payout over maxPerPayoutUSD and one without an accountable agent token are both refused before any provider is called; the four providers report as configured",
+    overCapPay.status === 403 && overCapPay.body.code === "payout_cap" && noTokenPay.status === 401 && noTokenPay.body.code === "agent_token_required" &&
+      providers.providers.length === 4 && providers.providers.every((x) => x.configured),
+    `${overCapPay.body.code} / ${noTokenPay.body.code} / providers=${providers.providers.map((x) => x.id).join(",")}`
+  );
+
+  // --- AI FinOps: tags, tag budgets, one cost view, FOCUS export; rebilling ---
+  const finLlm = createServer((req, res) => {
+    let body = "";
+    req.on("data", (d) => (body += d));
+    req.on("end", () => {
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end(JSON.stringify({ id: "msg_fin", type: "message", role: "assistant", content: [{ type: "text", text: "ok" }], usage: { input_tokens: 1200, cache_read_input_tokens: 3000, cache_creation_input_tokens: 500, output_tokens: 400 } }));
+    });
+  });
+  finLlm.listen(8497);
+  const taggedCall = (tags) =>
+    fetch(`${BASE}/v1/messages`, { method: "POST", headers: { "content-type": "application/json", "x-api-key": "sk-ant-client", "anthropic-version": "2023-06-01", "x-spendveto-agent": "finops-bot", "x-spendveto-tags": tags }, body: JSON.stringify({ model: "claude-opus-5-5", max_tokens: 100, messages: [{ role: "user", content: "q" }] }) }).then(async (r) => ({ status: r.status, body: await r.json() }));
+  const bigCalls = [await taggedCall("team=search,customer=cus_Big"), await taggedCall("team=search,customer=cus_Big")];
+  const smallCalls = [await taggedCall("team=support,customer=cus_Small"), await taggedCall("team=support,customer=cus_Small"), await taggedCall("team=support,customer=cus_Small")];
+  await taggedCall("team=search,customer=not-a-stripe-id");
+  await taggedCall("team=search");
+  await sleep(300);
+  check(
+    "a tag budget caps a customer's model spend across every agent carrying the tag: cus_Small's $0.02/day stops its third request with llm_tag_budget",
+    bigCalls.every((c) => c.status === 200) && smallCalls.map((c) => c.status).join(",") === "200,200,402" && smallCalls[2].body.spendveto?.code === "llm_tag_budget",
+    `small=${smallCalls.map((c) => c.status).join(",")} code=${smallCalls[2].body.spendveto?.code}`
+  );
+  const byRail = await fetch(`${BASE}/api/costs?groupBy=rail&days=1`).then((r) => r.json());
+  const byCustomer = await fetch(`${BASE}/api/costs?groupBy=customer&days=1`).then((r) => r.json());
+  const byTeam = await fetch(`${BASE}/api/costs?groupBy=team&days=1`).then((r) => r.json());
+  const railCost = Object.fromEntries(byRail.rows.map((r) => [r.key, r.costUSD]));
+  const custCost = Object.fromEntries(byCustomer.rows.map((r) => [r.key, r.costUSD]));
+  check(
+    "one cost view across every rail: model tokens, fiat payouts (the INR payout at its declared rate) and cards side by side, and model spend allocated by customer and team from the request tags",
+    railCost["fiat payouts"] >= 463.5 && railCost["model tokens"] > 0 && railCost["cards"] > 0 && custCost["cus_Big"] === 0.0318 && custCost["cus_Small"] === 0.0318 &&
+      byTeam.rows.some((r) => r.key === "search" && r.costUSD >= 0.0636) && byTeam.rows.some((r) => r.key === "ops" && r.costUSD === 25.5),
+    JSON.stringify({ rails: railCost, big: custCost["cus_Big"], small: custCost["cus_Small"] })
+  );
+  const focusCsv = await fetch(`${BASE}/api/costs/focus.csv?days=1`).then((r) => r.text());
+  const focusLines = focusCsv.trim().split("\n");
+  const focusHeader = focusLines[0].split(",");
+  const MANDATORY_FOCUS = ["BilledCost", "BillingAccountId", "BillingAccountName", "BillingCurrency", "BillingPeriodEnd", "BillingPeriodStart", "ChargeCategory", "ChargeClass", "ChargeDescription", "ChargePeriodEnd", "ChargePeriodStart", "ContractedCost", "EffectiveCost", "HostProviderName", "InvoiceIssuerName", "ListCost", "PricingQuantity", "PricingUnit", "ServiceCategory", "ServiceName", "ServiceProviderName"];
+  const finRows = focusLines.slice(1).filter((l) => l.includes("cus_Big"));
+  const finSum = Math.round(finRows.reduce((s, l) => s + Number(l.split(",")[0]), 0) * 1e6) / 1e6;
+  const col = (name, line) => line.split(",")[focusHeader.indexOf(name)];
+  check(
+    "the FOCUS v1.4 export carries all 21 mandatory columns, one row per priced token component (AI and Machine Learning, hourly charge periods), rows that sum to the booked cost, and no payouts or card swipes",
+    MANDATORY_FOCUS.every((c) => focusHeader.includes(c)) && finRows.length === 8 && finSum === 0.0318 && finRows.every((l) => col("ServiceCategory", l) === "AI and Machine Learning" && col("ChargeCategory", l) === "Usage" && col("ServiceProviderName", l) === "Anthropic") &&
+      finRows.every((l) => Date.parse(col("ChargePeriodEnd", l)) - Date.parse(col("ChargePeriodStart", l)) === 3600e3) && !focusCsv.includes("payout:") && !focusCsv.includes("card:"),
+    `cols=${focusHeader.length} rows=${finRows.length} sum=${finSum}`
+  );
+  const meterEvents = fiatCalls("/v1/billing/meter_events").map((x) => new URLSearchParams(x.body));
+  const bigEvent = meterEvents.find((f) => f.get("payload[stripe_customer_id]") === "cus_Big");
+  check(
+    "customer-tagged model spend becomes a Stripe Billing meter event in Stripe's format — event_name, payload[stripe_customer_id], payload[value] in micro-dollars at the 25% markup ($0.0159 → 19875), an identifier to de-duplicate",
+    bigEvent?.get("event_name") === "spendveto_ai_usage" && bigEvent?.get("payload[value]") === "19875" && /^sv_[0-9a-f]{64}$/.test(bigEvent?.get("identifier") || "") && meterEvents.length === 4,
+    `events=${meterEvents.length} value=${bigEvent?.get("payload[value]")}`
+  );
+  const rebillReport = await fetch(`${BASE}/api/rebilling?days=1`).then((r) => r.json());
+  const bigRow = rebillReport.customers.find((c) => c.customer === "cus_Big");
+  check(
+    "the rebilling report shows cost, billed and margin per customer; requests with no Stripe customer tag — untagged, or a value that isn't a cus_ id — are never billed",
+    bigRow?.costUSD === 0.0318 && bigRow.billedUSD === 0.03975 && bigRow.marginUSD === 0.00795 && rebillReport.customers.length === 2 && !rebillReport.customers.some((c) => c.customer === "not-a-stripe-id"),
+    JSON.stringify(rebillReport.totals)
+  );
+  finLlm.close();
+  fiatMock.close();
+  writeFileSync(`${ROOT}data/policy.json`, JSON.stringify(LOOSE_POLICY, null, 2));
+
+  // --- The spendveto CLI + a relocatable data directory ---
+  const cliConnect = spawnSync(process.execPath, ["bin/spendveto.mjs", "connect"], { cwd: ROOT, env: { ...process.env, PORT: "8402", HOST: "127.0.0.1" }, encoding: "utf8" });
+  check(
+    "`spendveto connect` prints the one-line setup for Claude Code, Codex and the OpenAI/Anthropic SDKs",
+    cliConnect.status === 0 && cliConnect.stdout.includes("ANTHROPIC_BASE_URL=http://127.0.0.1:8402 claude") && cliConnect.stdout.includes("OPENAI_BASE_URL=http://127.0.0.1:8402/v1 codex"),
+    cliConnect.stdout.split("\n").filter(Boolean)[0] || cliConnect.stderr
+  );
+  const tmpData = mkdtempSync(join(tmpdir(), "spendveto-verify-"));
+  const cliBudget = spawnSync(process.execPath, ["bin/spendveto.mjs", "budget", "7"], { cwd: ROOT, env: { ...process.env, PORT: "8391", SPENDVETO_DATA_DIR: tmpData }, encoding: "utf8" });
+  const relocated = spawn("node", ["server/index.js"], { cwd: ROOT, env: { ...process.env, PORT: "8391", SPENDVETO_MODE: "simulate", SPENDVETO_DATA_DIR: tmpData, SPENDVETO_ANTHROPIC_UPSTREAM: "http://localhost:9" }, stdio: ["ignore", "pipe", "pipe"] });
+  for (let i = 0; i < 30; i++) {
+    await sleep(200);
+    try { if ((await fetch("http://localhost:8391/api/llm/settings")).ok) break; } catch {}
+  }
+  const relocatedSettings = await fetch("http://localhost:8391/api/llm/settings").then((r) => r.json()).catch(() => ({}));
+  await fetch("http://localhost:8391/api/freezes", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ address: "0x00000000000000000000000000000000000000aa", reason: "verify relocation" }) }).catch(() => {});
+  relocated.kill();
+  await sleep(200);
+  check(
+    "SPENDVETO_DATA_DIR relocates every runtime file: `spendveto budget 7` with no server running writes the policy there, and a server booted on it reads that budget and keeps its state there — an installed copy never writes into its own package",
+    cliBudget.status === 0 && JSON.parse(readFileSync(join(tmpData, "policy.json"), "utf8")).llm?.dailyBudgetUSD === 7 && relocatedSettings.settings?.dailyBudgetUSD === 7 && existsSync(join(tmpData, "freezes.json")),
+    `cli=${cliBudget.status} served=${relocatedSettings.settings?.dailyBudgetUSD} freezes=${existsSync(join(tmpData, "freezes.json"))}`
+  );
+  writeFileSync(`${ROOT}data/policy.json`, JSON.stringify(LOOSE_POLICY, null, 2));
+
+  // --- The default install carries no chain SDKs (server/optional.js) ---
+  // The x402 live-settlement SDKs were most of a clean install (480 of 630
+  // packages, ~700 MB, 77 s) for a feature most users never switch on, so they are
+  // optional peer dependencies. Proven on the PUBLISHED file set (npm pack),
+  // with a node_modules holding every package the repo has except the optional
+  // ones — symlinked, so it is Node's own resolver failing to find each one,
+  // not a stub — and the parts that need them must say how to install them.
+  const pkgJson = JSON.parse(readFileSync(`${ROOT}package.json`, "utf8"));
+  const { OPTIONAL_PACKAGES } = await import("../server/optional.js");
+  const strayOptional = OPTIONAL_PACKAGES.filter((p) => pkgJson.dependencies[p] || pkgJson.peerDependenciesMeta?.[p]?.optional !== true || !pkgJson.peerDependencies?.[p] || pkgJson.devDependencies?.[p] !== pkgJson.peerDependencies[p]);
+  const undeclaredPeers = Object.keys(pkgJson.peerDependencies || {}).filter((p) => !OPTIONAL_PACKAGES.includes(p));
+  check(
+    "chain SDKs are optional peer dependencies: none in `dependencies`, every one declared optional and developed against the same range, and no other peer",
+    strayOptional.length === 0 && undeclaredPeers.length === 0 && OPTIONAL_PACKAGES.length === 14,
+    strayOptional.concat(undeclaredPeers).join(", ") || `${OPTIONAL_PACKAGES.length} optional`
+  );
+  const leanDir = mkdtempSync(join(tmpdir(), "spendveto-lean-"));
+  const leanData = mkdtempSync(join(tmpdir(), "spendveto-lean-data-"));
+  const packed = spawnSync("npm", ["pack", "--json", "--pack-destination", leanDir], { cwd: ROOT, encoding: "utf8" });
+  spawnSync("tar", ["-xzf", join(leanDir, JSON.parse(packed.stdout)[0].filename), "-C", leanDir]);
+  const LEAN = join(leanDir, "package");
+  const blockedPackages = new Set(OPTIONAL_PACKAGES);
+  mkdirSync(join(LEAN, "node_modules"));
+  for (const name of readdirSync(join(ROOT, "node_modules"))) {
+    if (name.startsWith(".")) continue;
+    if (!name.startsWith("@")) {
+      if (!blockedPackages.has(name)) symlinkSync(join(ROOT, "node_modules", name), join(LEAN, "node_modules", name));
+      continue;
+    }
+    for (const sub of readdirSync(join(ROOT, "node_modules", name))) {
+      if (blockedPackages.has(`${name}/${sub}`)) continue;
+      mkdirSync(join(LEAN, "node_modules", name), { recursive: true });
+      symlinkSync(join(ROOT, "node_modules", name, sub), join(LEAN, "node_modules", name, sub));
+    }
+  }
+  const leanUpstream = createServer((req, res) => {
+    req.resume();
+    req.on("end", () => {
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end(JSON.stringify({ id: "msg_lean", type: "message", role: "assistant", model: "claude-opus-5-5", content: [{ type: "text", text: "ok" }], stop_reason: "end_turn", usage: { input_tokens: 1000, output_tokens: 100 } }));
+    });
+  });
+  leanUpstream.listen(8386);
+  const leanEnv = { ...process.env, PORT: "8388", SPENDVETO_MODE: "simulate", SPENDVETO_DATA_DIR: leanData, SPENDVETO_ANTHROPIC_UPSTREAM: "http://localhost:8386" };
+  const leanServer = spawn("node", [join(LEAN, "server", "index.js")], { cwd: LEAN, env: leanEnv, stdio: ["ignore", "pipe", "pipe"] });
+  let leanLog = "";
+  leanServer.stdout.on("data", (d) => (leanLog += d));
+  leanServer.stderr.on("data", (d) => (leanLog += d));
+  for (let i = 0; i < 50; i++) {
+    await sleep(200);
+    try { if ((await fetch("http://localhost:8388/api/llm/settings")).ok) break; } catch {}
+  }
+  const leanCall = await fetch("http://localhost:8388/v1/messages", { method: "POST", headers: { "content-type": "application/json", "x-api-key": "sk-ant-lean-never-stored", "anthropic-version": "2023-06-01", "x-spendveto-agent": "lean-bot" }, body: JSON.stringify({ model: "claude-opus-5-5", max_tokens: 64, messages: [{ role: "user", content: "hi" }] }) }).catch(() => ({ status: 0 }));
+  const leanSummary = await fetch("http://localhost:8388/api/llm/summary").then((r) => r.json()).catch(() => ({}));
+  check(
+    "the published file set with every chain SDK absent boots and governs a Claude call: relayed to the provider and its cost booked",
+    leanCall.status === 200 && leanSummary.totals?.requestsDay === 1 && leanSummary.totals?.spentDayUSD > 0,
+    `status ${leanCall.status}, booked ${leanSummary.totals?.spentDayUSD}${leanCall.status === 200 ? "" : ` — ${leanLog.split("\n").filter(Boolean).slice(-2).join(" / ")}`}`
+  );
+  const leanClient = spawn("node", [join(LEAN, "client", "pay-and-call.js"), "review"], { cwd: LEAN, env: leanEnv });
+  let leanClientOut = "";
+  leanClient.stdout.on("data", (d) => (leanClientOut += d));
+  leanClient.stderr.on("data", (d) => (leanClientOut += d));
+  const leanClientCode = await waitForClose(leanClient);
+  const leanLedger = await fetch("http://localhost:8388/api/ledger").then((r) => r.json()).catch(() => ({ entries: [] }));
+  check(
+    "…and an agent pays for a catalog tool through the x402 simulate rail — policy, a signed 402 payment and a ledger entry, no chain SDK loaded",
+    leanClientCode === 0 && leanLedger.entries.some((e) => e.resource === "/api/agent/review" && e.status === "paid"),
+    `exit ${leanClientCode}, ${leanLedger.entries.length} ledger entries${leanClientCode === 0 ? "" : ` — ${leanClientOut.split("\n").filter(Boolean).slice(-2).join(" / ")}`}`
+  );
+  const leanRails = await fetch("http://localhost:8388/api/rails").then((r) => r.json()).catch(() => ({}));
+  const leanLive = leanRails.rails?.find((r) => r.id === "x402-live");
+  check(
+    "GET /api/rails says the live x402 rail's SDKs aren't installed, per chain family, each with its install command",
+    leanLive?.installed === false && leanLive.families?.length === 6 && leanLive.families.every((f) => !f.installed && f.install.startsWith("npm install @x402/core @x402/fetch @x402/express @x402/evm")),
+    leanLive?.families?.map((f) => `${f.family}:${f.installed}`).join(" ")
+  );
+  leanServer.kill();
+  leanUpstream.close();
+  const leanPay = spawnSync(process.execPath, ["--input-type=module", "-e", `import { getRail } from ${JSON.stringify(pathToFileURL(join(LEAN, "rails", "index.js")).href)};\ntry { await getRail("x402-live").pay({ tool: { path: "/api/agent/review" }, account: {}, chain: "solana-devnet", baseUrl: "http://localhost:9" }); console.log("{}"); } catch (e) { console.log(JSON.stringify({ code: e.code, install: e.install })); }`], { cwd: LEAN, env: leanEnv, encoding: "utf8" });
+  const leanPayErr = JSON.parse(leanPay.stdout.trim().split("\n").pop() || "{}");
+  check(
+    "a live x402 payment without the SDKs is refused with code rail_package_missing and the install command — never a crash, never another chain's scheme",
+    leanPayErr.code === "rail_package_missing" && leanPayErr.install?.includes("@x402/fetch"),
+    leanPayErr.install || leanPay.stderr.split("\n").filter(Boolean).pop()
+  );
+  const leanTestnet = spawnSync(process.execPath, [join(LEAN, "server", "index.js")], { cwd: LEAN, env: { ...leanEnv, PORT: "8389", SPENDVETO_MODE: "testnet", SERVER_PAYOUT_ADDRESS: privateKeyToAccount(generatePrivateKey()).address, SPENDVETO_FACILITATOR_URL: "http://localhost:9" }, encoding: "utf8", timeout: 20000 });
+  check(
+    "testnet mode without the x402 packages refuses to boot and prints the install command, instead of dying on an import",
+    leanTestnet.status === 1 && leanTestnet.stderr.includes("npm install @x402/core @x402/fetch @x402/express @x402/evm"),
+    `exit ${leanTestnet.status}: ${leanTestnet.stderr.split("\n").filter(Boolean).pop()}`
+  );
+  const leanRailsCli = spawnSync(process.execPath, [join(LEAN, "bin", "spendveto.mjs"), "rails"], { cwd: LEAN, env: leanEnv, encoding: "utf8" });
+  check(
+    "`spendveto rails` lists every chain family as missing and prints the one command that adds them",
+    leanRailsCli.status === 0 && (leanRailsCli.stdout.match(/ missing @x402\//g) || []).length === 6 && leanRailsCli.stdout.includes("npm install spendveto @x402/core @x402/fetch @x402/express @x402/evm @x402/svm @solana/kit"),
+    leanRailsCli.stdout.split("\n").filter(Boolean).slice(-3, -2).join("") || leanRailsCli.stderr
+  );
+  // An installed package that is broken inside keeps its real error: a
+  // missing transitive dependency must not be misreported as "not installed".
+  mkdirSync(join(LEAN, "node_modules", "@x402", "core"), { recursive: true });
+  writeFileSync(join(LEAN, "node_modules", "@x402", "core", "package.json"), JSON.stringify({ name: "@x402/core", type: "module", exports: { ".": "./index.js" } }));
+  writeFileSync(join(LEAN, "node_modules", "@x402", "core", "index.js"), 'import "zzz-spendveto-not-installed-anywhere";\n');
+  const leanBroken = spawnSync(process.execPath, ["--input-type=module", "-e", `import { loadOptional } from ${JSON.stringify(pathToFileURL(join(LEAN, "server", "optional.js")).href)};\ntry { await loadOptional("@x402/core"); console.log("{}"); } catch (e) { console.log(JSON.stringify({ code: e.code, message: e.message })); }`], { cwd: LEAN, encoding: "utf8" });
+  const leanBrokenErr = JSON.parse(leanBroken.stdout.trim().split("\n").pop() || "{}");
+  check(
+    "a rail package that is installed but broken inside keeps its real error (the missing dependency it names), not a misleading \"not installed\"",
+    leanBrokenErr.code === "ERR_MODULE_NOT_FOUND" && leanBrokenErr.message?.includes("zzz-spendveto-not-installed-anywhere"),
+    `${leanBrokenErr.code}`
+  );
+  rmSync(leanDir, { recursive: true, force: true });
+  rmSync(leanData, { recursive: true, force: true });
+
+  // --- The network layer: attestations a seller verifies, federated reputation, an open policy standard ---
+  // Each piece gets more valuable with every OTHER organization running it: a
+  // seller can require governed agents only once buyers can prove governance,
+  // a reputation feed protects its subscribers in proportion to its
+  // publishers, and a policy format is a standard only when more than one
+  // party reads it. These checks pin the mechanics — offline verification,
+  // fail-closed trust, replay and rollback protection, identifiers that never
+  // leave the instance in the clear, and typos that can't fail open.
+  const jsonReq = (path, body, method = "POST") =>
+    fetch(`${BASE}${path}`, { method, headers: { "Content-Type": "application/json" }, body: body === undefined ? undefined : JSON.stringify(body) }).then(async (r) => ({ status: r.status, body: await r.json() }));
+  const issuerDoc = await fetch(`${BASE}/.well-known/spendveto-issuer.json`).then((r) => r.json());
+  const ISSUER = issuerDoc.issuer;
+  const SELLER_PAYTO = "0x" + "5e11".repeat(10);
+  const netAgent = privateKeyToAccount(generatePrivateKey());
+  const minted = await jsonReq("/api/attestations", { address: netAgent.address, resource: "/premium/report", price: "0.01", payee: SELLER_PAYTO, rail: "x402" });
+  const offline = await verifyAttestation(minted.body.token, { trustedIssuers: [ISSUER], audience: SELLER_PAYTO.toUpperCase().replace("0X", "0x"), resource: "/premium/report", amountUSD: 0.01, payer: netAgent.address });
+  check(
+    "a governed-spend attestation is minted only after the policy check and verifies offline against the issuer address alone — payer, payee, resource, ceiling and policy version under one EIP-191 signature",
+    issuerDoc.spec === "spendveto-issuer/v1" && /^0x[0-9a-fA-F]{40}$/.test(ISSUER || "") && minted.status === 201 && minted.body.token?.startsWith("sva1.") && offline.ok === true &&
+      offline.claims.sub === netAgent.address.toLowerCase() && offline.claims.amt === "0.01" && offline.claims.dec === "allowed" && /^[0-9a-f]{64}$/.test(offline.claims.pol) && offline.claims.exp - offline.claims.iat === 300,
+    `status=${minted.status} ok=${offline.ok} ${offline.code || ""}`
+  );
+  const [svaPrefix, svaPayload, svaSig] = minted.body.token.split(".");
+  const inflated = `${svaPrefix}.${Buffer.from(JSON.stringify({ ...JSON.parse(Buffer.from(svaPayload, "base64url").toString("utf8")), amt: "100" })).toString("base64url")}.${svaSig}`;
+  const rogue = privateKeyToAccount(generatePrivateKey());
+  const rogueToken = await mintAttestation({ ...offline.claims, iss: rogue.address, jti: "rogue-1" }, (message) => rogue.signMessage({ message }));
+  const failCodes = {
+    tampered: (await verifyAttestation(inflated, { trustedIssuers: [ISSUER] })).code,
+    selfMinted: (await verifyAttestation(rogueToken, { trustedIssuers: [ISSUER] })).code,
+    noTrust: (await verifyAttestation(minted.body.token, { trustedIssuers: [] })).code,
+    expired: (await verifyAttestation(minted.body.token, { trustedIssuers: [ISSUER], now: Date.now() + 3600e3 })).code,
+    payee: (await verifyAttestation(minted.body.token, { trustedIssuers: [ISSUER], audience: "0x" + "ab".repeat(20) })).code,
+    price: (await verifyAttestation(minted.body.token, { trustedIssuers: [ISSUER], amountUSD: 0.02 })).code,
+    payer: (await verifyAttestation(minted.body.token, { trustedIssuers: [ISSUER], payer: rogue.address })).code,
+  };
+  check(
+    "verification fails closed with a root-cause code: an inflated amount breaks the signature, a self-minted token is an untrusted issuer, an empty trust list accepts nothing, and expiry, payee, price and payer are each enforced",
+    failCodes.tampered === "attestation_bad_signature" && failCodes.selfMinted === "attestation_untrusted_issuer" && failCodes.noTrust === "attestation_no_trusted_issuers" &&
+      failCodes.expired === "attestation_expired" && failCodes.payee === "attestation_audience_mismatch" && failCodes.price === "attestation_amount_insufficient" && failCodes.payer === "attestation_payer_mismatch",
+    JSON.stringify(failCodes)
+  );
+  const overCapMint = await jsonReq("/api/attestations", { address: netAgent.address, resource: "/premium/big", price: "5" });
+  const needsHumanMint = await jsonReq("/api/attestations", { address: netAgent.address, resource: "/premium/approval", price: "0.5" });
+  const netApproval = (await jsonReq("/api/approvals", { address: netAgent.address, resource: "/premium/approval", price: "0.5" })).body;
+  await jsonReq(`/api/approvals/${netApproval.id}/decide`, { decision: "approved" });
+  const approvedMint = await jsonReq("/api/attestations", { address: netAgent.address, resource: "/premium/approval", price: "0.5" });
+  const netApprovalAfter = await fetch(`${BASE}/api/approvals/${netApproval.id}`).then((r) => r.json());
+  check(
+    "no attestation without a yes: an over-cap spend is refused with the policy's own code, an above-threshold spend needs a human first, and once approved the attestation says so — without consuming the approval the payment itself must still present",
+    overCapMint.status === 403 && overCapMint.body.code === "per_call_cap" && needsHumanMint.status === 409 && needsHumanMint.body.code === "approval_required" &&
+      approvedMint.status === 201 && approvedMint.body.claims?.dec === "approved" && approvedMint.body.claims?.apr === netApproval.id && netApprovalAfter.status === "approved" && !netApprovalAfter.consumed,
+    `overCap=${overCapMint.status}/${overCapMint.body.code} human=${needsHumanMint.status} approved=${approvedMint.status}/${approvedMint.body.claims?.dec}`
+  );
+
+  const { TOOLS: NET_TOOLS } = await import("../shared-config.js");
+  const translateTool = NET_TOOLS.find((t) => t.id === "translate");
+  const payTranslate = async (acct, attestation) => {
+    const ch = await fetch(`${BASE}${translateTool.path}`).then((r) => r.json());
+    const sig = await acct.signMessage({ message: `${ch.nonce}:${ch.resource}:${ch.price}:base-sepolia` });
+    const r = await fetch(`${BASE}${translateTool.path}`, { headers: { "X-SIM-PAYMENT": `${acct.address}:${ch.nonce}:base-sepolia:${sig}`, ...(attestation ? { "X-SpendVeto-Attestation": attestation } : {}) } });
+    return { status: r.status, body: await r.json() };
+  };
+  writeFileSync(`${ROOT}data/policy.json`, JSON.stringify({ ...LOOSE_POLICY, attestations: { requireOnCatalog: true } }, null, 2));
+  const gateAgent = privateKeyToAccount(generatePrivateKey());
+  const bareSale = await payTranslate(gateAgent);
+  const governedSale = await governedCall(translateTool, gateAgent, { chain: "base-sepolia" });
+  check(
+    "a seller can sell only to governed agents: with requireOnCatalog, a validly signed payment carrying no attestation is refused (402 attestation_missing), while the same agent's governed call — policy, attestation, payment — settles",
+    bareSale.status === 402 && bareSale.body.reason === "attestation_missing" && governedSale.ok === true && governedSale.stage === "paid",
+    `bare=${bareSale.status}/${bareSale.body.reason} governed=${governedSale.stage} ${governedSale.reason || ""}`
+  );
+  const gateToken = (await jsonReq("/api/attestations", { address: gateAgent.address, resource: translateTool.path, price: translateTool.price })).body.token;
+  const firstUse = await payTranslate(gateAgent, gateToken);
+  const secondUse = await payTranslate(gateAgent, gateToken);
+  const otherToken = (await jsonReq("/api/attestations", { address: gateAgent.address, resource: translateTool.path, price: translateTool.price })).body.token;
+  const borrowedUse = await payTranslate(privateKeyToAccount(generatePrivateKey()), otherToken);
+  writeFileSync(`${ROOT}data/policy.json`, JSON.stringify(LOOSE_POLICY, null, 2));
+  check(
+    "at the gate an attestation is single-use and bound to its payer: a second presentation is refused as replayed, and one wallet's attestation can't vouch for another wallet's payment",
+    firstUse.status === 200 && secondUse.status === 402 && secondUse.body.reason === "attestation_replayed" && borrowedUse.status === 402 && borrowedUse.body.reason === "attestation_payer_mismatch",
+    `first=${firstUse.status} second=${secondUse.status}/${secondUse.body.reason} borrowed=${borrowedUse.status}/${borrowedUse.body.reason}`
+  );
+
+  const sellerApp = express();
+  sellerApp.get("/premium/report", requireGovernedAgent({ trustedIssuers: [ISSUER], audience: SELLER_PAYTO, price: 0.01 }), (req, res) => res.json({ ok: true, governedBy: req.spendveto.iss, dec: req.spendveto.dec }));
+  const sellerServer = sellerApp.listen(8493);
+  const sellerGet = async (token) => {
+    const r = await fetch("http://localhost:8493/premium/report", { headers: token ? { "X-SpendVeto-Attestation": token } : {} });
+    return { status: r.status, body: await r.json() };
+  };
+  const sellerFresh = (await jsonReq("/api/attestations", { address: netAgent.address, resource: "/premium/report", price: "0.01", payee: SELLER_PAYTO })).body.token;
+  const sellerNone = await sellerGet();
+  const sellerOk = await sellerGet(sellerFresh);
+  const sellerAgain = await sellerGet(sellerFresh);
+  const sellerRogue = await sellerGet(rogueToken);
+  let gateNeedsIssuers = false;
+  try {
+    requireGovernedAgent({});
+  } catch {
+    gateNeedsIssuers = true;
+  }
+  sellerServer.close();
+  check(
+    "a seller requires governed agents with one middleware and no SpendVeto server: ungoverned and self-minted requests are refused, a fresh attestation passes once, and a gate with no trusted issuers refuses to start",
+    sellerNone.status === 402 && sellerNone.body.code === "attestation_missing" && sellerOk.status === 200 && sellerOk.body.governedBy === ISSUER &&
+      sellerAgain.status === 402 && sellerAgain.body.code === "attestation_replayed" && sellerRogue.body.code === "attestation_untrusted_issuer" && gateNeedsIssuers,
+    `none=${sellerNone.body.code} ok=${sellerOk.status} again=${sellerAgain.body.code} rogue=${sellerRogue.body.code}`
+  );
+
+  const SCAM = "0x" + "bad0".repeat(10);
+  const filed = await jsonReq("/api/reputation/reports", { subject: SCAM.toUpperCase().replace("0X", "0x"), kind: "scam", severity: "block", reason: "drained a test agent - internal note" });
+  const ap2Scam = await jsonReq("/api/ap2/evaluate", { agent: netAgent.address, amountUSD: 0.01, payee: SCAM });
+  const ourFeed = await fetch(`${BASE}/api/reputation/feed`).then((r) => r.json());
+  const ourFeedCheck = await verifyFeed(ourFeed, { trustedPublishers: [ISSUER] });
+  check(
+    "a counterparty reported here is refused before anything is signed, however its address is cased — and the published feed carries only a domain-separated SHA-256 of it: no address, no reason text, verifiable offline against the instance address",
+    filed.status === 201 && ap2Scam.body.decision === "deny" && ap2Scam.body.code === "payee_reputation_block" && ourFeedCheck.ok === true &&
+      ourFeed.entries.some((e) => e.subject === subjectHash(SCAM)) && !JSON.stringify(ourFeed).toLowerCase().includes("bad0bad0") && !JSON.stringify(ourFeed).includes("internal note"),
+    `filed=${filed.status} ap2=${ap2Scam.body.decision}/${ap2Scam.body.code} feed=${ourFeedCheck.ok}`
+  );
+  const orgB = privateKeyToAccount(generatePrivateKey());
+  const FRAUD_VPA = "refund-desk@okaxis";
+  const signFeed = async (entries, issuedAt) => {
+    const body = { spec: "spendveto-reputation-feed/v1", publisher: orgB.address, name: "Org B", issuedAt, entries };
+    const digest = feedDigest(body);
+    return { ...body, digest, signature: await orgB.signMessage({ message: `${FEED_MESSAGE_PREFIX}${digest}` }) };
+  };
+  const feedB = await signFeed([
+    { subject: subjectHash(FRAUD_VPA), kind: "fraud", severity: "block", count: 3 },
+    { subject: subjectHash("https://Sketchy-Data.example/api"), kind: "non_delivery", severity: "review", count: 1 },
+  ], new Date(Date.now() - 60e3).toISOString());
+  const untrustedImport = await jsonReq("/api/reputation/import", feedB);
+  await jsonReq("/api/reputation/settings", { trustedPublishers: [orgB.address] }, "PUT");
+  const trustedImport = await jsonReq("/api/reputation/import", feedB);
+  const vpaVerdict = await fetch(`${BASE}/api/reputation/check?subject=${encodeURIComponent("Refund-Desk@OKAXIS")}`).then((r) => r.json());
+  const domainVerdict = await fetch(`${BASE}/api/reputation/check?subject=sketchy-data.example`).then((r) => r.json());
+  check(
+    "reputation crosses organizations only on explicit trust: another publisher's signed feed is refused until its address is trusted, then its block refuses that UPI VPA here (any casing) and its review sends that domain to a human",
+    untrustedImport.status === 403 && untrustedImport.body.code === "feed_no_trusted_publishers" && trustedImport.status === 200 && trustedImport.body.entries === 2 &&
+      vpaVerdict.verdict === "block" && vpaVerdict.matches[0]?.source === orgB.address.toLowerCase() && domainVerdict.verdict === "review",
+    `untrusted=${untrustedImport.body.code} imported=${trustedImport.status} vpa=${vpaVerdict.verdict} domain=${domainVerdict.verdict}`
+  );
+  const editedFeed = { ...feedB, entries: [...feedB.entries, { subject: subjectHash("0x" + "cafe".repeat(10)), kind: "scam", severity: "block", count: 1 }] };
+  const editedImport = await jsonReq("/api/reputation/import", editedFeed);
+  const sameAgain = await jsonReq("/api/reputation/import", feedB);
+  const newerB = await signFeed([{ subject: subjectHash(FRAUD_VPA), kind: "fraud", severity: "block", count: 4 }], new Date().toISOString());
+  const newerImport = await jsonReq("/api/reputation/import", newerB);
+  const rollback = await jsonReq("/api/reputation/import", feedB);
+  const domainAfter = await fetch(`${BASE}/api/reputation/check?subject=sketchy-data.example`).then((r) => r.json());
+  check(
+    "a feed can't be edited or rolled back: an entry added after signing breaks its digest, and once a newer feed is in, the older one (which still flagged the domain) is refused as stale — the publisher's withdrawal sticks",
+    editedImport.status === 400 && editedImport.body.code === "feed_digest_mismatch" && sameAgain.status === 409 && newerImport.status === 200 &&
+      rollback.status === 409 && rollback.body.code === "feed_stale" && domainAfter.verdict === "clear",
+    `edited=${editedImport.body.code} same=${sameAgain.status} newer=${newerImport.status} rollback=${rollback.body.code} domain=${domainAfter.verdict}`
+  );
+  await jsonReq("/api/reputation/settings", { importedAction: "review" }, "PUT");
+  const ap2Review = await jsonReq("/api/ap2/evaluate", { agent: netAgent.address, amountUSD: 0.001, payee: FRAUD_VPA });
+  writeFileSync(`${ROOT}data/policy.json`, JSON.stringify({ ...LOOSE_POLICY, reputation: { trustedPublishers: [orgB.address] }, payouts: { requireAgentToken: false } }, null, 2));
+  const payoutFlagged = await jsonReq("/api/payouts", { provider: "paypal", amount: 25, currency: "USD", payee: "vendor@example.com", counterparty: FRAUD_VPA, agent: "ap-bot", purpose: "refund" });
+  await jsonReq("/api/reputation/reports", { subject: "card-merchant:4445550001", kind: "fraud", severity: "block" });
+  const flaggedSwipe = stripeAuthEvent(1500, "5734", "ic_reputation_card");
+  flaggedSwipe.data.object.merchant_data.network_id = "4445550001";
+  const swipeDecision = await stripePost(flaggedSwipe);
+  writeFileSync(`${ROOT}data/policy.json`, JSON.stringify(LOOSE_POLICY, null, 2));
+  check(
+    "the same reports govern every rail: under importedAction review an imported block asks a human instead, a payout whose counterparty another organization flagged is refused, and a card swipe at a reported merchant id is declined in Stripe's format",
+    ap2Review.body.decision === "requires_approval" && payoutFlagged.status === 403 && payoutFlagged.body.code === "payee_reputation_block" &&
+      swipeDecision.status === 200 && swipeDecision.body.approved === false && swipeDecision.body.metadata?.spendveto_code === "card_merchant_reputation_block",
+    `ap2=${ap2Review.body.decision} payout=${payoutFlagged.status}/${payoutFlagged.body.code} card=${swipeDecision.body.approved}/${swipeDecision.body.metadata?.spendveto_code}`
+  );
+  check(
+    "one counterparty, one hash: EVM checksum casing, a URL and its bare domain, a spaced lower-case IBAN and an upper-case VPA each canonicalize to one subject, while case-sensitive base58 addresses keep their case",
+    subjectHash("0xAbC0000000000000000000000000000000000001") === subjectHash("0xabc0000000000000000000000000000000000001") &&
+      subjectHash("https://Shop.Example/checkout") === subjectHash("shop.example") &&
+      subjectHash("gb82 west 1234 5698 7654 32") === subjectHash("GB82WEST12345698765432") &&
+      subjectHash("Name@OKAXIS") === subjectHash("name@okaxis") &&
+      subjectHash("9WzDXwBbmkg8ZTbNMqUxvQRAyrZzDsGYdLVL9zYtAWWM") !== subjectHash("9wzdxwbbmkg8ztbnmquxvqrayrzzdsgydlvl9zytawwm"),
+    "canonical forms"
+  );
+
+  const specText = readFileSync(`${ROOT}spec/policy-v1.schema.json`, "utf8");
+  const hostedSpecText = readFileSync(`${ROOT}site/schemas/policy-v1.json`, "utf8");
+  const shippedPacks = readdirSync(`${ROOT}data/policy-packs`).filter((f) => f.endsWith(".json")).map((f) => JSON.parse(readFileSync(`${ROOT}data/policy-packs/${f}`, "utf8")));
+  const shippedDefault = { maxPerCallUSD: 0.05, maxPerHourUSD: 0.2, maxCallsPerHour: 10, requireApprovalAboveUSD: 0.015, anomaly: { burstAttempts: 10, burstWindowSeconds: 10 } };
+  const everySection = {
+    ...LOOSE_POLICY, approversRequired: 2, requireWorldIdForApproval: false, allowedChains: ["base-sepolia", "base", "solana-devnet"], allowedPayees: ["vitalik.eth", SELLER_PAYTO],
+    allowedHoursUTC: { start: 22, end: 6 }, categoryCapsUSD: { content: 0.5, payout: 2000 }, billingWebhookUrl: "https://billing.example/hook", billingSigningSecret: "s",
+    llm: { ...LLM_BASE_POLICY.llm, mode: "observe", sessionBudgetUSD: null, approvalAboveUSD: 2, allowedModels: null, blockedModels: ["o1-pro"], identityFrom: "credential", prices: { "my-model": { inputPerM: 1, outputPerM: 2 } }, unknownModelRates: { openai: { inputPerM: 5, outputPerM: 20 } }, tagBudgets: { "customer=cus_123": { dailyUSD: 5 } } },
+    cards: { maxAuthorizationUSD: 200, blockedMccs: ["7995", 6051], allowedMccs: null, allowedCurrencies: ["usd", "eur"] },
+    payouts: { maxPerPayoutUSD: 500, allowedPayees: ["fa_123"], allowedPurposes: ["refund", "vendor_bill"], fxRates: { INR: 0.012 }, requireAgentToken: true },
+    rebilling: { enabled: true, markupPct: 25, eventName: "spendveto_ai_usage", customerTag: "customer" }, finops: { billingAccountId: "acme", billingAccountName: "Acme" },
+    authCapture: { maxHoldSeconds: 86400, allowedFlows: ["escrow"], allowedOperators: null }, attestations: { ttlSeconds: 120, trustedIssuers: [ISSUER], requireOnCatalog: false },
+    reputation: { trustedPublishers: [orgB.address], importedAction: "review", publisherName: "Acme" },
+    upi: { maxPerTxnINR: 5000, allowedPayeeVpas: ["netflix@okhdfc"] }, eu: { maxPerTxnEUR: 100, pspFraudRateBps: 4 }, uk: { allowedPayeeAccounts: ["040004:12345678"], reimbursementCapGBP: 85000 },
+    br: { nighttimeWindow: "22-6", nighttimeLimitBRL: 1000 }, us: { allowedPayeeAccounts: ["021000021:123456789"] }, "x-team": "payments", $comment: "kitchen sink",
+  };
+  const sectionVerdicts = [shippedDefault, ...shippedPacks, LOOSE_POLICY, everySection].map((p) => validatePolicy(p));
+  check(
+    "the policy format is an open standard: the hosted schema is byte-identical to the one the engine validates with, uses only keywords the validator implements, and accepts the shipped default, all four packs and a policy that uses every section",
+    specText === hostedSpecText && unsupportedKeywords(JSON.parse(specText)).length === 0 && JSON.parse(specText).$id === "https://spendveto.com/schemas/policy-v1.json" && sectionVerdicts.every((v) => v.valid),
+    sectionVerdicts.filter((v) => !v.valid).map((v) => JSON.stringify(v.errors.slice(0, 2))).join(" ") || `${sectionVerdicts.length} policies valid`
+  );
+  const typoVerdict = validatePolicy({ maxPerHourUsd: 5, allowedChains: ["base", "basee"], llm: { dailyBudgetUSD: "10", mode: "block" } });
+  const apiTypo = await jsonReq("/api/policy/validate", { policy: { maxPerHourUsd: 5 } });
+  check(
+    "a typo can't fail open silently: an unknown key is an error with a did-you-mean, wrong types, bad enums and unregistered chain ids are errors at JSON-pointer paths — and POST /api/policy/validate returns the same verdict",
+    !typoVerdict.valid && typoVerdict.errors.some((e) => e.path === "/maxPerHourUsd" && e.message.includes('did you mean "maxPerHourUSD"')) && typoVerdict.errors.some((e) => e.path === "/llm/dailyBudgetUSD") &&
+      typoVerdict.errors.some((e) => e.path === "/llm/mode") && typoVerdict.errors.some((e) => e.path === "/allowedChains/1") && apiTypo.status === 200 && apiTypo.body.valid === false && apiTypo.body.errors[0]?.path === "/maxPerHourUsd",
+    typoVerdict.errors.map((e) => e.path).join(",")
+  );
+  const typoFile = join(tmpData, "typo-policy.json");
+  const warnFile = join(tmpData, "warn-policy.json");
+  writeFileSync(typoFile, JSON.stringify({ maxPerHourUsd: 5 }));
+  writeFileSync(warnFile, JSON.stringify({ maxPerCallUSD: 0.5, requireApprovalAboveUSD: 1 }));
+  const cliRun = (...a) => spawnSync(process.execPath, ["bin/spendveto.mjs", "validate", ...a], { cwd: ROOT, encoding: "utf8" });
+  const cliTypo = cliRun(typoFile);
+  const cliPack = cliRun("data/policy-packs/production.json");
+  const cliStrict = cliRun(warnFile, "--strict");
+  const cliLenient = cliRun(warnFile);
+  check(
+    "`spendveto validate` is the CI gate: exit 1 on a typo (naming the key it meant), 0 on a shipped pack, and --strict also fails a policy whose approval threshold sits above its per-call cap",
+    cliTypo.status === 1 && cliTypo.stdout.includes("maxPerHourUSD") && cliPack.status === 0 && cliStrict.status === 1 && cliLenient.status === 0,
+    `typo=${cliTypo.status} pack=${cliPack.status} strict=${cliStrict.status} lenient=${cliLenient.status}`
+  );
+  // The GitHub Action (action.yml) is that same validator, run from the
+  // action's own checkout with no install: execute its run block verbatim.
+  const actionYml = readFileSync(`${ROOT}action.yml`, "utf8");
+  const actionRun = (actionYml.match(/run: \|\n((?: {8}.*\n?)+)/) || [])[1]?.replace(/^ {8}/gm, "") || "";
+  const runAction = (file, strict) => spawnSync("bash", ["-c", actionRun], { env: { ...process.env, GITHUB_WORKSPACE: tmpData, GITHUB_ACTION_PATH: ROOT, RUNNER_TEMP: tmpData, POLICY_FILE: file, STRICT: strict }, encoding: "utf8" });
+  const actionTypo = runAction("typo-policy.json", "false");
+  const actionWarnStrict = runAction("warn-policy.json", "true");
+  const actionWarn = runAction("warn-policy.json", "false");
+  check(
+    "the GitHub Action is the same gate in anyone's CI with no install — its step fails the job on a typo, and on a contradictory policy only when strict is set",
+    actionRun.includes("bin/spendveto.mjs\" validate") && actionTypo.status === 1 && actionTypo.stdout.includes("maxPerHourUSD") && actionWarnStrict.status === 1 && actionWarn.status === 0,
+    `typo=${actionTypo.status} strict=${actionWarnStrict.status} lenient=${actionWarn.status} ${actionTypo.stderr.slice(0, 120)}`
+  );
+
+  // --- MPP (Machine Payments Protocol — Stripe + Tempo): offers decided before mppx signs (server/mpp.js) ---
+  // Every challenge here is produced by the official SDK (mppx, pinned), so
+  // the parser is tested against what real MPP servers send, not a re-typing
+  // of the spec. The paying client in the last check is mppx itself; only its
+  // payment method is a stand-in that builds the credential offline (no chain).
+  const { Challenge: MppChallenge, Credential: MppCredential, Receipt: MppReceipt, Method: MppMethod, z: mppz } = await import("mppx");
+  const { Methods: TempoMethods } = await import("mppx/tempo");
+  const { Mppx } = await import("mppx/client");
+  const { governMppx } = await import("../integrations/mppx.js");
+  const OUSD = "0x20c0000000000000000000006a37DA5C996874BE";
+  const MPP_PAYEE = "0x" + "a11c".repeat(10);
+  const MPP_SPLIT = "0x" + "5b11".repeat(10);
+  const MPP_REALM = "api.mpp-seller.test";
+  const mppAgent = privateKeyToAccount(generatePrivateKey());
+  const mppSoon = () => new Date(Date.now() + 5 * 60_000).toISOString();
+  const mppCharge = (amount, extra = {}, expires = mppSoon()) => MppChallenge.fromMethod(TempoMethods.charge, { secretKey: "verify", realm: MPP_REALM, expires, request: { amount, decimals: 6, currency: OUSD, recipient: MPP_PAYEE, chainId: 42431, ...extra } });
+  const mppSession = (suggestedDeposit, escrowContract = "0x4d50500000000000000000000000000000000000") => MppChallenge.fromMethod(TempoMethods.session, { secretKey: "verify", realm: MPP_REALM, expires: mppSoon(), request: { amount: "0.000025", decimals: 6, unitType: "llm_token", suggestedDeposit, currency: OUSD, recipient: MPP_PAYEE, chainId: 42431, escrowContract, sessionProtocol: "v2" } });
+  const mppHeader = (...cs) => {
+    const h = new Headers();
+    for (const c of cs) h.append("WWW-Authenticate", typeof c === "string" ? c : MppChallenge.serialize(c));
+    return h.get("www-authenticate");
+  };
+  const mppEval = (challengeHeader, extra = {}) => jsonReq("/api/mpp/evaluate", { address: mppAgent.address, wwwAuthenticate: challengeHeader, ...extra });
+  const mppHolds = () => fetch(`${BASE}/api/upto/holds/${mppAgent.address}`).then((r) => r.json());
+  const mppLedger = async () => (await fetch(`${BASE}/api/ledger`).then((r) => r.json())).entries.filter((e) => e.mode === "mpp" && e.address === mppAgent.address);
+  const MPP_POLICY = { ...LOOSE_POLICY, maxPerCallUSD: 0.5, maxPerHourUSD: 0.8, requireApprovalAboveUSD: 0.5, mpp: { maxSessionDepositUSD: 0.6 } };
+  writeFileSync(`${ROOT}data/policy.json`, JSON.stringify(MPP_POLICY, null, 2));
+
+  const mppFirst = await mppEval(mppHeader(mppCharge("0.04"), 'Bearer realm="api", error="invalid_token"', mppCharge("0.09")));
+  check(
+    "an MPP 402 carrying several offers in one header (fetch joins them, a Bearer challenge between) parses into its Payment offers, and the cheapest Tempo charge is priced from its stablecoin — OUSD on Moderato, 6-decimal base units",
+    mppFirst.body.decision === "allow" && mppFirst.body.offers?.length === 2 && mppFirst.body.offer?.exposureUSD === 0.04 && mppFirst.body.offer.network === "tempo-moderato" &&
+      mppFirst.body.offer.currency.symbol === "OUSD" && mppFirst.body.maxAmount === "40000" && /^mppc_/.test(mppFirst.body.chargeId || "") && !!mppFirst.body.signature,
+    `${mppFirst.body.decision} ${mppFirst.body.code || ""} offers=${mppFirst.body.offers?.length}`
+  );
+  const heldBeforeReport = await mppHolds();
+  const mppReceipt = MppReceipt.serialize(MppReceipt.from({ method: "tempo", reference: "0x" + "cd".repeat(32), status: "success", timestamp: new Date().toISOString() }));
+  const paidReport = await jsonReq(`/api/mpp/charges/${mppFirst.body.chargeId}/report`, { outcome: "paid", receipt: mppReceipt });
+  const paidTwice = await jsonReq(`/api/mpp/charges/${mppFirst.body.chargeId}/report`, { outcome: "paid" });
+  const mppSecond = await mppEval(mppHeader(mppCharge("0.05")));
+  const failedReport = await jsonReq(`/api/mpp/charges/${mppSecond.body.chargeId}/report`, { outcome: "failed" });
+  const heldAfterReports = await mppHolds();
+  const bookedCharge = (await mppLedger()).filter((e) => e.mppChargeId === mppFirst.body.chargeId);
+  check(
+    "money MPP is allowed to move is held against the budget at once, a reported payment is booked once with the server's Payment-Receipt kept as evidence, and a failed one releases its hold",
+    heldBeforeReport.mppUSD === 0.04 && paidReport.status === 200 && paidReport.body.charge.receipt === mppReceipt && paidTwice.status === 409 && paidTwice.body.code === "mpp_charge_resolved" &&
+      bookedCharge.length === 1 && bookedCharge[0].amount === 0.04 && bookedCharge[0].status === "paid" && failedReport.body.charge?.status === "failed" && heldAfterReports.mppUSD === 0,
+    `held ${heldBeforeReport.mppUSD} → ${heldAfterReports.mppUSD}, booked ${bookedCharge.length}`
+  );
+
+  const mppShortLived = await mppEval(mppHeader(mppCharge("0.03", {}, new Date(Date.now() + 1500).toISOString())));
+  await sleep(1800);
+  const mppHeldAfterExpiry = await mppHolds();
+  const mppAssumedPaid = (await mppLedger()).filter((e) => e.mppChargeId === mppShortLived.body.chargeId);
+  const mppLateReport = await jsonReq(`/api/mpp/charges/${mppShortLived.body.chargeId}/report`, { outcome: "failed" });
+  check(
+    "an allowed MPP charge nobody reports doesn't vanish from the budget: once its challenge expires it is booked as paid, dated when it was allowed, and a late report can't undo it",
+    mppShortLived.body.decision === "allow" && mppHeldAfterExpiry.mppUSD === 0 && mppAssumedPaid.length === 1 && mppAssumedPaid[0].amount === 0.03 && /assumed paid/.test(mppAssumedPaid[0].reason || "") &&
+      Date.parse(mppAssumedPaid[0].ts) < Date.now() - 1500 && mppLateReport.status === 409 && mppLateReport.body.code === "mpp_charge_resolved",
+    `booked ${mppAssumedPaid.length} at ${mppAssumedPaid[0]?.ts}, late report ${mppLateReport.status}`
+  );
+
+  const mppCodes = {
+    expired: (await mppEval(mppHeader(mppCharge("0.01", {}, new Date(Date.now() - 60_000).toISOString())))).body.code,
+    header: (await mppEval(mppHeader(MppChallenge.from({ id: "hdr", realm: MPP_REALM, method: "tempo", intent: "charge", header: "X-Pay", expires: mppSoon(), request: { amount: "10000", currency: OUSD, recipient: MPP_PAYEE, methodDetails: { chainId: 42431 } } })))).body.code,
+    noChain: (await mppEval(mppHeader(MppChallenge.from({ id: "nochain", realm: MPP_REALM, method: "tempo", intent: "charge", expires: mppSoon(), request: { amount: "10000", currency: OUSD, recipient: MPP_PAYEE } })))).body.code,
+    token: (await mppEval(mppHeader(mppCharge("0.01", { currency: "0x20c000000000000000000000f37de3740ADec032" })))).body.code,
+    method: (await mppEval(mppHeader(MppChallenge.from({ id: "ln", realm: MPP_REALM, method: "lightning", intent: "charge", expires: mppSoon(), request: { amount: "1000", currency: "sat", recipient: "lnbc1" } })))).body.code,
+  };
+  check(
+    "what mppx's own parser lets through is refused before signing: an expired challenge, a credential header other than Authorization/Payment-Authorization, a Tempo offer with no chainId (the drafts disagree on the default), a token SpendVeto can't price, and a method it can't price",
+    mppCodes.expired === "mpp_challenge_expired" && mppCodes.header === "mpp_credential_header_invalid" && mppCodes.noChain === "mpp_chain_unspecified" && mppCodes.token === "mpp_currency_unpriced" && mppCodes.method === "mpp_method_unpriced",
+    JSON.stringify(mppCodes)
+  );
+
+  writeFileSync(`${ROOT}data/policy.json`, JSON.stringify({ ...MPP_POLICY, allowedPayees: [MPP_PAYEE] }, null, 2));
+  const viaSplit = await mppEval(mppHeader(mppCharge("0.04", { splits: [{ amount: "0.03", recipient: MPP_SPLIT }] })));
+  const noSplit = await mppEval(mppHeader(mppCharge("0.04")));
+  if (noSplit.body.chargeId) await jsonReq(`/api/mpp/charges/${noSplit.body.chargeId}/report`, { outcome: "failed" });
+  writeFileSync(`${ROOT}data/policy.json`, JSON.stringify(MPP_POLICY, null, 2));
+  check(
+    "a charge's splits are payees too: one routing $0.03 of a $0.04 charge to a recipient outside allowedPayees is refused, though the main recipient is allowed and the same charge without the split passes",
+    viaSplit.body.decision === "deny" && viaSplit.body.code === "payee_not_allowed" && /split recipient/.test(viaSplit.body.reason || "") && noSplit.body.decision === "allow",
+    `${viaSplit.body.code}: ${viaSplit.body.reason}`
+  );
+
+  const bigDeposit = await mppEval(mppHeader(mppSession("2")));
+  const rogueEscrow = await mppEval(mppHeader(mppSession("0.3", "0x" + "e5c0".repeat(10))));
+  const session = await mppEval(mppHeader(mppSession("0.3")));
+  check(
+    "a session is decided on the deposit it locks, not its per-unit price: over policy.mpp.maxSessionDepositUSD it is refused, with an escrow other than Tempo's channel reserve it is refused, and otherwise allowed with the deposit to hand mppx as maxDeposit",
+    bigDeposit.body.code === "per_call_cap" && rogueEscrow.body.code === "mpp_session_escrow_untrusted" && session.body.decision === "allow" && /^mpps_/.test(session.body.sessionId || "") &&
+      session.body.maxDeposit === "300000" && session.body.offer.unitUSD === 0.000025 && session.body.offer.exposureUSD === 0.3,
+    `${bigDeposit.body.code} / ${rogueEscrow.body.code} / ${session.body.decision} ${session.body.maxDeposit}`
+  );
+
+  const v1 = await jsonReq(`/api/mpp/sessions/${session.body.sessionId}/voucher`, { cumulative: "100000" });
+  const vBack = await jsonReq(`/api/mpp/sessions/${session.body.sessionId}/voucher`, { cumulative: "50000" });
+  const vOver = await jsonReq(`/api/mpp/sessions/${session.body.sessionId}/voucher`, { cumulative: "400000" });
+  const whileOpen = await mppEval(mppHeader(mppCharge("0.49")));
+  const closed = await jsonReq(`/api/mpp/sessions/${session.body.sessionId}/close`, {});
+  const afterClose = await mppEval(mppHeader(mppCharge("0.49")));
+  if (afterClose.body.chargeId) await jsonReq(`/api/mpp/charges/${afterClose.body.chargeId}/report`, { outcome: "failed" });
+  const bookedSession = (await mppLedger()).filter((e) => e.mppSessionId === session.body.sessionId);
+  check(
+    "vouchers are cumulative and capped by the approved deposit (one going backwards or past it is refused); an open session's whole deposit counts against the hourly budget — a $0.49 charge is refused while it's open and allowed once closing books the $0.10 consumed and releases the rest",
+    v1.body.remainingUSD === 0.2 && vBack.body.code === "mpp_voucher_regressed" && vOver.body.code === "mpp_voucher_over_deposit" && whileOpen.body.code === "hourly_usd_cap" &&
+      closed.body.session?.status === "closed" && closed.body.session.releasedUSD === 0.2 && bookedSession.length === 1 && bookedSession[0].amount === 0.1 && afterClose.body.decision === "allow",
+    `voucher ${v1.body.remainingUSD} back=${vBack.body.code} over=${vOver.body.code} open=${whileOpen.body.code} close=${closed.body.session?.status} after=${afterClose.body.decision}`
+  );
+
+  const mppSub = (periodUnit) => MppChallenge.from({ id: `sub-${periodUnit}`, realm: MPP_REALM, method: "tempo", intent: "subscription", expires: mppSoon(), request: { amount: "20000", currency: OUSD, periodCount: "1", periodUnit, recipient: MPP_PAYEE, subscriptionExpires: new Date(Date.now() + 28 * 86400_000 + 3600_000).toISOString(), methodDetails: { chainId: 42431, accessKey: { accessKeyAddress: MPP_SPLIT, keyType: "secp256k1" } } } });
+  const subAsk = await mppEval(mppHeader(mppSub("week")));
+  const subMonthly = await mppEval(mppHeader(mppSub("month")));
+  const subApproval = (await jsonReq("/api/approvals", { address: mppAgent.address, ...subAsk.body.approval })).body;
+  await jsonReq(`/api/approvals/${subApproval.id}/decide`, { decision: "approved" });
+  const subAllowed = await mppEval(mppHeader(mppSub("week")));
+  const subAgain = await mppEval(mppHeader(mppSub("week")));
+  if (subAllowed.body.chargeId) await jsonReq(`/api/mpp/charges/${subAllowed.body.chargeId}/report`, { outcome: "failed" });
+  check(
+    "a subscription is a standing commitment: even at $0.02 a week it needs a human, with the total until it ends ($0.10 over five weeks); Tempo can't bill monthly; and the approval is consumed by the first allow, so it can't authorize a second subscription",
+    subAsk.body.decision === "requires_approval" && subAsk.body.code === "mpp_subscription_needs_approval" && subAsk.body.offer?.commitmentUSD === 0.1 && subAsk.body.approval?.resource === `mpp:${MPP_REALM}:tempo:subscription` &&
+      subMonthly.body.code === "mpp_challenge_malformed" && subAllowed.body.decision === "allow" && subAllowed.body.approvalId === subApproval.id && subAgain.body.decision === "requires_approval",
+    `${subAsk.body.code} commitment=${subAsk.body.offer?.commitmentUSD} monthly=${subMonthly.body.code} approved=${subAllowed.body.decision} again=${subAgain.body.decision}`
+  );
+
+  // A local MPP seller and the official mppx client, governed through its
+  // onChallenge hook. The seller sends a real Tempo charge challenge and
+  // answers a request carrying a Payment credential with 200 + a receipt.
+  const mppSellerSaw = [];
+  let mppSellerPrice = "0.6";
+  mppSeller = createServer((req, res) => {
+    const auth = req.headers.authorization || "";
+    mppSellerSaw.push(auth);
+    if (auth.startsWith("Payment ")) {
+      res.writeHead(200, { "content-type": "application/json", "payment-receipt": mppReceipt });
+      return res.end(JSON.stringify({ report: "ok" }));
+    }
+    res.writeHead(402, { "www-authenticate": MppChallenge.serialize(mppCharge(mppSellerPrice)), "content-type": "application/problem+json" });
+    res.end(JSON.stringify({ type: "https://paymentauth.org/problems/payment-required", status: 402 }));
+  });
+  mppSeller.listen(8385);
+  const offlineTempo = MppMethod.toClient(
+    MppMethod.from({ name: "tempo", intent: "charge", schema: { credential: { payload: mppz.object({ type: mppz.string(), hash: mppz.string() }) }, request: mppz.record(mppz.string(), mppz.unknown()) } }),
+    { async createCredential({ challenge }) { return MppCredential.serialize({ challenge, payload: { type: "hash", hash: "0x" + "ab".repeat(32) } }); } }
+  );
+  const mppGoverned = governMppx({ address: mppAgent.address, spendveto: BASE });
+  const mppxClient = Mppx.create({ methods: [offlineTempo], onChallenge: mppGoverned.onChallenge, polyfill: false });
+  const refusedPay = await mppGoverned.fetch(mppxClient, "http://localhost:8385/report").then(() => null, (e) => e);
+  const credentialOnRefusal = mppSellerSaw.some((a) => a.startsWith("Payment "));
+  mppSellerPrice = "0.02";
+  const paidPay = await mppGoverned.fetch(mppxClient, "http://localhost:8385/report");
+  await sleep(100);
+  const mppxBooked = (await mppLedger()).filter((e) => e.status === "paid" && e.amount === 0.02 && e.mppChargeId);
+  check(
+    "the official mppx client, governed through its onChallenge hook: an over-cap offer is refused before a credential exists (the seller never sees one), and an allowed one is paid by mppx and booked from the seller's receipt",
+    /SpendVeto refused this MPP payment \(per_call_cap\)/.test(refusedPay?.message || "") && !credentialOnRefusal && paidPay.status === 200 && mppSellerSaw.at(-1).startsWith("Payment ") && mppxBooked.length === 1,
+    `refused=${refusedPay?.message?.slice(0, 60)} credentialOnRefusal=${credentialOnRefusal} paid=${paidPay.status} booked=${mppxBooked.length}`
+  );
+  mppSeller.close();
+  mppSeller = null;
+
+  const mppSchema = validatePolicy({ allowedChains: ["base-sepolia", "tempo-moderato"], mpp: { maxSessionDepositUSD: 2, allowedMethods: ["tempo", "stripe"] } });
+  const mppTypo = validatePolicy({ mpp: { maxSessionDepositUsd: 2 } });
+  check(
+    "the policy standard covers MPP: an mpp section validates and Tempo networks are chains a policy may allow, while a mis-cased limit there is caught with a did-you-mean instead of silently failing open",
+    mppSchema.valid && mppTypo.errors.some((e) => e.path === "/mpp/maxSessionDepositUsd" && e.message.includes('did you mean "maxSessionDepositUSD"')),
+    JSON.stringify(mppSchema.errors.concat(mppTypo.errors).map((e) => e.path))
+  );
+  writeFileSync(`${ROOT}data/policy.json`, JSON.stringify(LOOSE_POLICY, null, 2));
+
+  // --- Out-of-band spend (server/outofband.js): what a governed wallet pays around the gate (GitHub issue #1) ---
+  // A delegated child pays $0.01 through SpendVeto, then sends $0.03 straight
+  // from its wallet. Every in-gate call passed; the cap must still see $0.04.
+  const { randomBytes: oobRandom } = await import("node:crypto");
+  const oobTx = () => "0x" + oobRandom(32).toString("hex");
+  const oobParent = privateKeyToAccount(generatePrivateKey());
+  const oobChild = privateKeyToAccount(generatePrivateKey()).address;
+  const OOB_SELLER = "0x" + "0bb5".repeat(10);
+  const OOB_ELSEWHERE = "0x" + "e15e".repeat(10);
+  const OOB_TREASURY = "0x" + "7ea5".repeat(10);
+  const OOB_USDC = "0x036CbD53842c5426634e7929541eC2318f3dCF7e";
+  const oobAgo = (s) => Math.floor(Date.now() / 1000) - s;
+  const oobTransfer = (txHash, to, value, extra = {}) => ({ chain: "base-sepolia", txHash, logIndex: 0, from: oobChild, to, token: OOB_USDC, value: String(value), blockTime: oobAgo(60), ...extra });
+  // The same call the testnet client makes after a settlement (client/pay.js), carrying the facilitator's hash; it answers 204.
+  const oobLogPayment = (txHash) => fetch(`${BASE}/api/ledger/event`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ address: oobChild, resource: "/api/agent/review", price: 0.01, chain: "base-sepolia", status: "paid", txHash }) });
+  const OOB_POLICY = { ...LOOSE_POLICY, outOfBand: { chains: ["base-sepolia"], ignoreTo: [OOB_TREASURY], graceSeconds: 0, lookbackBlocks: 100 } };
+  writeFileSync(`${ROOT}data/policy.json`, JSON.stringify(OOB_POLICY, null, 2));
+  await jsonReq("/api/delegations", { parentAddress: oobParent.address, childAddress: oobChild, capUSD: 0.05, label: "oob-child" });
+  const oobBefore = await checkPolicy(oobChild, 0.02, "summarize", "base-sepolia");
+  const oobGovernedTx = oobTx();
+  await oobLogPayment(oobGovernedTx);
+  const oobDirectTx = oobTx();
+  const oobUnpricedTx = oobTx();
+  const oobDelivery = await jsonReq("/api/outofband/transfers", { transfers: [
+    oobTransfer(oobGovernedTx, OOB_SELLER, 10000),
+    oobTransfer(oobDirectTx, OOB_ELSEWHERE, 30000),
+    oobTransfer(oobTx(), OOB_ELSEWHERE, 50000, { from: "0x" + "f0e1".repeat(10) }),
+    oobTransfer(oobTx(), OOB_TREASURY, 70000),
+    oobTransfer(oobUnpricedTx, OOB_ELSEWHERE, "5000000000000000000", { token: "0x" + "70c3".repeat(10) }),
+  ] });
+  await sleep(300);
+  const oobLedger = async () => (await fetch(`${BASE}/api/ledger`).then((r) => r.json())).entries.filter((e) => e.status === "unmanaged" && e.address?.toLowerCase() === oobChild.toLowerCase());
+  const oobBooked = await oobLedger();
+  const oobDirect = oobBooked.find((e) => e.txHash === oobDirectTx);
+  const oobUnpriced = oobBooked.find((e) => e.txHash === oobUnpricedTx);
+  const oobAlerts = alertsReceived.filter((a) => a.type === "unmanaged_spend" && a.address?.toLowerCase() === oobChild.toLowerCase());
+  check(
+    "out-of-band transfers are reconciled against the ledger: the one SpendVeto recorded (same settlement hash) is managed, the direct one is booked as unmanaged spend with its hash and payee, another wallet's and the operator's treasury transfers are left alone, an unknown token is recorded unpriced — never as dollars — and each unmanaged one alerts",
+    oobDelivery.body.managed === 1 && oobDelivery.body.unmanaged === 2 && oobDelivery.body.ignored === 1 && oobDelivery.body.foreign === 1 && oobDelivery.body.unmanagedUSD === 0.03 &&
+      oobDirect?.amount === 0.03 && oobDirect.payTo === OOB_ELSEWHERE.toLowerCase() && oobDirect.mode === "out-of-band" && oobUnpriced?.unpriced === true && oobUnpriced.amount === 0 && oobAlerts.length === 2,
+    JSON.stringify({ ...oobDelivery.body, alerts: oobAlerts.length })
+  );
+  const oobAfter = await checkPolicy(oobChild, 0.02, "summarize", "base-sepolia");
+  check(
+    "caps hold when the agent finds another way to pay: before the direct transfer a $0.02 governed call fits the child's $0.05 cap; after it, the same call is refused — $0.01 governed plus $0.03 paid around the gate",
+    oobBefore.allowed === true && oobAfter.allowed === false && oobAfter.code === "delegation_cap",
+    `${oobBefore.allowed} → ${oobAfter.code}: ${oobAfter.reason}`
+  );
+  const oobAgain = await jsonReq("/api/outofband/transfers", { transfers: [oobTransfer(oobDirectTx, OOB_ELSEWHERE, 30000)] });
+  writeFileSync(`${ROOT}data/policy.json`, JSON.stringify({ ...OOB_POLICY, outOfBand: { ...OOB_POLICY.outOfBand, graceSeconds: 120 } }, null, 2));
+  const oobFreshTx = oobTx();
+  const oobFresh = await jsonReq("/api/outofband/transfers", { transfers: [oobTransfer(oobFreshTx, OOB_SELLER, 10000, { blockTime: oobAgo(2) })] });
+  await oobLogPayment(oobFreshTx);
+  const oobRetry = await jsonReq("/api/outofband/transfers", { transfers: [] });
+  check(
+    "reconciliation is idempotent, and a payment SpendVeto itself just made isn't mistaken for out-of-band spend: a re-delivered transfer is a duplicate, and a fresh unmatched one waits out the grace period, then matches once its ledger record lands",
+    oobAgain.body.duplicates === 1 && oobAgain.body.unmanaged === 0 && oobFresh.body.deferred === 1 && oobFresh.body.unmanaged === 0 && oobRetry.body.managed === 1 && oobRetry.body.unmanaged === 0 &&
+      !(await oobLedger()).some((e) => e.txHash === oobFreshTx),
+    `again=${JSON.stringify(oobAgain.body)} fresh=${oobFresh.body.deferred} retry=${oobRetry.body.managed}`
+  );
+
+  // The chain path: ERC-20 Transfer logs from a JSON-RPC node, filtered by sender.
+  const OOB_TRANSFER_TOPIC = "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef";
+  const oobPad = (a) => "0x" + a.toLowerCase().replace(/^0x/, "").padStart(64, "0");
+  const oobScanTx = oobTx();
+  let oobLatest = 5000;
+  const oobGetLogs = [];
+  oobRpc = createServer((req, res) => {
+    let body = "";
+    req.on("data", (d) => (body += d));
+    req.on("end", () => {
+      const call = JSON.parse(body);
+      const answer = (c) => {
+        if (c.method === "eth_chainId") return "0x14a34";
+        if (c.method === "eth_blockNumber") return "0x" + oobLatest.toString(16);
+        if (c.method === "eth_getBlockByNumber") return { number: c.params[0], hash: "0x" + "b1".repeat(32), parentHash: "0x" + "b0".repeat(32), timestamp: "0x" + oobAgo(600).toString(16), transactions: [], gasLimit: "0x1", gasUsed: "0x0", miner: "0x" + "00".repeat(20), extraData: "0x", logsBloom: "0x" + "00".repeat(256), nonce: "0x0000000000000000", difficulty: "0x0", size: "0x1", stateRoot: "0x" + "00".repeat(32), receiptsRoot: "0x" + "00".repeat(32), transactionsRoot: "0x" + "00".repeat(32), sha3Uncles: "0x" + "00".repeat(32), uncles: [] };
+        if (c.method === "eth_getLogs") {
+          const f = c.params[0];
+          oobGetLogs.push(f);
+          const senders = [].concat(f.topics?.[1] || []).map((t) => t.toLowerCase());
+          const from = parseInt(f.fromBlock, 16);
+          const to = parseInt(f.toBlock, 16);
+          const block = 4950;
+          if (String(f.address).toLowerCase() !== OOB_USDC.toLowerCase() || f.topics?.[0] !== OOB_TRANSFER_TOPIC || !senders.includes(oobPad(oobChild)) || block < from || block > to) return [];
+          return [{ address: OOB_USDC.toLowerCase(), topics: [OOB_TRANSFER_TOPIC, oobPad(oobChild), oobPad(OOB_ELSEWHERE)], data: "0x" + (20000).toString(16).padStart(64, "0"), blockNumber: "0x" + block.toString(16), blockHash: "0x" + "b1".repeat(32), transactionHash: oobScanTx, transactionIndex: "0x0", logIndex: "0x3", removed: false }];
+        }
+        return null;
+      };
+      const reply = Array.isArray(call) ? call.map((c) => ({ jsonrpc: "2.0", id: c.id, result: answer(c) })) : { jsonrpc: "2.0", id: call.id, result: answer(call) };
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end(JSON.stringify(reply));
+    });
+  });
+  oobRpc.listen(8384);
+  writeFileSync(`${ROOT}data/policy.json`, JSON.stringify(OOB_POLICY, null, 2));
+  const oobScan1 = await jsonReq("/api/outofband/scan", {});
+  oobLatest = 5003;
+  const oobScan2 = await jsonReq("/api/outofband/scan", {});
+  const oobScanned = (await oobLedger()).find((e) => e.txHash === oobScanTx);
+  check(
+    "the chain path: a scan reads the governed wallets' ERC-20 Transfer logs on the registry's USDC from a JSON-RPC node (filtered by sender), books the unmatched one at its block time, and the next scan resumes after its cursor instead of re-reading",
+    oobScan1.body.unmanaged === 1 && oobScan1.body.scanned?.[0]?.toBlock === "5000" && oobScanned?.amount === 0.02 && oobScanned.logIndex === 3 && Date.parse(oobScanned.ts) < Date.now() - 500_000 &&
+      parseInt(oobGetLogs[0]?.fromBlock, 16) === 4900 && parseInt(oobGetLogs.at(-1)?.fromBlock, 16) === 5001 && oobScan2.body.unmanaged === 0,
+    `scan1=${JSON.stringify(oobScan1.body)} ranges=${oobGetLogs.map((f) => `${parseInt(f.fromBlock, 16)}-${parseInt(f.toBlock, 16)}`).join(",")}`
+  );
+  oobRpc.close();
+  oobRpc = null;
+
+  writeFileSync(`${ROOT}data/policy.json`, JSON.stringify({ ...OOB_POLICY, outOfBand: { ...OOB_POLICY.outOfBand, onDetect: "freeze" } }, null, 2));
+  await jsonReq("/api/outofband/transfers", { transfers: [oobTransfer(oobTx(), OOB_ELSEWHERE, 1000)] });
+  const oobFreeze = (await fetch(`${BASE}/api/freezes`).then((r) => r.json())).freezes.find((f) => !f.unfrozen && f.address.toLowerCase() === oobChild.toLowerCase());
+  const oobFrozenCall = await checkPolicy(oobChild, 0.001, "review", "base-sepolia");
+  const oobStats = await fetch(`${BASE}/api/stats`).then((r) => r.json());
+  const oobMetrics = await fetch(`${BASE}/metrics`).then((r) => r.text());
+  const oobView = await fetch(`${BASE}/api/outofband`).then((r) => r.json());
+  if (oobFreeze) await fetch(`${BASE}/api/freezes/${oobFreeze.id}/unfreeze`, { method: "POST" });
+  check(
+    "strict mode: under onDetect \"freeze\" one transfer around the gate freezes the wallet, so its next governed call is refused — and unmanaged spend is a first-class number in /api/stats, /metrics and the console, next to blocked spend",
+    oobFreeze?.source === "out-of-band" && oobFrozenCall.code === "frozen" && oobStats.unmanaged?.count >= 4 && oobStats.unmanaged.usd >= 0.051 &&
+      /spendveto_unmanaged_usd_total \d/.test(oobMetrics) && oobView.wallets.includes(oobChild.toLowerCase()) && oobView.unmanaged.count === oobStats.unmanaged.count,
+    `freeze=${oobFreeze?.source} call=${oobFrozenCall.code} stats=${JSON.stringify(oobStats.unmanaged)}`
+  );
+  const oobSchema = validatePolicy({ outOfBand: { enabled: true, onDetect: "freeze", chains: ["base-sepolia", "solana-devnet"], ignoreTo: [OOB_TREASURY] } });
+  check(
+    "the policy standard covers out-of-band detection: an outOfBand section validates, and a chain it can't watch (no ERC-20 logs to read) is an error, not a silent gap",
+    oobSchema.errors.length === 1 && oobSchema.errors[0].path === "/outOfBand/chains/1",
+    JSON.stringify(oobSchema.errors)
+  );
+  writeFileSync(`${ROOT}data/policy.json`, JSON.stringify(LOOSE_POLICY, null, 2));
+
   // --- Multi-chain live settlement wiring (facilitator-adaptive) ---
   // In testnet mode the gate asks its facilitator (GET /supported) what it can
   // settle and brings every matching registry chain live: per-chain scheme
@@ -2564,7 +3978,7 @@ try {
   // is the facilitator's truth, not config bravado — proven both ways with a
   // mock facilitator: advertising every registry chain brings every signable
   // one live; advertising one brings exactly one.
-  const { CHAINS: REG_CHAINS } = await import("../shared-config.js");
+  const { CHAINS: REG_CHAINS, TOOLS } = await import("../shared-config.js");
   let mockSupportedCaip2 = REG_CHAINS.map((c) => c.caip2);
   mockFacil = createServer((req, res) => {
     if (req.url.startsWith("/supported")) {
@@ -2577,7 +3991,7 @@ try {
   });
   mockFacil.listen(8498);
 
-  const bootTestnet = async () => {
+  const bootTestnet = async (extraEnv = {}) => {
     const proc = spawn("node", ["server/index.js"], {
       cwd: ROOT,
       env: {
@@ -2596,6 +4010,10 @@ try {
         SERVER_PAYOUT_ADDRESS_STELLAR: "GA7QYNF7SOWQ3GLR2BGMZEHXAVIRZA4KVWLTJJFC7MGXUA74P7UJVSGZ",
         SERVER_PAYOUT_ADDRESS_HEDERA: "0.0.1111111",
         SERVER_PAYOUT_ADDRESS_XRPL: "rHb9CJAWyB4rj91VRWn96DkukG4bwdtyTh",
+        // Blanked, not omitted: dotenv skips keys already present, so a
+        // maintainer's .env.local can't switch XRPL mainnet on under the suite.
+        SERVER_PAYOUT_ADDRESS_XRPL_MAINNET: "",
+        ...extraEnv,
       },
       stdio: ["ignore", "pipe", "pipe"],
     });
@@ -2615,10 +4033,10 @@ try {
   testnetProc = await bootTestnet();
   const tnChains = await fetch("http://localhost:8401/api/chains").then((r) => r.json());
   check(
-    "testnet gate brings live every registry chain the facilitator settles AND this instance can sign — 13 of 15, with Algorand and Cardano deliberately left out",
-    tnChains.mode === "testnet" && tnChains.liveSettlementChains?.length === 13 &&
-      tnChains.chains.filter((c) => c.id !== "algorand-testnet" && c.id !== "cardano-preprod").every((c) => c.settlement === "live") &&
-      !tnChains.liveSettlementChains.includes("algorand-testnet") && !tnChains.liveSettlementChains.includes("cardano-preprod"),
+    "testnet gate brings live every registry chain the facilitator settles AND this instance can sign — 17 of 20, with Algorand, Cardano and opt-in-only XRPL mainnet left out",
+    tnChains.mode === "testnet" && tnChains.liveSettlementChains?.length === 17 &&
+      tnChains.chains.filter((c) => !["algorand-testnet", "cardano-preprod", "xrpl"].includes(c.id)).every((c) => c.settlement === "live") &&
+      ["algorand-testnet", "cardano-preprod", "xrpl"].every((id) => !tnChains.liveSettlementChains.includes(id)),
     `live=${tnChains.liveSettlementChains?.join(",")}`
   );
   const tn402 = await fetch("http://localhost:8401/api/agent/translate");
@@ -2626,9 +4044,23 @@ try {
   const decoded402 = tn402Text.includes("eip155") ? tn402Text : Buffer.from(tn402.headers.get("PAYMENT-REQUIRED") || "", "base64").toString("utf8") + " " + tn402Text;
   const advertised = REG_CHAINS.filter((c) => decoded402.includes(c.caip2)).map((c) => c.id);
   check(
-    "a real x402 v2 402 advertises one payment option per live chain — thirteen CAIP-2 networks in one challenge, and never a chain it cannot sign",
-    tn402.status === 402 && advertised.length === 13 && !advertised.includes("algorand-testnet") && !advertised.includes("cardano-preprod"),
+    "a real x402 v2 402 advertises one payment option per live chain — seventeen CAIP-2 networks in one challenge, and never a chain it cannot sign",
+    tn402.status === 402 && advertised.length === 17 && ["algorand-testnet", "cardano-preprod", "xrpl"].every((id) => !advertised.includes(id)),
     `status=${tn402.status} advertised=${advertised.join(",")}`
+  );
+  // Each EVM option must carry its OWN token's EIP-712 domain: an EIP-3009
+  // authorization signed against the wrong name is rejected by the token.
+  // Circle's mainnet USDC signs as "USD Coin", its testnet as "USDC" — a
+  // single hardcoded "USDC" (this gate until v0.26.0) broke every mainnet.
+  let tnChallenge = null;
+  try { tnChallenge = JSON.parse(Buffer.from(tn402.headers.get("PAYMENT-REQUIRED") || "", "base64").toString("utf8")); } catch {}
+  const optFor = (caip2) => tnChallenge?.accepts?.find((a) => a.network === caip2);
+  check(
+    "every EVM payment option in a live 402 carries its own token's EIP-712 domain — USD Coin on Base/Ethereum mainnet, USDC on Base Sepolia, USDT0 v1 on Stable",
+    optFor("eip155:8453")?.extra?.name === "USD Coin" && optFor("eip155:1")?.extra?.name === "USD Coin" &&
+      optFor("eip155:84532")?.extra?.name === "USDC" && optFor("eip155:988")?.extra?.name === "USDT0" && optFor("eip155:988")?.extra?.version === "1" &&
+      REG_CHAINS.filter((c) => !c.family).every((c) => optFor(c.caip2)?.extra?.name === c.eip712?.name && optFor(c.caip2)?.extra?.version === c.eip712?.version),
+    REG_CHAINS.filter((c) => !c.family).map((c) => `${c.id}=${optFor(c.caip2)?.extra?.name}/${optFor(c.caip2)?.extra?.version}`).join(" ")
   );
   // x402 upstream (#3542, Sep 2026) fixed paid routes being reachable unpaid
   // when the framework dispatches an encoded path the route matcher never
@@ -2649,19 +4081,62 @@ try {
     bypassCodes.every((c) => c === 402 || c === 404),
     bypassPaths.map((p, i) => `${p}=${bypassCodes[i]}`).join(" ")
   );
+  const rawStatus = (method, path) => new Promise((resolve) => {
+    const req = httpRequest({ host: "localhost", port: 8401, path, method }, (res) => { res.resume(); resolve(res.statusCode); });
+    req.on("error", () => resolve(0));
+    req.end();
+  });
+  // x402 #3796 (2026-10-13): HEAD reached paid GET handlers unpaid. Express
+  // answers HEAD with the GET handler, so this gate WAS exposed — HEAD got a
+  // 200 and the paid handler ran — until v0.26.0 gated HEAD explicitly.
+  const headProbes = [...TOOLS.map((t) => t.path), "/API/AGENT/TRANSLATE", "/api/agent/translate/"];
+  const headCodes = [];
+  for (const p of headProbes) headCodes.push(await rawStatus("HEAD", p));
+  check(
+    "a HEAD request never runs a paid handler unpaid — every paid route, and its re-cased and trailing-slash spellings, answers HEAD with the 402 challenge",
+    headCodes.every((c) => c === 402 || c === 404) && headCodes.slice(0, TOOLS.length).every((c) => c === 402),
+    headProbes.map((p, i) => `HEAD ${p}=${headCodes[i]}`).join(" ")
+  );
+  // x402 #3577 (2026-10-02): an absolute-form request target
+  // (GET http://other.host/paid HTTP/1.1) slipped past a matcher that read the
+  // raw target while the router stripped the authority. Not exposed here
+  // (Express parses the path) — pinned so it stays that way.
+  const absoluteProbes = [["GET", "http://evil.example/api/agent/translate"], ["GET", "https://localhost:8401/api/agent/review"], ["HEAD", "http://evil.example/api/agent/summarize"]];
+  const absoluteCodes = [];
+  for (const [m, p] of absoluteProbes) absoluteCodes.push(await rawStatus(m, p));
+  check(
+    "an absolute-form request target naming another host is gated exactly like the plain path — never served unpaid",
+    absoluteCodes.every((c) => c === 402),
+    absoluteProbes.map(([m, p], i) => `${m} ${p}=${absoluteCodes[i]}`).join(" ")
+  );
   testnetProc.proc.kill();
   await sleep(300);
 
   // Adaptive the other way: the facilitator now claims only base-sepolia, so
-  // only base-sepolia may go live — the other fourteen report settlement-ready.
+  // only base-sepolia may go live — the other nineteen report settlement-ready.
   mockSupportedCaip2 = [REG_CHAINS.find((c) => c.id === "base-sepolia").caip2];
   testnetProc = await bootTestnet();
   const tnChains2 = await fetch("http://localhost:8401/api/chains").then((r) => r.json());
   check(
-    "the live set is the facilitator's truth: a facilitator supporting one chain yields exactly one live + fourteen settlement-ready",
+    "the live set is the facilitator's truth: a facilitator supporting one chain yields exactly one live + nineteen settlement-ready",
     tnChains2.liveSettlementChains?.length === 1 && tnChains2.liveSettlementChains[0] === "base-sepolia" &&
-      tnChains2.chains.filter((c) => c.settlement === "ready").length === 14,
+      tnChains2.chains.filter((c) => c.settlement === "ready").length === 19,
     `live=${tnChains2.liveSettlementChains?.join(",")} ready=${tnChains2.chains.filter((c) => c.settlement === "ready").length}`
+  );
+  testnetProc.proc.kill();
+  await sleep(300);
+
+  // XRPL mainnet is real money, so it has its own opt-in variable: with the
+  // facilitator claiming every network and the TESTNET payout set, mainnet
+  // stayed out above; set its own variable and it — and only then — goes live.
+  mockSupportedCaip2 = REG_CHAINS.map((c) => c.caip2);
+  testnetProc = await bootTestnet({ SERVER_PAYOUT_ADDRESS_XRPL_MAINNET: "rHb9CJAWyB4rj91VRWn96DkukG4bwdtyTh" });
+  const tnChains3 = await fetch("http://localhost:8401/api/chains").then((r) => r.json());
+  check(
+    "XRPL mainnet goes live only through its own SERVER_PAYOUT_ADDRESS_XRPL_MAINNET opt-in — enabling the XRPL testnet can never switch real money on",
+    tnChains3.liveSettlementChains?.includes("xrpl") && tnChains3.liveSettlementChains?.includes("xrpl-testnet") && tnChains3.liveSettlementChains?.length === 18 &&
+      !tnChains.liveSettlementChains.includes("xrpl") && tnChains.liveSettlementChains.includes("xrpl-testnet"),
+    `with opt-in: ${tnChains3.liveSettlementChains?.length} live, xrpl=${tnChains3.liveSettlementChains?.includes("xrpl")}`
   );
   testnetProc.proc.kill();
   testnetProc = null;
@@ -2672,6 +4147,8 @@ try {
   if (proxyProc) proxyProc.kill();
   if (testnetProc) testnetProc.proc.kill();
   if (mockFacil) mockFacil.close();
+  if (mppSeller) mppSeller.close();
+  if (oobRpc) oobRpc.close();
   server.kill();
   alertServer.close();
   writeFileSync(

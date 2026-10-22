@@ -2,15 +2,8 @@ import dotenv from "dotenv";
 import { readFileSync, existsSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { generatePrivateKey, privateKeyToAccount } from "viem/accounts";
-import { createKeyPairSignerFromBytes, generateKeyPairSigner, getBase58Encoder } from "@solana/kit";
-import { createClientSigner as createAptosSigner } from "@x402/aptos";
-import { Account as AptosAccount } from "@aptos-labs/ts-sdk";
-import { createEd25519Signer as createStellarSigner } from "@x402/stellar";
-import { Keypair as StellarKeypair } from "@stellar/stellar-sdk";
-import { createClientHederaSigner } from "@x402/hedera";
-import { PrivateKey as HederaPrivateKey } from "@hiero-ledger/sdk";
-import { createXrplWalletSigner } from "@x402/xrpl";
-import { Wallet as XrplWallet } from "xrpl";
+import { dataPath } from "../shared-config.js";
+import { loadOptional } from "../server/optional.js";
 
 // quiet: dotenv v17 prints an injection banner to stdout by default, which
 // would corrupt the MCP stdio protocol when this module is loaded by mcp/server.js.
@@ -30,12 +23,16 @@ export const walletIsEphemeral = isEphemeral;
 // ledger keying) stays `account.address` throughout; this signer only ever
 // produces the on-chain SPL transfer signature for the solana-devnet rail.
 // Lazy + memoized: key generation is async and most runs never touch Solana.
+// The SDK itself loads here too, not at import time — chain SDKs are optional
+// packages (server/optional.js), so a missing one fails this call, not boot.
 let svmSignerPromise;
 export function getSvmSigner() {
   if (!svmSignerPromise) {
-    svmSignerPromise = process.env.CLIENT_SOLANA_PRIVATE_KEY
-      ? createKeyPairSignerFromBytes(getBase58Encoder().encode(process.env.CLIENT_SOLANA_PRIVATE_KEY))
-      : generateKeyPairSigner();
+    svmSignerPromise = loadOptional("@solana/kit").then(({ createKeyPairSignerFromBytes, generateKeyPairSigner, getBase58Encoder }) =>
+      process.env.CLIENT_SOLANA_PRIVATE_KEY
+        ? createKeyPairSignerFromBytes(getBase58Encoder().encode(process.env.CLIENT_SOLANA_PRIVATE_KEY))
+        : generateKeyPairSigner()
+    );
   }
   return svmSignerPromise;
 }
@@ -52,8 +49,8 @@ let aptosSignerPromise;
 export function getAptosSigner() {
   if (!aptosSignerPromise) {
     aptosSignerPromise = process.env.CLIENT_APTOS_PRIVATE_KEY
-      ? createAptosSigner(process.env.CLIENT_APTOS_PRIVATE_KEY)
-      : Promise.resolve(AptosAccount.generate());
+      ? loadOptional("@x402/aptos").then(({ createClientSigner }) => createClientSigner(process.env.CLIENT_APTOS_PRIVATE_KEY))
+      : loadOptional("@aptos-labs/ts-sdk").then(({ Account }) => Account.generate());
   }
   return aptosSignerPromise;
 }
@@ -61,8 +58,9 @@ export function getAptosSigner() {
 let stellarSignerPromise;
 export function getStellarSigner() {
   if (!stellarSignerPromise) {
-    const secret = process.env.CLIENT_STELLAR_PRIVATE_KEY || StellarKeypair.random().secret();
-    stellarSignerPromise = Promise.resolve(createStellarSigner(secret, "stellar:testnet"));
+    stellarSignerPromise = Promise.all([loadOptional("@x402/stellar"), loadOptional("@stellar/stellar-sdk")]).then(([{ createEd25519Signer }, { Keypair }]) =>
+      createEd25519Signer(process.env.CLIENT_STELLAR_PRIVATE_KEY || Keypair.random().secret(), "stellar:testnet")
+    );
   }
   return stellarSignerPromise;
 }
@@ -82,7 +80,9 @@ export function getHederaSigner() {
         "Hedera settlement needs a real registered testnet account — set CLIENT_HEDERA_ACCOUNT_ID and CLIENT_HEDERA_PRIVATE_KEY (create one free at https://portal.hedera.com); unlike every other chain here, no ephemeral fallback is possible."
       );
     }
-    hederaSignerPromise = Promise.resolve(createClientHederaSigner(accountId, HederaPrivateKey.fromStringED25519(privateKey)));
+    hederaSignerPromise = Promise.all([loadOptional("@x402/hedera"), loadOptional("@hiero-ledger/sdk")]).then(([{ createClientHederaSigner }, { PrivateKey }]) =>
+      createClientHederaSigner(accountId, PrivateKey.fromStringED25519(privateKey))
+    );
   }
   return hederaSignerPromise;
 }
@@ -95,13 +95,14 @@ export function getHederaSigner() {
 let xrplSignerPromise;
 export function getXrplSigner() {
   if (!xrplSignerPromise) {
-    const wallet = process.env.CLIENT_XRPL_SEED ? XrplWallet.fromSeed(process.env.CLIENT_XRPL_SEED) : XrplWallet.generate();
-    xrplSignerPromise = Promise.resolve(createXrplWalletSigner(wallet));
+    xrplSignerPromise = Promise.all([loadOptional("@x402/xrpl"), loadOptional("xrpl")]).then(([{ createXrplWalletSigner }, { Wallet }]) =>
+      createXrplWalletSigner(process.env.CLIENT_XRPL_SEED ? Wallet.fromSeed(process.env.CLIENT_XRPL_SEED) : Wallet.generate())
+    );
   }
   return xrplSignerPromise;
 }
 
-const CHILDREN_PATH = fileURLToPath(new URL("../data/children.json", import.meta.url));
+const CHILDREN_PATH = dataPath("children.json");
 
 // Child agent wallets created by `npm run delegate`. Keys live in a gitignored
 // JSON file — acceptable for simulate-mode demo money; a real product would

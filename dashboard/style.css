@@ -70,9 +70,11 @@ h2 { font-size: 0.82rem; text-transform: uppercase; letter-spacing: 0.12em; colo
 .status-paid { color: var(--green); font-weight: 650; }
 .status-blocked { color: var(--copper); font-weight: 650; }
 .status-failed { color: var(--rust); font-weight: 650; }
+.status-unmanaged { color: var(--rust); font-weight: 650; }
 .tag { font-size: 0.68rem; border: 1px solid var(--line); border-radius: 5px; padding: 0.06rem 0.4rem; color: var(--faint); white-space: nowrap; }
 .tag.green { color: var(--green); border-color: var(--green-deep); }
 .tag.rust { color: var(--rust); border-color: rgba(224, 100, 74, 0.4); }
+.tag.copper { color: var(--copper); border-color: rgba(224, 160, 92, 0.4); }
 
 /* ---- buttons + forms ---- */
 .btn { font: inherit; font-size: 0.8rem; font-weight: 650; border-radius: 8px; padding: 0.42rem 0.9rem; cursor: pointer; border: 1px solid var(--line); background: transparent; color: var(--dim); text-decoration: none; display: inline-block; }
@@ -83,13 +85,18 @@ h2 { font-size: 0.82rem; text-transform: uppercase; letter-spacing: 0.12em; colo
 .btn.mini { font-size: 0.7rem; padding: 0.22rem 0.6rem; border-radius: 6px; }
 .form { display: flex; flex-direction: column; gap: 0.8rem; }
 .form label { font-size: 0.8rem; color: var(--dim); display: flex; flex-direction: column; gap: 0.3rem; font-weight: 600; }
-.form input, .filter-row input, .filter-row select, .inline-form input {
+.form input, .filter-row input, .filter-row select, .inline-form input, .inline-form select {
   font: inherit; font-size: 0.88rem; background: var(--bg-2); color: var(--ink); border: 1px solid var(--line); border-radius: 8px; padding: 0.5rem 0.7rem; outline: none; width: 100%;
 }
 .form input:focus, .filter-row input:focus, .inline-form input:focus { border-color: var(--green-deep); }
 .form-note { font-size: 0.8rem; color: var(--green); min-height: 1.2em; }
 .form-note.err { color: var(--rust); }
 .inline-form { display: flex; gap: 0.6rem; margin-bottom: 1rem; }
+.inline-form select { width: auto; flex: none; }
+#rep-form { flex-wrap: wrap; }
+#rep-form input[name=subject] { flex: 2 1 16rem; }
+#rep-form input[name=reason] { flex: 1 1 12rem; }
+.tbl-scroll { overflow-x: auto; }
 .filter-row { display: flex; gap: 0.7rem; margin-bottom: 1.1rem; flex-wrap: wrap; }
 .filter-row select { width: auto; }
 .filter-row input { flex: 1; min-width: 200px; }

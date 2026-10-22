@@ -2,6 +2,7 @@ import { readFileSync, writeFileSync, existsSync, mkdirSync } from "node:fs";
 import { randomUUID, randomBytes } from "node:crypto";
 import { dirname } from "node:path";
 import { fileURLToPath } from "node:url";
+import { dataPath } from "../shared-config.js";
 
 // API-key auth for the admin surface (issue #10). The management API — rewrite
 // policy, unfreeze wallets, mint delegations, register tools — was previously
@@ -14,7 +15,7 @@ import { fileURLToPath } from "node:url";
 // key from the trusted host with `npm run apikey` — it can't be minted over the
 // API, by design (no privilege bootstrap from an unauthenticated request).
 
-const KEYS_PATH = fileURLToPath(new URL("../data/api-keys.json", import.meta.url));
+const KEYS_PATH = dataPath("api-keys.json");
 
 // viewer < approver < admin. A key satisfies an endpoint if its role ranks at
 // or above the endpoint's minimum.

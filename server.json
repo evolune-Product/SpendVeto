@@ -1,0 +1,28 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-09-29/server.schema.json",
+  "name": "io.github.revanthrajeev/spendveto",
+  "description": "Spend controls for AI agents: budgets, approvals, a kill switch and an audit ledger for every paid tool call.",
+  "repository": {
+    "url": "https://github.com/revanthrajeev/spendveto",
+    "source": "github"
+  },
+  "websiteUrl": "https://spendveto.com",
+  "version": "0.31.0",
+  "packages": [
+    {
+      "registryType": "npm",
+      "identifier": "spendveto",
+      "version": "0.31.0",
+      "runtimeHint": "npx",
+      "transport": {
+        "type": "stdio"
+      },
+      "packageArguments": [
+        {
+          "type": "positional",
+          "value": "mcp"
+        }
+      ]
+    }
+  ]
+}

@@ -1,25 +1,21 @@
 import dotenv from "dotenv";
 import { fileURLToPath } from "node:url";
+import { join } from "node:path";
 import { readFileSync } from "node:fs";
 import express from "express";
-import { paymentMiddleware, x402ResourceServer } from "@x402/express";
-import { ExactEvmScheme } from "@x402/evm/exact/server";
-import { ExactSvmScheme } from "@x402/svm/exact/server";
-import { ExactAptosScheme } from "@x402/aptos/exact/server";
-import { ExactStellarScheme } from "@x402/stellar/exact/server";
-import { ExactHederaScheme } from "@x402/hedera/exact/server";
-import { ExactXrplScheme } from "@x402/xrpl/exact/server";
-import { HTTPFacilitatorClient } from "@x402/core/server";
-import { MODE, PORT, TOOLS, CHAINS, FACILITATOR_URL, findChain, DEFAULT_CHAIN } from "../shared-config.js";
+import { loadOptional } from "./optional.js";
+import { parseChallenges, assessChallenge, mppHoldUSD, authorizeCharge, reportCharge, openSession, recordVoucher, closeSession, mppState } from "./mpp.js";
+import { outOfBandSettings, reconcile, scanChains, outOfBandState } from "./outofband.js";
+import { MODE, PORT, TOOLS, CHAINS, FACILITATOR_URL, findChain, DEFAULT_CHAIN, dataPath, PACKAGE_DATA_DIR } from "../shared-config.js";
 import { randomUUID } from "node:crypto";
 import { writeFileSync } from "node:fs";
-import { createSimulateGate, receiptMessage, signDecision, signUpiDecision, signEuDecision, signUkDecision, signBrDecision, signUsDecision, consentMessage } from "./simulate.js";
+import { createSimulateGate, receiptMessage, signDecision, signUpiDecision, signEuDecision, signUkDecision, signBrDecision, signUsDecision, consentMessage, instanceSigner } from "./simulate.js";
 import { decisionEvents, toJSONL } from "./events.js";
-import { checkPolicy, policyHash } from "../client/policy.js";
+import { checkPolicy, policyHash, loadPolicy } from "../client/policy.js";
 import { verifyMessage } from "viem";
 import { runTool } from "./agent.js";
 import { getLedger, getBalances, appendLedgerEntry, creditSimBalance, verifyLedgerChain } from "./ledger.js";
-import { createApproval, getApproval, decideApproval, listApprovals } from "./approvals.js";
+import { createApproval, getApproval, decideApproval, listApprovals, findApprovableFor, consumeApproval } from "./approvals.js";
 import { worldIdConfigured, verifyWorldIdProof, rpContextFor, WORLD_ACTION } from "./worldid.js";
 import { listDelegations, createDelegation, revokeDelegation } from "./delegations.js";
 import { listFreezes, findActiveFreeze, createFreeze, unfreeze } from "./freezes.js";
@@ -46,8 +42,16 @@ import { evaluateAchDebit, maskAccountNumber as maskAccountNumberUs, US_REGULATO
 import { catalogOpenApiSpec } from "./openapi.js";
 import { authorize as uptoAuthorize, settleAuthorization, voidAuthorization, getAuthorizations, openHoldUSD, uptoSummary } from "./upto.js";
 import { bindAuthorization, verifyBinding, getBinding, requestDigest } from "./integrity.js";
+import { evaluateRequirements as evaluateAuthCapture, recordCollect, capturePayment, chargePayment, voidPayment, refundPayment, markReclaimed, reclaimable, authCaptureHoldUSD, authCaptureSummary, getPayments as getAuthCapturePayments, findPayment as findAuthCapturePayment } from "./authcapture.js";
 import { buildEvidencePack, checkEvidencePack } from "./disputes.js";
 import { decisionSpans, toOtlpPayload, exportSpans } from "./otel.js";
+import { createLlmGuard, pseudoAddress } from "./llmguard.js";
+import { createCardRouter, cardSettings } from "./cards.js";
+import { createPayouts } from "./payouts.js";
+import { costReport, focusRows, toFocusCsv, createRebiller, rebillingSettings } from "./finops.js";
+import { mintAttestation, verifyAttestation, ATTESTATION_PREFIX, ATTESTATION_HEADER, ATTESTATION_MESSAGE_PREFIX, ATTESTATION_DEFAULT_TTL_SECONDS, ATTESTATION_MAX_TTL_SECONDS, ATTESTATION_RAILS } from "./attestations.js";
+import { createReputation, reputationSettings, FEED_SPEC, FEED_MESSAGE_PREFIX } from "./reputation.js";
+import { validatePolicy, POLICY_SCHEMA_ID, POLICY_SCHEMA_PATH } from "./policyspec.js";
 
 dotenv.config({ path: fileURLToPath(new URL("../.env.local", import.meta.url)), quiet: true });
 
@@ -59,6 +63,62 @@ const app = express();
 // generates (discovery.js's Bazaar resource list, openapi.js's servers[].url)
 // and would advertise a scheme a real client can't necessarily reach.
 app.set("trust proxy", true);
+
+// The LLM spend guard (server/llmguard.js) is mounted BEFORE the JSON body
+// parser: it needs the raw request bytes — Anthropic bodies are forwarded
+// exactly as received, and Claude Code requests run to megabytes, far past
+// express.json()'s 100 KB default.
+const readJsonFile = (path, fallback) => {
+  try {
+    return JSON.parse(readFileSync(path, "utf8"));
+  } catch {
+    return fallback;
+  }
+};
+const childAddressFor = (label) => {
+  const child = readJsonFile(dataPath("children.json"), []).find((c) => c.label === label || String(c.address).toLowerCase() === String(label).toLowerCase());
+  return child ? child.address : null;
+};
+// Rebilling (server/finops.js): customer-tagged model spend → Stripe Billing meter events.
+const rebiller = createRebiller({ dataPath, loadPolicy: () => readJsonFile(dataPath("policy.json"), {}) });
+const llmGuard = createLlmGuard({
+  loadPolicy: () => readJsonFile(dataPath("policy.json"), {}),
+  checkPolicy,
+  policyHash: () => policyHash(),
+  appendLedgerEntry,
+  getLedger,
+  findActiveFreeze,
+  createFreeze,
+  listDelegations,
+  sendAlert,
+  createApproval,
+  getApproval,
+  readAgents: () => readJsonFile(dataPath("agents.json"), []),
+  childAddress: (label) => childAddressFor(label),
+  onCharge: (entry) => rebiller.onCharge(entry),
+});
+app.use(llmGuard.router);
+
+// Federated counterparty reputation (server/reputation.js), consulted by the
+// policy engine, payouts and card authorizations alike.
+const reputation = createReputation({ dataPath, loadPolicy: () => readJsonFile(dataPath("policy.json"), {}), signer: instanceSigner });
+
+// Card authorization webhooks (server/cards.js) need raw bytes too — the
+// Stripe and Lithic signatures are computed over the exact body received.
+app.use(createCardRouter({
+  loadPolicy: () => readJsonFile(dataPath("policy.json"), {}),
+  checkPolicy,
+  policyHash: () => policyHash(),
+  appendLedgerEntry,
+  getLedger,
+  findActiveFreeze,
+  listDelegations,
+  readCards: () => readJsonFile(dataPath("cards.json"), []),
+  pseudoAddress,
+  childAddress: childAddressFor,
+  reputationCheck: (subjects) => reputation.check(subjects),
+}));
+
 app.use(express.json());
 // Local-tool CORS: lets the marketing site (:8403) show live governance stats.
 app.use((req, res, next) => {
@@ -97,6 +157,30 @@ if (MODE === "testnet") {
     hedera: process.env.SERVER_PAYOUT_ADDRESS_HEDERA,
     xrpl: process.env.SERVER_PAYOUT_ADDRESS_XRPL,
   };
+  // Per chain, not per family: a chain that is real money behind an explicit
+  // opt-in (XRPL mainnet, `mainnetOptIn` in the registry) takes its payout
+  // address ONLY from its own variable — so enabling the XRPL testnet with
+  // SERVER_PAYOUT_ADDRESS_XRPL can never also switch mainnet on.
+  // An empty value counts as unset — a blank SERVER_PAYOUT_ADDRESS_XRPL_MAINNET=
+  // line in a .env file must not read as "opted in to real money".
+  const payoutFor = (c) => (c.mainnetOptIn ? process.env[c.mainnetOptIn] : payToFor[c.family]) || undefined;
+  // The x402 packages are optional (server/optional.js) so the default install
+  // stays small. Testnet mode can't run without the core, the Express gate and
+  // the EVM scheme, so their absence stops boot with the install command —
+  // same as a missing payout address above.
+  let x402;
+  try {
+    const [{ paymentMiddleware, x402ResourceServer }, { HTTPFacilitatorClient }, { ExactEvmScheme }] = await Promise.all([
+      loadOptional("@x402/express"),
+      loadOptional("@x402/core/server"),
+      loadOptional("@x402/evm/exact/server"),
+    ]);
+    x402 = { paymentMiddleware, x402ResourceServer, HTTPFacilitatorClient, ExactEvmScheme };
+  } catch (err) {
+    if (err.code !== "rail_package_missing") throw err;
+    console.error(`SPENDVETO_MODE=testnet: ${err.message}`);
+    process.exit(1);
+  }
   // x402 v2, registry-driven: ask the configured facilitator what it can
   // actually settle (GET /supported) and bring every registry chain it names
   // live — schemes registered and 402s advertising one accepts entry per live
@@ -105,7 +189,7 @@ if (MODE === "testnet") {
   // at a CDP facilitator (with an API key) and its mainnet chains go live with
   // zero code changes. If /supported is unreachable, fall back to base-sepolia
   // rather than refusing to boot.
-  const facilitatorClient = new HTTPFacilitatorClient({ url: FACILITATOR_URL });
+  const facilitatorClient = new x402.HTTPFacilitatorClient({ url: FACILITATOR_URL });
   let supportedNetworks;
   try {
     const { kinds } = await facilitatorClient.getSupported();
@@ -114,22 +198,21 @@ if (MODE === "testnet") {
     console.error(`[testnet] facilitator /supported unreachable (${err.message}) — falling back to base-sepolia only`);
     supportedNetworks = new Set([findChain("base-sepolia").caip2]);
   }
-  liveSettlementChains = CHAINS.filter((c) => supportedNetworks.has(c.caip2) && payToFor[c.family] != null).map((c) => c.id);
+  liveSettlementChains = CHAINS.filter((c) => supportedNetworks.has(c.caip2) && payoutFor(c) != null).map((c) => c.id);
   if (liveSettlementChains.length === 0) liveSettlementChains = ["base-sepolia"];
-  console.log(`[testnet] live settlement chains via ${FACILITATOR_URL}: ${liveSettlementChains.join(", ")}`);
 
-  const schemeFor = (c) => {
+  const schemeFor = async (c) => {
     switch (c.family) {
       case "svm":
-        return new ExactSvmScheme();
+        return new (await loadOptional("@x402/svm/exact/server")).ExactSvmScheme();
       case "aptos":
-        return new ExactAptosScheme();
+        return new (await loadOptional("@x402/aptos/exact/server")).ExactAptosScheme();
       case "stellar":
-        return new ExactStellarScheme();
+        return new (await loadOptional("@x402/stellar/exact/server")).ExactStellarScheme();
       case "hedera":
-        return new ExactHederaScheme();
+        return new (await loadOptional("@x402/hedera/exact/server")).ExactHederaScheme();
       case "xrpl":
-        return new ExactXrplScheme();
+        return new (await loadOptional("@x402/xrpl/exact/server")).ExactXrplScheme();
       // A registered family with no published client scheme package (algorand,
       // cardano today) must never fall through to the EVM scheme: signing a
       // non-EVM payment with a secp256k1 EVM signature would produce a
@@ -142,11 +225,30 @@ if (MODE === "testnet") {
       case "cardano":
         throw new Error(`no x402 client scheme package published for family "${c.family}" (${c.id}) — neither the facilitator nor this instance can settle it yet`);
       default:
-        return new ExactEvmScheme();
+        return new x402.ExactEvmScheme();
     }
   };
-  let resourceServer = new x402ResourceServer(facilitatorClient);
-  for (const id of liveSettlementChains) resourceServer = resourceServer.register(findChain(id).caip2, schemeFor(findChain(id)));
+  // A chain whose family SDK isn't installed is skipped, loudly: never
+  // advertised in a 402 this instance can't verify. If that leaves nothing,
+  // Base Sepolia — whose packages are loaded above — is the fallback, as when
+  // the facilitator is unreachable.
+  let resourceServer = new x402.x402ResourceServer(facilitatorClient);
+  const registered = [];
+  for (const id of liveSettlementChains) {
+    try {
+      resourceServer = resourceServer.register(findChain(id).caip2, await schemeFor(findChain(id)));
+      registered.push(id);
+    } catch (err) {
+      if (err.code !== "rail_package_missing") throw err;
+      console.error(`[testnet] ${id} skipped — ${err.message}`);
+    }
+  }
+  if (registered.length === 0) {
+    resourceServer = resourceServer.register(findChain("base-sepolia").caip2, new x402.ExactEvmScheme());
+    registered.push("base-sepolia");
+  }
+  liveSettlementChains = registered;
+  console.log(`[testnet] live settlement chains via ${FACILITATOR_URL}: ${liveSettlementChains.join(", ")}`);
   // Price as an explicit AssetAmount per chain (atomic units + the registry's
   // canonical stablecoin contract/token id) rather than the "$0.01" shorthand
   // — the shorthand needs each package's built-in default-asset table, which
@@ -167,23 +269,29 @@ if (MODE === "testnet") {
         return atomic(7);
       case "xrpl":
         return String(tool.price);
+      // The token's own EIP-712 domain, per chain (registry `eip712`, checked
+      // live): Circle's mainnet USDC signs as "USD Coin", testnet as "USDC".
+      // A hardcoded name here signs every mainnet authorization against a
+      // domain the token contract doesn't have — rejected at settlement.
       default:
-        return { amount: String(Math.round(Number(tool.price) * 1e6)), asset: c.usdc, extra: { name: "USDC", version: "2" } };
+        return { amount: String(Math.round(Number(tool.price) * 1e6)), asset: c.usdc, extra: { ...(c.eip712 || { name: "USDC", version: "2" }) } };
     }
   };
-  const routes = Object.fromEntries(
-    TOOLS.map((tool) => [
-      `GET ${tool.path}`,
-      {
-        accepts: liveSettlementChains.map((id) => {
-          const c = findChain(id);
-          return { scheme: "exact", price: usdcAmount(tool, id), network: c.caip2, payTo: payToFor[c.family] };
-        }),
-        description: `SpendVeto demo — ${tool.label}`,
-      },
-    ])
-  );
-  app.use(paymentMiddleware(routes, resourceServer));
+  // Every paid route is gated for GET *and* HEAD. Express answers a HEAD with
+  // the GET handler (body stripped), so a rule that names only GET leaves the
+  // paid handler — and whatever it costs to run — reachable unpaid by HEAD.
+  // Found by probing this gate after x402 fixed the same class upstream
+  // (#3796, 2026-10-13; not yet in a published @x402/express) — pinned by an
+  // assertion in scripts/verify.mjs.
+  const paidRule = (tool) => ({
+    accepts: liveSettlementChains.map((id) => {
+      const c = findChain(id);
+      return { scheme: "exact", price: usdcAmount(tool, id), network: c.caip2, payTo: payoutFor(c) };
+    }),
+    description: `SpendVeto demo — ${tool.label}`,
+  });
+  const routes = Object.fromEntries(TOOLS.flatMap((tool) => [[`GET ${tool.path}`, paidRule(tool)], [`HEAD ${tool.path}`, paidRule(tool)]]));
+  app.use(x402.paymentMiddleware(routes, resourceServer));
   // x402-express already verified + settled payment before these handlers run.
   // Ledger accounting for testnet mode happens client-side (see client/pay-and-call.js) —
   // the client is the one party that reliably knows its own address and outcome.
@@ -230,7 +338,7 @@ if (MODE === "testnet") {
 // The tool marketplace: anyone can register a paid endpoint behind the same
 // governance gate — the catalog stops being a fixed demo and becomes supply.
 // Durable in data/tools.json (runtime state, gitignored).
-const DYN_TOOLS_PATH = fileURLToPath(new URL("../data/tools.json", import.meta.url));
+const DYN_TOOLS_PATH = dataPath("tools.json");
 function readDynTools() {
   try {
     return JSON.parse(readFileSync(DYN_TOOLS_PATH, "utf8"));
@@ -336,7 +444,7 @@ app.post("/api/receipts/verify", async (req, res) => {
 
 // Waitlist for the hosted platform. Durable, append-only; GET exposes only
 // the count — never the emails/addresses.
-const WAITLIST_PATH = fileURLToPath(new URL("../data/waitlist.json", import.meta.url));
+const WAITLIST_PATH = dataPath("waitlist.json");
 function readWaitlist() {
   try {
     return JSON.parse(readFileSync(WAITLIST_PATH, "utf8"));
@@ -378,9 +486,13 @@ app.get("/api/ledger/verify-chain", (req, res) => {
 });
 
 app.post("/api/ledger/event", (req, res) => {
-  const { address, resource, price, chain, category, status, reason } = req.body || {};
+  const { address, resource, price, chain, category, status, reason, txHash, payTo } = req.body || {};
   if (!address || !status) return res.status(400).json({ error: "address and status are required" });
-  appendLedgerEntry({ address, resource, amount: price, ...(chain ? { chain } : {}), ...(category ? { category } : {}), status, reason });
+  // The settlement's transaction hash (testnet x402) is what lets out-of-band
+  // detection (server/outofband.js) recognise this payment on-chain exactly.
+  const tx = typeof txHash === "string" && /^0x[0-9a-fA-F]{64}$/.test(txHash) ? txHash.toLowerCase() : null;
+  const payee = typeof payTo === "string" && /^0x[0-9a-fA-F]{40}$/.test(payTo) ? payTo : null;
+  appendLedgerEntry({ address, resource, amount: price, ...(chain ? { chain } : {}), ...(category ? { category } : {}), status, reason, ...(tx ? { txHash: tx } : {}), ...(payee ? { payTo: payee } : {}) });
   if (status === "blocked") sendAlert("blocked", { address, resource, price, chain, reason });
   maybeFreezeForBurst(address);
   res.status(204).end();
@@ -539,7 +651,7 @@ app.post("/api/discovery/govern", (req, res) => {
   if (!Array.isArray(resources)) return res.status(400).json({ error: "resources must be an array of Bazaar listings" });
   let policy;
   try {
-    policy = JSON.parse(readFileSync(fileURLToPath(new URL("../data/policy.json", import.meta.url)), "utf8"));
+    policy = JSON.parse(readFileSync(dataPath("policy.json"), "utf8"));
   } catch {
     policy = { maxPerCallUSD: 0.05, maxPerHourUSD: 0.2, maxCallsPerHour: 10, requireApprovalAboveUSD: 0.015 };
   }
@@ -630,6 +742,8 @@ app.get("/api/stats", (req, res) => {
     paid: bucket("paid"),
     blocked: bucket("blocked"),
     failed: bucket("failed"),
+    // Spend that never passed the gate, found on-chain (server/outofband.js).
+    unmanaged: bucket("unmanaged"),
     frozenWallets: listFreezes().filter((f) => !f.unfrozen).length,
     totalAttempts: entries.length,
   });
@@ -661,6 +775,7 @@ app.get("/metrics", (req, res) => {
     ...metric("spendveto_blocked_usd_total", "Total USD governance refused to spend.", "counter", blocked.usd),
     ...metric("spendveto_blocked_calls_total", "Total calls governance blocked.", "counter", blocked.count),
     ...metric("spendveto_failed_calls_total", "Total calls that failed for a reason other than a policy block.", "counter", failed.count),
+    ...metric("spendveto_unmanaged_usd_total", "Total USD governed wallets spent around the gate, found on-chain (out-of-band).", "counter", bucket("unmanaged").usd),
     ...metric("spendveto_frozen_wallets", "Wallets currently frozen (kill switch, manual or anomaly-triggered).", "gauge", listFreezes().filter((f) => !f.unfrozen).length),
     ...metric("spendveto_attempts_total", "All governed spend attempts seen (paid + blocked + failed).", "counter", entries.length),
     "# HELP spendveto_category_usd_total USD paid or blocked, broken down by spend category.",
@@ -677,8 +792,8 @@ app.get("/metrics", (req, res) => {
 // Console write-APIs: the dashboard is a real control surface, not a viewer.
 // PUT /api/policy edits the live spend rules; the packs endpoints list and
 // apply the committed governance presets (current policy backed up to .bak).
-const POLICY_FILE = fileURLToPath(new URL("../data/policy.json", import.meta.url));
-const PACKS_DIR = fileURLToPath(new URL("../data/policy-packs", import.meta.url));
+const POLICY_FILE = dataPath("policy.json");
+const PACKS_DIR = join(PACKAGE_DATA_DIR, "policy-packs");
 app.put("/api/policy", requireAuth("admin"), (req, res) => {
   const b = req.body || {};
   const nums = ["maxPerCallUSD", "maxPerHourUSD", "maxCallsPerHour", "requireApprovalAboveUSD"];
@@ -740,7 +855,7 @@ app.post("/api/policy/apply", requireAuth("admin"), (req, res) => {
 // server-side (simulate-mode convenience — keys live in gitignored
 // children.json exactly as the delegate script writes them), stores the
 // grant, and returns the address so the CLI can spend as it immediately.
-const CHILDREN_FILE = fileURLToPath(new URL("../data/children.json", import.meta.url));
+const CHILDREN_FILE = dataPath("children.json");
 app.post("/api/delegations/wallet", requireAuth("admin"), async (req, res) => {
   const { capUSD, label, parent, allowedTools, allowedChains, allowedPayees, ttlSeconds, periodSeconds } = req.body || {};
   if (!(Number(capUSD) > 0)) return res.status(400).json({ error: "a positive capUSD is required" });
@@ -763,7 +878,7 @@ app.post("/api/delegations/wallet", requireAuth("admin"), async (req, res) => {
 
 app.get("/api/policy", (req, res) => {
   try {
-    const raw = readFileSync(fileURLToPath(new URL("../data/policy.json", import.meta.url)), "utf8");
+    const raw = readFileSync(dataPath("policy.json"), "utf8");
     res.json(JSON.parse(raw));
   } catch {
     res.json({ maxPerCallUSD: 0.05, maxPerHourUSD: 0.2, maxCallsPerHour: 10, requireApprovalAboveUSD: 0.015, source: "built-in default" });
@@ -823,6 +938,9 @@ app.get("/api/approvals/:id", (req, res) => {
 app.get("/api/approvals/:id/decide", (req, res) => {
   const decision = req.query.decision;
   if (decision !== "approved" && decision !== "denied") return res.status(400).send("decision must be 'approved' or 'denied'");
+  // Real-money payouts are never decided by an unauthenticated link: they go
+  // through the authenticated POST (approver role, World ID when required).
+  if (String(getApproval(req.params.id)?.resource || "").startsWith("payout:")) return res.status(403).send("payout approvals must be decided in the SpendVeto Console");
   const record = decideApproval(req.params.id, decision, readPolicyRequiredApprovals());
   if (!record) return res.status(409).send("not pending (already decided, or unknown id)");
   res.send(`<body style="font-family:system-ui;background:#0b0f0c;color:#eef3ed;display:grid;place-items:center;height:100vh"><div style="text-align:center"><h2>${decision === "approved" ? "✅ Approved" : "⛔ Denied"}</h2><p style="color:#93a094">${record.resource} · $${record.price} — recorded. You can close this tab.</p></div></body>`);
@@ -856,7 +974,9 @@ app.post("/api/approvals/:id/decide", requireAuth("approver"), async (req, res) 
   }
   const record = decideApproval(req.params.id, decision, readPolicyRequiredApprovals());
   if (!record) return res.status(409).json({ error: "not pending (already decided, or unknown id)" });
-  res.json(record);
+  // A payout waiting on this approval executes (or closes) right here.
+  const payout = record.status === "approved" || record.status === "denied" ? await payouts.onApprovalDecided(record.id, record.status) : null;
+  res.json(payout ? { ...record, payout } : record);
 });
 
 // Budget delegation: a parent wallet grants a child agent wallet a capped
@@ -1049,6 +1169,198 @@ app.post("/api/acp/checkout", async (req, res) => {
     ts,
     ...signed,
   });
+});
+
+// ---- Out-of-band spend (server/outofband.js): what governed wallets paid without asking ----
+// The governed wallets — the agent wallet, every delegated child, and any the
+// policy names — are reconciled against their on-chain stablecoin transfers.
+// A transfer the ledger never recorded is unmanaged spend: booked against the
+// same budgets and caps, alerted, and frozen under onDetect "freeze".
+const outOfBandWallets = (settings) => [...new Set([mainAccount.address, ...listDelegations().map((d) => d.childAddress), ...settings.wallets].filter((a) => /^0x[0-9a-fA-F]{40}$/.test(a || "")).map((a) => a.toLowerCase()))];
+let outOfBandQueue = Promise.resolve();
+// One reconciliation at a time: a background scan and a webhook delivery
+// arriving together must not both book the same transfer.
+const serially = (fn) => (outOfBandQueue = outOfBandQueue.then(fn, fn));
+function bookOutOfBand(result, settings) {
+  for (const { transfer: t, usd } of result.unmanaged) {
+    appendLedgerEntry({
+      ...(t.blockTime ? { ts: t.blockTime } : {}),
+      address: t.from, resource: `out-of-band:${t.to}`, amount: usd ?? 0, chain: t.chain, payTo: t.to,
+      status: "unmanaged", mode: "out-of-band", txHash: t.txHash, logIndex: t.logIndex, token: t.token,
+      ...(usd == null ? { unpriced: true, value: t.value } : {}),
+      reason: usd == null ? "outgoing transfer of a token SpendVeto can't price, never authorized here" : "outgoing transfer SpendVeto never authorized",
+      policyHash: policyHash(),
+    });
+    sendAlert("unmanaged_spend", { address: t.from, to: t.to, usd, chain: t.chain, txHash: t.txHash, unpriced: usd == null });
+    if (settings.onDetect === "freeze") createFreeze({ address: t.from, reason: `out-of-band transfer ${t.txHash.slice(0, 12)}… to ${t.to} (${usd == null ? "unpriced token" : `$${usd}`}) — paid around the gate`, source: "out-of-band" });
+  }
+  return {
+    managed: result.managed.length, unmanaged: result.unmanaged.length, ignored: result.ignored.length, deferred: result.deferred,
+    duplicates: result.duplicates, invalid: result.invalid, foreign: result.foreign,
+    unmanagedUSD: Math.round(result.unmanaged.reduce((s, u) => s + (u.usd || 0), 0) * 1e6) / 1e6,
+  };
+}
+function reconcileNow(transfers, settings) {
+  return bookOutOfBand(reconcile(transfers, { ledger: getLedger(), watched: outOfBandWallets(settings), ignoreTo: settings.ignoreTo, matchWindowSeconds: settings.matchWindowSeconds, graceSeconds: settings.graceSeconds }), settings);
+}
+async function scanOutOfBand(settings) {
+  const { transfers, scanned } = await scanChains({ chains: settings.chains, wallets: outOfBandWallets(settings), lookbackBlocks: settings.lookbackBlocks, maxBlockRange: settings.maxBlockRange });
+  return { scanned, ...reconcileNow(transfers, settings) };
+}
+app.get("/api/outofband", (req, res) => {
+  const settings = outOfBandSettings(loadPolicy());
+  const st = outOfBandState();
+  const unmanaged = getLedger().filter((e) => e.status === "unmanaged");
+  res.json({
+    settings, wallets: outOfBandWallets(settings), cursors: st.cursors, lastScan: st.lastScan, pending: st.pending.length,
+    unmanaged: { count: unmanaged.length, usd: Math.round(unmanaged.reduce((s, e) => s + Number(e.amount || 0), 0) * 1e6) / 1e6, recent: unmanaged.slice(-50).reverse() },
+  });
+});
+// Read the chains now (the background poller does the same every pollSeconds when enabled).
+app.post("/api/outofband/scan", requireAuth("admin"), async (req, res) => {
+  const settings = outOfBandSettings(loadPolicy());
+  try {
+    res.json(await serially(() => scanOutOfBand(settings)));
+  } catch (err) {
+    res.status(502).json({ error: `chain scan failed: ${err.shortMessage || err.message}` });
+  }
+});
+// Deliveries from an indexer or an address-activity webhook, as
+// { transfers: [{ chain, txHash, logIndex, from, to, token, value, blockTime }] }.
+app.post("/api/outofband/transfers", requireAuth("admin"), async (req, res) => {
+  const transfers = (req.body || {}).transfers;
+  if (!Array.isArray(transfers) || transfers.length > 1000) return res.status(400).json({ error: "send { transfers: [...] } — at most 1000 per delivery" });
+  const settings = outOfBandSettings(loadPolicy());
+  res.json(await serially(() => reconcileNow(transfers, settings)));
+});
+(function pollOutOfBand() {
+  const settings = outOfBandSettings(loadPolicy());
+  const next = () => setTimeout(pollOutOfBand, Math.max(5, Number(settings.pollSeconds) || 60) * 1000).unref();
+  if (!settings.enabled || !(Number(settings.pollSeconds) > 0)) return next();
+  serially(() => scanOutOfBand(settings))
+    .catch((err) => console.error(`[out-of-band] scan failed: ${err.shortMessage || err.message}`))
+    .finally(next);
+})();
+
+// ---- MPP (Machine Payments Protocol — Stripe + Tempo's HTTP 402 standard), buyer side (server/mpp.js) ----
+// The agent's client hands over the 402's WWW-Authenticate value (or the
+// challenges mppx parsed) BEFORE it creates a credential; this decides which
+// offer, if any, it may pay. Allowed money is held against the budget at once —
+// evaluating is authorizing — until the client reports the outcome.
+const mppPolicy = () => {
+  try {
+    return loadPolicy().mpp || {};
+  } catch {
+    return {};
+  }
+};
+// The ledger entry for MPP money that actually moved: a reported (or, past its
+// expiry, assumed) charge, or the consumed part of a closed session.
+function bookMpp(row) {
+  const isSession = row.id.startsWith("mpps_");
+  const amount = isSession ? row.spentUSD : row.amountUSD;
+  if (!(amount > 0)) return;
+  appendLedgerEntry({
+    ...(row.status === "assumed_paid" ? { ts: row.authorizedAt } : {}),
+    address: row.address, resource: row.resource, amount, chain: row.network || "mpp", ...(row.recipient ? { payTo: row.recipient } : {}),
+    status: "paid", mode: "mpp",
+    ...(isSession ? { mppSessionId: row.id, depositUSD: row.depositUSD, releasedUSD: row.releasedUSD } : { mppChargeId: row.id }),
+    ...(row.status === "assumed_paid" ? { reason: "unreported MPP charge, assumed paid when its challenge expired" } : {}),
+    policyHash: policyHash(),
+  });
+}
+app.post("/api/mpp/evaluate", async (req, res) => {
+  const b = req.body || {};
+  const address = String(b.address || "");
+  if (!/^0x[0-9a-fA-F]{40}$/.test(address)) return res.status(400).json({ error: "address must be the agent's 0x-prefixed 20-byte wallet address" });
+  const input = b.wwwAuthenticate ?? b.challenges ?? b.challenge;
+  if (!input) return res.status(400).json({ error: "send the 402's WWW-Authenticate value as wwwAuthenticate, or parsed challenges as challenges" });
+  const parsed = parseChallenges(input);
+  if (!parsed.length) return res.status(400).json({ error: "no Payment challenge in what was sent — an x402 402 goes to the x402 rail, not here" });
+  const ts = new Date().toISOString();
+  const mpp = mppPolicy();
+  const assessed = parsed.map((p) => (p.ok ? assessChallenge(p.challenge, { deposit: b.deposit, mpp }) : p));
+  const offers = assessed.map((a) => (a.ok ? { id: a.id, method: a.method, intent: a.intent, network: a.network, exposureUSD: a.exposureUSD, ok: true } : { ok: false, code: a.code, reason: a.reason }));
+  // Cheapest exposure first, then the simplest intent; the first offer the
+  // policy accepts is the one to pay — a refused tempo offer doesn't sink an
+  // acceptable card offer from the same server.
+  const rank = { charge: 0, session: 1, subscription: 2 };
+  const candidates = assessed.filter((a) => a.ok).sort((x, y) => x.exposureUSD - y.exposureUSD || rank[x.intent] - rank[y.intent]);
+  let refusal = assessed.find((a) => !a.ok) || null;
+  for (const offer of candidates) {
+    // A session's deposit is one decision for many calls: its per-call cap is
+    // policy.mpp.maxSessionDepositUSD when set. Everything else — hourly
+    // budget with holds, approval line, payees, sanctions, reputation,
+    // freezes, chain allowlist — is the same engine as every other rail.
+    const base = loadPolicy();
+    const override = offer.intent === "session" && mpp.maxSessionDepositUSD != null ? { ...base, maxPerCallUSD: Number(mpp.maxSessionDepositUSD) } : undefined;
+    const chain = offer.network || undefined;
+    const verdict = await checkPolicy(address, offer.exposureUSD, "mpp", chain, b.category, offer.payees[0]?.payee, override);
+    let denied = verdict.allowed ? null : { code: verdict.code || "policy_denied", reason: verdict.reason, suggestion: verdict.suggestion };
+    // Every other recipient of a charge's money (splits) must be one this
+    // policy can pay: probed at $0, so the payee rules run without counting
+    // the money twice.
+    for (const p of denied ? [] : offer.payees.slice(1)) {
+      const v = await checkPolicy(address, 0, "mpp", chain, b.category, p.payee, override);
+      if (!v.allowed) denied = { code: v.code || "policy_denied", reason: `split recipient ${p.payee}: ${v.reason}`, suggestion: v.suggestion };
+    }
+    if (denied) {
+      refusal = { ok: false, ...denied, offerId: offer.id };
+      appendLedgerEntry({ address, resource: offer.resource, amount: offer.exposureUSD, chain: chain || "mpp", ...(offer.recipient ? { payTo: offer.recipient } : {}), status: "blocked", mode: "mpp", reason: `mpp ${offer.intent}: ${denied.reason}`, policyHash: policyHash() });
+      continue;
+    }
+    // A subscription is a standing commitment: a human approves the first one
+    // whatever its size. Approvals are matched on (wallet, resource, amount)
+    // and consumed here — the only point SpendVeto stands in an MPP payment.
+    const needsHuman = verdict.requiresApproval || offer.intent === "subscription";
+    let approvalId = null;
+    if (needsHuman) {
+      const approval = findApprovableFor(address, offer.resource, offer.exposureUSD);
+      if (!approval) {
+        const signed = await signDecision({ id: offer.id, agent: address, amountUSD: offer.exposureUSD, payee: offer.recipient, verdict: "requires_approval", ts });
+        return res.json({
+          decision: "requires_approval", stage: "policy", code: offer.intent === "subscription" ? "mpp_subscription_needs_approval" : "requires_approval",
+          reason: offer.intent === "subscription"
+            ? `a subscription of $${offer.periodUSD} per ${offer.periodCount > 1 ? `${offer.periodCount} ` : ""}${offer.periodUnit}${offer.commitmentUSD ? ` ($${offer.commitmentUSD} until ${offer.subscriptionExpires})` : ""} is a standing commitment — a human approves the first one`
+            : `$${offer.exposureUSD} is above requireApprovalAboveUSD $${verdict.policy.requireApprovalAboveUSD}`,
+          suggestion: "request approval (POST /api/approvals with this resource and price), wait for a human, then evaluate again",
+          approval: { resource: offer.resource, price: offer.exposureUSD }, offer, offers, ts, ...signed,
+        });
+      }
+      consumeApproval(approval.id);
+      approvalId = approval.id;
+    }
+    const held = offer.intent === "session" ? { session: openSession({ address, offer, channelId: b.channelId }) } : { charge: authorizeCharge({ address, offer }) };
+    const signed = await signDecision({ id: offer.id, agent: address, amountUSD: offer.exposureUSD, payee: offer.recipient, verdict: "allow", ts });
+    return res.json({
+      decision: "allow", stage: "policy",
+      reason: offer.intent === "session" ? `deposit $${offer.depositUSD} at $${offer.unitUSD} per ${offer.unitType || "unit"} is within policy` : `$${offer.exposureUSD} ${offer.intent} is within policy`,
+      offer, offers, ...(approvalId ? { approvalId } : {}),
+      ...(held.session ? { sessionId: held.session.id, maxDeposit: offer.maxDeposit } : { chargeId: held.charge.id, maxAmount: offer.maxAmount ?? null }),
+      heldUSD: mppHoldUSD(address, bookMpp), ts, ...signed,
+    });
+  }
+  const signed = await signDecision({ id: refusal?.offerId || null, agent: address, amountUSD: 0, payee: null, verdict: "deny", ts });
+  res.json({ decision: "deny", stage: refusal?.offerId ? "policy" : "mpp", code: refusal?.code, reason: refusal?.reason, suggestion: refusal?.suggestion, offers, ts, ...signed });
+});
+app.post("/api/mpp/charges/:id/report", (req, res) => {
+  const r = reportCharge(req.params.id, req.body || {}, bookMpp);
+  if (!r.ok) return res.status(409).json({ code: r.code, reason: r.reason, suggestion: r.suggestion });
+  res.json({ charge: r.charge, heldUSD: mppHoldUSD(r.charge.address, bookMpp) });
+});
+app.post("/api/mpp/sessions/:id/voucher", (req, res) => {
+  const r = recordVoucher(req.params.id, (req.body || {}).cumulative);
+  if (!r.ok) return res.status(409).json({ decision: "deny", code: r.code, reason: r.reason, suggestion: r.suggestion });
+  res.json({ decision: "allow", session: r.session, remainingUSD: r.remainingUSD });
+});
+app.post("/api/mpp/sessions/:id/close", (req, res) => {
+  const r = closeSession(req.params.id, (req.body || {}).cumulative, bookMpp);
+  if (!r.ok) return res.status(409).json({ code: r.code, reason: r.reason, suggestion: r.suggestion });
+  res.json({ session: r.session, heldUSD: mppHoldUSD(r.session.address, bookMpp) });
+});
+app.get("/api/mpp", (req, res) => {
+  const address = /^0x[0-9a-fA-F]{40}$/.test(req.query.address || "") ? req.query.address : null;
+  res.json({ ...mppState(address, bookMpp), ...(address ? { heldUSD: mppHoldUSD(address, bookMpp) } : {}) });
 });
 
 // UPI mandate governance (India). Decides allow / requires_approval / deny for a UPI mandate debit with the RBI
@@ -1312,15 +1624,312 @@ app.post("/api/upto/void", (req, res) => {
   res.json({ decision: "voided", authorization: result.authorization, releasedUSD: result.releasedUSD, heldUSD: openHoldUSD(result.authorization.address) });
 });
 
-// The hold number client/policy.js folds into the hourly budget.
+// The hold number client/policy.js folds into the hourly budget: every open
+// upto ceiling plus every live auth-capture hold (server/authcapture.js) —
+// two schemes, one question: what has this wallet signed away but not spent?
 app.get("/api/upto/holds/:address", (req, res) => {
-  res.json({ address: req.params.address, heldUSD: openHoldUSD(req.params.address) });
+  const uptoUSD = openHoldUSD(req.params.address);
+  const authCaptureUSD = authCaptureHoldUSD(req.params.address);
+  // In-flight LLM requests reserve their estimate too (server/llmguard.js),
+  // so a payment racing a model call sees the money already committed.
+  const llmUSD = llmGuard.heldUSD(req.params.address);
+  // Allowed MPP charges not yet reported and open MPP session deposits (server/mpp.js).
+  const mppUSD = mppHoldUSD(req.params.address, bookMpp);
+  res.json({ address: req.params.address, heldUSD: Math.round((uptoUSD + authCaptureUSD + llmUSD + mppUSD) * 1e6) / 1e6, uptoUSD, authCaptureUSD, llmUSD, mppUSD });
+});
+
+// ---- AI FinOps (server/finops.js): one cost view across every rail, FOCUS export, rebilling ----
+app.get("/api/costs", (req, res) => {
+  const groupBy = /^[a-z][a-z0-9_-]{0,31}$/.test(req.query.groupBy || "") ? req.query.groupBy : "category";
+  const days = Math.min(366, Math.max(1, Number(req.query.days) || 30));
+  res.json(costReport(getLedger(), { groupBy, days }));
+});
+app.get("/api/costs/focus.csv", (req, res) => {
+  const days = Math.min(366, Math.max(1, Number(req.query.days) || 30));
+  const finops = readJsonFile(POLICY_FILE, {}).finops || {};
+  const rows = focusRows(getLedger(), { days, billingAccountId: finops.billingAccountId || "spendveto", billingAccountName: finops.billingAccountName || "SpendVeto" });
+  res.set({ "Content-Type": "text/csv; charset=utf-8", "Content-Disposition": `attachment; filename="spendveto-focus-${new Date().toISOString().slice(0, 10)}.csv"` });
+  res.send(toFocusCsv(rows));
+});
+app.get("/api/rebilling", (req, res) => {
+  res.json(rebiller.summary({ days: Math.min(366, Math.max(1, Number(req.query.days) || 30)) }));
+});
+app.put("/api/rebilling", requireAuth("admin"), (req, res) => {
+  const b = req.body || {};
+  const policy = readJsonFile(POLICY_FILE, {});
+  const r = { ...(policy.rebilling || {}) };
+  if (typeof b.enabled === "boolean") r.enabled = b.enabled;
+  if (b.markupPct != null) {
+    if (!(Number(b.markupPct) >= 0 && Number(b.markupPct) <= 1000)) return res.status(400).json({ error: "markupPct must be between 0 and 1000" });
+    r.markupPct = Number(b.markupPct);
+  }
+  if (b.eventName != null) {
+    if (!/^[A-Za-z0-9_.-]{1,100}$/.test(String(b.eventName))) return res.status(400).json({ error: "eventName must be 1-100 chars of letters, digits, _ . -" });
+    r.eventName = String(b.eventName);
+  }
+  if (b.customerTag != null) {
+    if (!/^[a-z][a-z0-9_-]{0,31}$/.test(String(b.customerTag))) return res.status(400).json({ error: "customerTag must be a lowercase tag key" });
+    r.customerTag = String(b.customerTag);
+  }
+  policy.rebilling = r;
+  writeFileSync(POLICY_FILE, JSON.stringify(policy, null, 2));
+  res.json({ settings: rebillingSettings(policy) });
+});
+
+// ---- Governed fiat payouts (server/payouts.js): Stripe, RazorpayX, PayPal, Modern Treasury ----
+const payouts = createPayouts({
+  dataPath,
+  loadPolicy: () => readJsonFile(POLICY_FILE, {}),
+  checkPolicy,
+  policyHash: () => policyHash(),
+  appendLedgerEntry,
+  getLedger,
+  findActiveFreeze,
+  listDelegations,
+  createApproval,
+  getApproval,
+  readAgents: () => readJsonFile(dataPath("agents.json"), []),
+  childAddress: childAddressFor,
+  pseudoAddress,
+  reputationCheck: (subjects) => reputation.check(subjects),
+});
+app.post("/api/payouts", async (req, res) => {
+  const out = await payouts.create(req, req.body || {});
+  res.status(out.status).json(out.json);
+});
+app.get("/api/payouts", (req, res) => {
+  res.json(payouts.summary());
+});
+// Your own webhook glue reports a later provider status (a RazorpayX payout
+// reversing, an ACH credit returning) — recorded, not re-decided.
+app.post("/api/payouts/:id/status", requireAuth("admin"), (req, res) => {
+  const row = payouts.recordStatus(req.params.id, req.body?.status, req.body?.note);
+  if (!row) return res.status(404).json({ error: "not found" });
+  res.json(row);
+});
+
+// ---- Card authorization governance: registry + decisions (server/cards.js) ----
+// Map a card to an agent label (and optionally a delegated child wallet, so
+// the card shares that agent's cascading budget with its x402 and LLM spend).
+app.get("/api/cards", (req, res) => {
+  res.json({ cards: readJsonFile(dataPath("cards.json"), []), settings: cardSettings(readJsonFile(POLICY_FILE, {})), configured: { stripe: Boolean(process.env.STRIPE_ISSUING_WEBHOOK_SECRET), lithic: Boolean(process.env.LITHIC_ASA_SECRET) } });
+});
+app.post("/api/cards", requireAuth("admin"), (req, res) => {
+  const { cardId, label, rail, child, tags } = req.body || {};
+  if (!cardId || typeof cardId !== "string") return res.status(400).json({ error: "cardId is required (Stripe ic_… or Lithic card token)" });
+  if (!label || typeof label !== "string") return res.status(400).json({ error: "label is required" });
+  if (child && !childAddressFor(child)) return res.status(404).json({ error: `no delegated child wallet matching "${child}"` });
+  const cards = readJsonFile(dataPath("cards.json"), []).filter((c) => c.cardId !== cardId);
+  const cleanTags = tags && typeof tags === "object" ? Object.fromEntries(Object.entries(tags).slice(0, 10).filter(([k]) => /^[a-z][a-z0-9_-]{0,31}$/.test(k)).map(([k, v]) => [k, String(v).slice(0, 64)])) : null;
+  const record = { cardId, label: label.slice(0, 60), rail: rail === "lithic" ? "lithic" : "stripe", child: child || null, ...(cleanTags && Object.keys(cleanTags).length ? { tags: cleanTags } : {}), createdAt: new Date().toISOString() };
+  cards.push(record);
+  writeFileSync(dataPath("cards.json"), JSON.stringify(cards, null, 2));
+  res.status(201).json(record);
+});
+app.get("/api/cards/decisions", (req, res) => {
+  res.json({ decisions: getLedger().filter((e) => e.category === "card").slice(-50).reverse() });
+});
+
+// ---- LLM spend guard: read side + settings (server/llmguard.js) ----
+app.get("/api/llm/summary", (req, res) => {
+  res.json(llmGuard.summary());
+});
+
+// Copy-paste connection lines for every client the guard speaks to, built
+// from the address the caller reached this server on.
+app.get("/api/llm/connect", (req, res) => {
+  const base = `${req.protocol}://${req.get("host")}`;
+  res.json({
+    base,
+    clients: [
+      { name: "Claude Code", line: `ANTHROPIC_BASE_URL=${base} claude` },
+      { name: "Codex CLI", line: `OPENAI_BASE_URL=${base}/v1 codex` },
+      { name: "Anthropic SDK (Python / TypeScript)", line: `ANTHROPIC_BASE_URL=${base}` },
+      { name: "OpenAI SDK (Python / TypeScript)", line: `OPENAI_BASE_URL=${base}/v1` },
+      { name: "Any OpenAI-compatible tool (Cursor, LangChain, LiteLLM, Aider…)", line: `base URL: ${base}/v1` },
+    ],
+    note: "Your provider key passes straight through and is never stored. To give an agent a budget without giving it a key, register it on the Agents page and use its tg_… token instead.",
+  });
+});
+
+app.get("/api/llm/settings", (req, res) => {
+  res.json({ settings: llmGuard.settings() });
+});
+
+// Validated merge into policy.llm — numbers must be positive, lists are
+// trimmed, unknown keys are ignored rather than written to the policy file.
+app.put("/api/llm/settings", requireAuth("admin"), (req, res) => {
+  const b = req.body || {};
+  const policy = readJsonFile(POLICY_FILE, {});
+  const llm = { ...(policy.llm || {}) };
+  const positive = ["dailyBudgetUSD", "hourlyBudgetUSD", "maxRequestUSD", "maxRequestsPerMinute", "outputEstimateCapTokens", "approvalTimeoutMs"];
+  for (const k of positive) {
+    if (b[k] == null) continue;
+    if (!(Number(b[k]) > 0)) return res.status(400).json({ error: `${k} must be a positive number` });
+    llm[k] = Number(b[k]);
+  }
+  for (const k of ["sessionBudgetUSD", "approvalAboveUSD"]) {
+    if (b[k] === undefined) continue;
+    if (b[k] === null || b[k] === "") llm[k] = null;
+    else if (Number(b[k]) > 0) llm[k] = Number(b[k]);
+    else return res.status(400).json({ error: `${k} must be a positive number or null` });
+  }
+  if (b.mode !== undefined) {
+    if (!["enforce", "observe"].includes(b.mode)) return res.status(400).json({ error: 'mode must be "enforce" or "observe"' });
+    llm.mode = b.mode;
+  }
+  for (const k of ["allowedModels", "blockedModels"]) {
+    if (b[k] === undefined) continue;
+    llm[k] = Array.isArray(b[k]) && b[k].length ? b[k].map((m) => String(m).trim()).filter(Boolean).slice(0, 50) : k === "allowedModels" ? null : [];
+  }
+  if (b.loop && typeof b.loop === "object") {
+    const loop = { ...(llm.loop || {}) };
+    if (typeof b.loop.enabled === "boolean") loop.enabled = b.loop.enabled;
+    if (Number(b.loop.threshold) >= 2) loop.threshold = Math.floor(Number(b.loop.threshold));
+    if (Number(b.loop.windowSeconds) > 0) loop.windowSeconds = Number(b.loop.windowSeconds);
+    llm.loop = loop;
+  }
+  for (const k of ["requireAgentToken", "passthroughUnknown"]) if (typeof b[k] === "boolean") llm[k] = b[k];
+  if (b.tagBudgets && typeof b.tagBudgets === "object") {
+    const tb = { ...(llm.tagBudgets || {}) };
+    for (const [key, v] of Object.entries(b.tagBudgets)) {
+      if (!/^[a-z][a-z0-9_-]{0,31}=[\w .:@/-]{1,64}$/.test(key)) return res.status(400).json({ error: `tag budget key "${key}" must look like team=search or customer=cus_123` });
+      if (v === null) delete tb[key];
+      else if (v && (Number(v.dailyUSD) > 0 || Number(v.hourlyUSD) > 0)) tb[key] = { ...(Number(v.dailyUSD) > 0 ? { dailyUSD: Number(v.dailyUSD) } : {}), ...(Number(v.hourlyUSD) > 0 ? { hourlyUSD: Number(v.hourlyUSD) } : {}) };
+      else return res.status(400).json({ error: `tag budget for ${key} needs a positive dailyUSD and/or hourlyUSD` });
+    }
+    llm.tagBudgets = tb;
+  }
+  if (b.identityFrom !== undefined) {
+    if (!["local", "credential"].includes(b.identityFrom)) return res.status(400).json({ error: 'identityFrom must be "local" or "credential"' });
+    llm.identityFrom = b.identityFrom;
+  }
+  if (b.prices && typeof b.prices === "object") {
+    const prices = { ...(llm.prices || {}) };
+    for (const [model, row] of Object.entries(b.prices)) {
+      if (row === null) delete prices[model];
+      else if (row && Number(row.inputPerM) >= 0 && Number(row.outputPerM) >= 0) prices[String(model).toLowerCase()] = { inputPerM: Number(row.inputPerM), outputPerM: Number(row.outputPerM), ...(row.cacheReadPerM != null ? { cacheReadPerM: Number(row.cacheReadPerM) } : {}) };
+      else return res.status(400).json({ error: `price for ${model} needs numeric inputPerM and outputPerM (USD per million tokens)` });
+    }
+    llm.prices = prices;
+  }
+  policy.llm = llm;
+  writeFileSync(POLICY_FILE, JSON.stringify(policy, null, 2));
+  res.json({ settings: llmGuard.settings() });
 });
 
 app.get("/api/upto", (req, res) => {
   const { address } = req.query;
   const authorizations = getAuthorizations().filter((a) => !address || String(a.address).toLowerCase() === String(address).toLowerCase());
   res.json({ authorizations, summary: uptoSummary(address) });
+});
+
+// x402 `auth-capture` (server/authcapture.js): refuse a hostile route before
+// signing, govern the maximum, hold the escrow against the budget, and hold
+// the seller's lifecycle calls to the terms the buyer signed.
+function readAuthCapturePolicy() {
+  try {
+    return JSON.parse(readFileSync(POLICY_FILE, "utf8"));
+  } catch {
+    return {};
+  }
+}
+
+async function governAuthCapture(body) {
+  const { address, requirements, authorizationTo, toolId, category } = body || {};
+  if (!/^0x[0-9a-fA-F]{40}$/.test(address || "")) return { status: 400, json: { error: "address must be a 0x-prefixed 20-byte address" } };
+  const ts = new Date().toISOString();
+  const evaluation = evaluateAuthCapture(requirements, { policy: readAuthCapturePolicy(), authorizationTo });
+  if (!evaluation.ok) return { status: 403, json: { decision: "deny", stage: "scheme", code: evaluation.code, reason: evaluation.reason, suggestion: evaluation.suggestion, ts } };
+  // Policy decides on the maximum: from the moment the authorization exists,
+  // the maximum is what the buyer is exposed to.
+  const verdict = await checkPolicy(address, evaluation.maxUSD, toolId, evaluation.chain, category, evaluation.payee);
+  if (!verdict.allowed) return { status: 403, json: { decision: "deny", stage: "policy", code: verdict.code, reason: verdict.reason, suggestion: verdict.suggestion, maxUSD: evaluation.maxUSD, ts }, blocked: { evaluation, verdict } };
+  if (verdict.requiresApproval) {
+    return { status: 403, json: { decision: "requires_approval", stage: "policy", code: "requires_approval", reason: `an auth-capture maximum of $${evaluation.maxUSD} is above requireApprovalAboveUSD $${verdict.policy.requireApprovalAboveUSD} — a human signs off on the maximum, not the eventual capture`, suggestion: "request approval for this maximum before signing, or ask the seller for a lower one", maxUSD: evaluation.maxUSD, ts } };
+  }
+  return { status: 200, json: { decision: "allow", stage: "policy", evaluation, ts }, evaluation };
+}
+
+// Dry run: would SpendVeto let this wallet sign this route? No state change.
+app.post("/api/authcapture/evaluate", async (req, res) => {
+  const out = await governAuthCapture(req.body);
+  res.status(out.status).json(out.json);
+});
+
+app.post("/api/authcapture/authorize", async (req, res) => {
+  const { address, toolId, category } = req.body || {};
+  const out = await governAuthCapture(req.body);
+  if (out.blocked) {
+    const { evaluation, verdict } = out.blocked;
+    appendLedgerEntry({
+      address, resource: toolId ? `auth-capture:${toolId}` : "auth-capture", amount: evaluation.maxUSD, chain: evaluation.chain,
+      ...(category ? { category } : {}), ...(evaluation.payee ? { payTo: evaluation.payee } : {}),
+      status: "blocked", mode: "auth-capture", reason: `auth-capture maximum: ${verdict.reason}`, policyHash: policyHash(),
+    });
+  }
+  if (!out.evaluation) return res.status(out.status).json(out.json);
+  const payment = recordCollect({ address, evaluation: out.evaluation, toolId, category });
+  res.status(201).json({ decision: "allow", stage: "policy", payment, heldUSD: authCaptureHoldUSD(address), ts: out.json.ts });
+});
+
+// Seller lifecycle, re-checked against the signed terms. Captured or charged
+// money — never the maximum — is what enters the spend record.
+const bookCapture = (p, amountUSD, op) =>
+  appendLedgerEntry({
+    address: p.address, resource: p.toolId ? `auth-capture:${p.toolId}` : "auth-capture", amount: amountUSD, chain: p.chain,
+    ...(p.category ? { category: p.category } : {}), ...(p.payee ? { payTo: p.payee } : {}),
+    status: "paid", mode: "auth-capture", authCaptureId: p.id, op, maxUSD: p.maxUSD, policyHash: policyHash(),
+  });
+
+app.post("/api/authcapture/:id/capture", (req, res) => {
+  const r = capturePayment(req.params.id, req.body?.amountUSD);
+  if (!r.ok) return res.status(r.code === "ac_unknown" ? 404 : 409).json({ decision: "deny", code: r.code, reason: r.reason, suggestion: r.suggestion });
+  bookCapture(r.payment, r.capturedUSD, "capture");
+  res.json({ decision: "captured", payment: r.payment, capturedUSD: r.capturedUSD, remainingUSD: r.remainingUSD, heldUSD: authCaptureHoldUSD(r.payment.address) });
+});
+
+app.post("/api/authcapture/:id/charge", (req, res) => {
+  const r = chargePayment(req.params.id, req.body?.amountUSD);
+  if (!r.ok) return res.status(r.code === "ac_unknown" ? 404 : 409).json({ decision: "deny", code: r.code, reason: r.reason, suggestion: r.suggestion });
+  bookCapture(r.payment, r.capturedUSD, "charge");
+  res.json({ decision: "charged", payment: r.payment, capturedUSD: r.capturedUSD, releasedUSD: r.releasedUSD, heldUSD: authCaptureHoldUSD(r.payment.address) });
+});
+
+app.post("/api/authcapture/:id/void", (req, res) => {
+  const r = voidPayment(req.params.id);
+  if (!r.ok) return res.status(r.code === "ac_unknown" ? 404 : 409).json({ decision: "deny", code: r.code, reason: r.reason, suggestion: r.suggestion });
+  res.json({ decision: "voided", payment: r.payment, releasedUSD: r.releasedUSD, heldUSD: authCaptureHoldUSD(r.payment.address) });
+});
+
+app.post("/api/authcapture/:id/refund", (req, res) => {
+  const r = refundPayment(req.params.id, req.body?.amountUSD);
+  if (!r.ok) return res.status(r.code === "ac_unknown" ? 404 : 409).json({ decision: "deny", code: r.code, reason: r.reason, suggestion: r.suggestion });
+  res.json({ decision: "refunded", payment: r.payment, refundedUSD: r.refundedUSD, refundableUSD: r.refundableUSD });
+});
+
+app.post("/api/authcapture/:id/reclaimed", (req, res) => {
+  const r = markReclaimed(req.params.id, req.body?.txHash);
+  if (!r.ok) return res.status(r.code === "ac_unknown" ? 404 : 409).json({ decision: "deny", code: r.code, reason: r.reason, suggestion: r.suggestion });
+  res.json({ decision: "reclaimed", payment: r.payment, recoveredUSD: r.recoveredUSD });
+});
+
+// Money left behind: holds past their capture deadline that only the buyer's
+// own reclaim call can recover.
+app.get("/api/authcapture/reclaimable", (req, res) => {
+  res.json(reclaimable(req.query.address));
+});
+
+app.get("/api/authcapture", (req, res) => {
+  const { address } = req.query;
+  const payments = getAuthCapturePayments().filter((p) => !address || String(p.address).toLowerCase() === String(address).toLowerCase());
+  res.json({ payments, summary: authCaptureSummary(address) });
+});
+
+app.get("/api/authcapture/:id", (req, res) => {
+  const p = findAuthCapturePayment(req.params.id);
+  if (!p) return res.status(404).json({ error: "not found" });
+  res.json(p);
 });
 
 // Request integrity (server/integrity.js): bind an authorization to the exact
@@ -1372,8 +1981,156 @@ app.get("/api/otel/spans", async (req, res) => {
   res.json({ spanCount: spans.length, traceparent: req.get("traceparent") || null, exported, payload });
 });
 
-app.listen(PORT, () => {
+// ---- The network layer: attestations a seller verifies, reputation shared across organizations, an open policy standard ----
+
+// Governed-spend attestations (server/attestations.js). Minted only after the
+// server-side policy check passes — and above the approval line only once a
+// human approved — so holding one means this instance's policy said yes.
+const ATTESTATIONS_FILE = dataPath("attestations.json");
+const isEvmAddress = (a) => /^0x[0-9a-fA-F]{40}$/.test(String(a || ""));
+function attestationSettings() {
+  const a = readJsonFile(POLICY_FILE, {}).attestations || {};
+  const ttl = Number(a.ttlSeconds);
+  return {
+    ttlSeconds: Number.isInteger(ttl) ? Math.min(ATTESTATION_MAX_TTL_SECONDS, Math.max(30, ttl)) : ATTESTATION_DEFAULT_TTL_SECONDS,
+    trustedIssuers: Array.isArray(a.trustedIssuers) ? a.trustedIssuers.filter(isEvmAddress) : [],
+    requireOnCatalog: Boolean(a.requireOnCatalog),
+  };
+}
+
+app.post("/api/attestations", async (req, res) => {
+  const b = req.body || {};
+  const address = String(b.address || "").trim();
+  const resource = String(b.resource || "").trim().slice(0, 300);
+  const price = Number(b.price ?? b.amountUSD);
+  if (!address || !resource || !(price >= 0)) return res.status(400).json({ error: "address, resource and price (USD) are required" });
+  const payee = b.payee ? String(b.payee).trim().slice(0, 200) : null;
+  const chain = b.chain ? String(b.chain) : undefined;
+  const rail = ATTESTATION_RAILS.includes(b.rail) ? b.rail : "x402";
+  let verdict;
+  try {
+    verdict = await checkPolicy(address, price, b.toolId ? String(b.toolId) : undefined, chain, b.category ? String(b.category) : undefined, payee || undefined);
+  } catch {
+    return res.status(503).json({ error: "policy engine unavailable — no attestation without a decision" });
+  }
+  if (!verdict.allowed) return res.status(403).json({ error: "attestation_refused", code: verdict.code || "policy_denied", reason: verdict.reason, suggestion: verdict.suggestion });
+  let approvalId = null;
+  if (verdict.requiresApproval) {
+    const approval = findApprovableFor(address, resource, price);
+    if (!approval) {
+      return res.status(409).json({ error: "attestation_refused", code: "approval_required", reason: "this spend needs a human approval first — an attestation vouches only for what was actually decided", suggestion: "request the approval (POST /api/approvals), let a human decide, then ask for the attestation" });
+    }
+    approvalId = approval.id; // not consumed: the payment itself still has to present it
+  }
+  const { ttlSeconds } = attestationSettings();
+  const iat = Math.floor(Date.now() / 1000);
+  const claims = {
+    v: 1, iss: instanceSigner.address, sub: isEvmAddress(address) ? address.toLowerCase() : address, aud: payee, res: resource,
+    amt: String(price), cur: "USD", rail, ...(chain ? { chain } : {}), pol: policyHash(), dec: approvalId ? "approved" : "allowed",
+    ...(approvalId ? { apr: approvalId } : {}), iat, exp: iat + ttlSeconds, jti: randomUUID(),
+  };
+  const token = await mintAttestation(claims, instanceSigner.signMessage);
+  const log = readJsonFile(ATTESTATIONS_FILE, []);
+  log.push({ jti: claims.jti, sub: claims.sub, aud: claims.aud, res: claims.res, amt: claims.amt, rail, dec: claims.dec, iat, exp: claims.exp });
+  writeFileSync(ATTESTATIONS_FILE, JSON.stringify(log.slice(-2000), null, 2));
+  res.status(201).json({ token, claims, header: ATTESTATION_HEADER, issuer: instanceSigner.address, persistent: instanceSigner.persistent });
+});
+
+// Check a token the way a seller would — this instance plus the issuers its
+// policy trusts. Informational: unlike a seller's own gate, nothing is consumed.
+app.post("/api/attestations/verify", async (req, res) => {
+  const b = req.body || {};
+  if (!b.token) return res.status(400).json({ error: "token is required" });
+  const { trustedIssuers } = attestationSettings();
+  res.json(await verifyAttestation(b.token, { trustedIssuers: [instanceSigner.address, ...trustedIssuers], audience: b.audience, resource: b.resource, amountUSD: b.price ?? b.amountUSD, payer: b.payer }));
+});
+
+app.get("/api/attestations", (req, res) => {
+  const log = readJsonFile(ATTESTATIONS_FILE, []);
+  res.json({ issuer: instanceSigner.address, persistent: instanceSigner.persistent, settings: attestationSettings(), issued: log.length, recent: log.slice(-50).reverse() });
+});
+
+// The instance's public identity: what a seller pins to accept its
+// attestations, and what a subscriber pins to import its reputation feed.
+app.get("/.well-known/spendveto-issuer.json", (req, res) => {
+  res.json({
+    spec: "spendveto-issuer/v1",
+    issuer: instanceSigner.address,
+    persistent: instanceSigner.persistent,
+    attestations: { format: `${ATTESTATION_PREFIX}.<base64url claims>.<0x signature>`, header: ATTESTATION_HEADER, messagePrefix: ATTESTATION_MESSAGE_PREFIX, signature: "EIP-191 personal_sign, secp256k1", ttlSeconds: attestationSettings().ttlSeconds, mint: "/api/attestations", verify: "/api/attestations/verify" },
+    reputation: { spec: FEED_SPEC, feed: "/api/reputation/feed", messagePrefix: FEED_MESSAGE_PREFIX },
+    policySchema: POLICY_SCHEMA_ID,
+    docs: "https://github.com/revanthrajeev/spendveto/blob/main/docs/NETWORK.md",
+  });
+});
+
+// Federated reputation (server/reputation.js).
+app.get("/api/reputation", (req, res) => {
+  res.json(reputation.summary());
+});
+app.post("/api/reputation/reports", requireAuth("admin"), (req, res) => {
+  const out = reputation.report(req.body || {});
+  if (!out.ok) return res.status(out.status).json({ error: out.code, reason: out.reason });
+  res.status(out.created ? 201 : 200).json(out);
+});
+app.delete("/api/reputation/reports/:id", requireAuth("admin"), (req, res) => {
+  const removed = reputation.removeReport(req.params.id);
+  res.status(removed ? 200 : 404).json({ ok: removed });
+});
+app.get("/api/reputation/feed", async (req, res) => {
+  res.json(await reputation.exportFeed());
+});
+app.post("/api/reputation/import", requireAuth("admin"), async (req, res) => {
+  const out = await reputation.importFeed(req.body?.feed ?? req.body);
+  res.status(out.ok ? 200 : out.status).json(out);
+});
+app.get("/api/reputation/check", (req, res) => {
+  const q = req.query.subject;
+  const subjects = (Array.isArray(q) ? q : q ? [q] : []).map(String).slice(0, 20);
+  if (!subjects.length) return res.status(400).json({ error: "subject is required (repeat it to check several)" });
+  res.json(reputation.check(subjects));
+});
+app.put("/api/reputation/settings", requireAuth("admin"), (req, res) => {
+  const b = req.body || {};
+  const policy = readJsonFile(POLICY_FILE, {});
+  const r = { ...(policy.reputation || {}) };
+  if (typeof b.enabled === "boolean") r.enabled = b.enabled;
+  if (b.importedAction !== undefined) {
+    if (!["deny", "review"].includes(b.importedAction)) return res.status(400).json({ error: 'importedAction must be "deny" or "review"' });
+    r.importedAction = b.importedAction;
+  }
+  if (b.trustedPublishers !== undefined) {
+    if (!Array.isArray(b.trustedPublishers) || !b.trustedPublishers.every(isEvmAddress)) return res.status(400).json({ error: "trustedPublishers must be a list of 0x addresses (each publisher's issuer address)" });
+    r.trustedPublishers = [...new Set(b.trustedPublishers.map((a) => a.toLowerCase()))].slice(0, 100);
+  }
+  if (b.publisherName !== undefined) {
+    const name = String(b.publisherName || "").trim().slice(0, 80);
+    if (name) r.publisherName = name;
+    else delete r.publisherName;
+  }
+  policy.reputation = r;
+  writeFileSync(POLICY_FILE, JSON.stringify(policy, null, 2));
+  res.json({ settings: reputationSettings(policy) });
+});
+
+// The open policy standard (spec/policy-v1.schema.json + server/policyspec.js).
+app.get("/api/policy/schema", (req, res) => {
+  res.type("application/schema+json").send(readFileSync(POLICY_SCHEMA_PATH));
+});
+app.get("/api/policy/validate", (req, res) => {
+  res.json(validatePolicy(readJsonFile(POLICY_FILE, {})));
+});
+app.post("/api/policy/validate", (req, res) => {
+  const b = req.body;
+  const wrapped = b && typeof b === "object" && !Array.isArray(b) && Object.keys(b).length === 1 && b.policy && typeof b.policy === "object";
+  res.json(validatePolicy(wrapped ? b.policy : b));
+});
+
+app.listen(PORT, process.env.HOST || undefined, () => {
   console.log(`SpendVeto server — mode: ${MODE}`);
+  // A typo in the policy file fails open (the engine never reads the key), so say so at boot.
+  const policyCheck = validatePolicy(readJsonFile(POLICY_FILE, {}));
+  if (!policyCheck.valid) console.warn(`policy.json has ${policyCheck.errors.length} problem(s): ${policyCheck.errors.slice(0, 3).map((e) => `${e.path} ${e.message}`).join("; ")} — see GET /api/policy/validate`);
   console.log(`Dashboard: http://localhost:${PORT}/`);
   console.log(`Catalog:   ${TOOLS.map((t) => `${t.path} ($${t.price})`).join(", ")}`);
   if (MODE === "simulate") console.log(`Client wallets are auto-seeded with a $5.00 simulated USDC balance on first call.`);

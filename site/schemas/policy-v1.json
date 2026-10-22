@@ -1,0 +1,302 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://spendveto.com/schemas/policy-v1.json",
+  "title": "SpendVeto policy v1",
+  "description": "One file that states how much an AI agent may spend, where, and when a human must approve, across model tokens, stablecoins (x402), cards, bank payouts and regional payment rails. Every key is optional; an omitted key falls back to the documented default. Keys starting with $ or x- are reserved for comments and extensions and are never interpreted.",
+  "type": "object",
+  "patternProperties": {
+    "^\\$": {},
+    "^x-": {}
+  },
+  "additionalProperties": false,
+  "properties": {
+    "maxPerCallUSD": { "$ref": "#/$defs/positiveUsd", "description": "Largest single x402 / tool payment an agent may make. Default 0.05." },
+    "maxPerHourUSD": { "$ref": "#/$defs/positiveUsd", "description": "Rolling-hour spend cap per wallet, counting open upto and auth-capture holds. Default 0.2." },
+    "maxCallsPerHour": { "type": "integer", "minimum": 1, "description": "Rolling-hour call-count cap per wallet. Default 10." },
+    "requireApprovalAboveUSD": { "$ref": "#/$defs/usd", "description": "Payments above this need a human approval first. Default 0.015." },
+    "approversRequired": { "type": "integer", "minimum": 1, "maximum": 10, "description": "Distinct human approvals needed before an approval lands (a deny is always final). Default 1." },
+    "requireWorldIdForApproval": { "type": "boolean", "description": "Require a World ID proof of personhood on every approval. Default false." },
+    "anomaly": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Runaway-loop auto-freeze: this many payment attempts inside the window freezes the wallet.",
+      "properties": {
+        "burstAttempts": { "type": "integer", "minimum": 1 },
+        "burstWindowSeconds": { "type": "number", "exclusiveMinimum": 0 }
+      }
+    },
+    "allowedChains": { "$ref": "#/$defs/stringList", "description": "Chain ids agents may settle on (see GET /api/chains). Omit to allow every registered chain." },
+    "allowedPayees": { "$ref": "#/$defs/stringList", "description": "Recipient addresses or ENS names external tools may pay. Omit or leave empty to allow any." },
+    "allowedHoursUTC": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["start", "end"],
+      "description": "UTC window in which spending is allowed; wrap-around windows (22 to 6) are supported.",
+      "properties": {
+        "start": { "type": "integer", "minimum": 0, "maximum": 24 },
+        "end": { "type": "integer", "minimum": 0, "maximum": 24 }
+      }
+    },
+    "categoryCapsUSD": {
+      "type": "object",
+      "description": "Rolling-hour cap per spend category (engineering, content, card, payout, llm, ...).",
+      "additionalProperties": { "$ref": "#/$defs/usd" }
+    },
+    "alertWebhookUrl": { "$ref": "#/$defs/httpUrl", "description": "Where freeze, block and approval alerts are POSTed." },
+    "alertSigningSecret": { "type": "string", "minLength": 1, "description": "HMAC secret for the X-SpendVeto-Signature header on alerts." },
+    "billingWebhookUrl": { "$ref": "#/$defs/httpUrl", "description": "Where one normalized usage event per settlement is POSTed." },
+    "billingSigningSecret": { "type": "string", "minLength": 1, "description": "HMAC secret for billing events." },
+    "llm": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "The LLM spend guard in front of Claude Code, Codex and the OpenAI / Anthropic SDKs.",
+      "properties": {
+        "mode": { "enum": ["enforce", "observe"], "description": "observe decides and records but never blocks. Default enforce." },
+        "dailyBudgetUSD": { "$ref": "#/$defs/positiveUsd", "description": "Rolling 24 hours, per identity. Default 25." },
+        "hourlyBudgetUSD": { "$ref": "#/$defs/positiveUsd", "description": "Rolling 60 minutes, per identity. Default 10." },
+        "sessionBudgetUSD": { "type": ["number", "null"], "exclusiveMinimum": 0, "description": "Per Claude Code session; null turns it off. Default null." },
+        "maxRequestUSD": { "$ref": "#/$defs/positiveUsd", "description": "Worst-case estimate allowed for one request. Default 5." },
+        "maxRequestsPerMinute": { "type": "integer", "minimum": 1, "description": "Default 60." },
+        "outputEstimateCapTokens": { "type": "integer", "minimum": 1, "description": "Output tokens reserved per request when the client asks for more. Default 16000." },
+        "approvalAboveUSD": { "type": ["number", "null"], "exclusiveMinimum": 0, "description": "Pause requests estimated above this for a human; null turns it off. Default null." },
+        "approvalTimeoutMs": { "type": "integer", "minimum": 1, "description": "Default 60000." },
+        "loop": {
+          "type": "object",
+          "additionalProperties": false,
+          "description": "Freeze an agent that repeats the same successful tool call and result.",
+          "properties": {
+            "enabled": { "type": "boolean" },
+            "threshold": { "type": "integer", "minimum": 2 },
+            "windowSeconds": { "type": "number", "exclusiveMinimum": 0 }
+          }
+        },
+        "allowedModels": { "type": ["array", "null"], "items": { "type": "string" }, "description": "Only these models; null allows any. Default null." },
+        "blockedModels": { "$ref": "#/$defs/stringList" },
+        "requireAgentToken": { "type": "boolean", "description": "Refuse requests without a registered agent's tg_ token. Default false." },
+        "identityFrom": { "enum": ["local", "credential"], "description": "Identify agents by label/token (local) or by the API key they send (credential). Default local." },
+        "passthroughUnknown": { "type": "boolean", "description": "Forward endpoints the guard cannot meter. Default false (refused with 501)." },
+        "prices": {
+          "type": "object",
+          "description": "Per-model price overrides in USD per million tokens.",
+          "additionalProperties": { "$ref": "#/$defs/priceRow" }
+        },
+        "unknownModelRates": {
+          "type": ["object", "null"],
+          "additionalProperties": false,
+          "description": "Price for models no price sheet knows, per provider. Default: each provider's flagship rate.",
+          "properties": {
+            "anthropic": { "$ref": "#/$defs/priceRow" },
+            "openai": { "$ref": "#/$defs/priceRow" }
+          }
+        },
+        "tagBudgets": {
+          "type": "object",
+          "description": "Budgets on a tag across every agent carrying it, keyed team=search or customer=cus_123.",
+          "patternProperties": {
+            "^[a-z][a-z0-9_-]{0,31}=[\\w .:@/-]{1,64}$": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "dailyUSD": { "$ref": "#/$defs/positiveUsd" },
+                "hourlyUSD": { "$ref": "#/$defs/positiveUsd" }
+              }
+            }
+          },
+          "additionalProperties": false
+        }
+      }
+    },
+    "cards": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Real-time authorization decisions for agent cards (Stripe Issuing, Lithic).",
+      "properties": {
+        "maxAuthorizationUSD": { "$ref": "#/$defs/positiveUsd", "description": "Default 500." },
+        "dailyBudgetUSD": { "$ref": "#/$defs/positiveUsd", "description": "Rolling 24h per card identity. Default 1000." },
+        "maxAuthorizationsPerHour": { "type": "integer", "minimum": 1, "description": "Default 30." },
+        "blockedMccs": { "type": "array", "items": { "$ref": "#/$defs/mcc" }, "description": "Default 7995, 6051, 4829, 6540." },
+        "allowedMccs": { "type": ["array", "null"], "items": { "$ref": "#/$defs/mcc" }, "description": "Only these merchant categories; null allows any not blocked." },
+        "allowedCurrencies": { "type": "array", "items": { "type": "string", "pattern": "^[A-Za-z]{3}$" }, "description": "Default usd." }
+      }
+    },
+    "payouts": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Governed fiat payouts: Stripe, RazorpayX (UPI/IMPS/NEFT/RTGS), PayPal, Modern Treasury (ACH/RTP/wire).",
+      "properties": {
+        "maxPerPayoutUSD": { "$ref": "#/$defs/positiveUsd", "description": "Default 1000." },
+        "dailyBudgetUSD": { "$ref": "#/$defs/positiveUsd", "description": "Default 5000." },
+        "maxPayoutsPerHour": { "type": "integer", "minimum": 1, "description": "Default 20." },
+        "requireApprovalAboveUSD": { "$ref": "#/$defs/usd", "description": "Default 500." },
+        "allowedPayees": { "$ref": "#/$defs/stringList", "description": "Payees that skip the new-payee approval." },
+        "allowedPurposes": { "type": ["array", "null"], "items": { "type": "string" } },
+        "fxRates": {
+          "type": "object",
+          "description": "Operator-declared USD per unit of each currency, e.g. INR 0.012. SpendVeto never guesses a rate.",
+          "patternProperties": { "^[A-Z]{3}$": { "type": "number", "exclusiveMinimum": 0 } },
+          "additionalProperties": false
+        },
+        "approvalTimeoutSeconds": { "type": "integer", "minimum": 1, "description": "Default 86400; an unanswered approval fails closed." },
+        "requireAgentToken": { "type": "boolean", "description": "Default true." }
+      }
+    },
+    "rebilling": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Customer-tagged model spend to Stripe Billing meter events at a markup.",
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "markupPct": { "type": "number", "minimum": 0, "maximum": 1000 },
+        "eventName": { "type": "string", "pattern": "^[A-Za-z0-9_.-]{1,100}$" },
+        "customerTag": { "type": "string", "pattern": "^[a-z][a-z0-9_-]{0,31}$" }
+      }
+    },
+    "finops": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Billing account labels on the FOCUS export.",
+      "properties": {
+        "billingAccountId": { "type": "string", "minLength": 1 },
+        "billingAccountName": { "type": "string", "minLength": 1 }
+      }
+    },
+    "authCapture": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Buyer-side rules for the x402 auth-capture escrow scheme.",
+      "properties": {
+        "maxHoldSeconds": { "type": "integer", "minimum": 0 },
+        "minRefundWindowSeconds": { "type": "integer", "minimum": 0 },
+        "allowedFlows": { "type": "array", "items": { "enum": ["escrow", "authorization"] } },
+        "allowedOperatorTypes": { "type": "array", "items": { "enum": ["delegated", "custom", "policy"] } },
+        "allowedOperators": { "type": ["array", "null"], "items": { "$ref": "#/$defs/evmAddress" } }
+      }
+    },
+    "mpp": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Buyer-side rules for Machine Payments Protocol (Stripe + Tempo) offers, decided by POST /api/mpp/evaluate before the agent pays.",
+      "properties": {
+        "maxSessionDepositUSD": { "$ref": "#/$defs/usd", "description": "The most one session may lock in escrow (its per-call cap). Defaults to maxPerCallUSD." },
+        "maxUnitPriceUSD": { "$ref": "#/$defs/usd", "description": "Refuse sessions priced above this per unit." },
+        "allowCustomEscrow": { "type": "boolean", "description": "Let a Tempo session name an escrow other than the TIP-1034 channel reserve. Default false." },
+        "allowedMethods": { "type": "array", "items": { "enum": ["tempo", "evm", "stripe", "card"] }, "description": "Payment methods agents may pay with. Omit to allow every priced method." }
+      }
+    },
+    "outOfBand": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Out-of-band spend detection: governed wallets' on-chain stablecoin transfers reconciled against the ledger; anything SpendVeto never authorized is unmanaged spend, counted against the same budgets.",
+      "properties": {
+        "enabled": { "type": "boolean", "description": "Scan the chains in the background every pollSeconds. Manual scans and webhook deliveries work either way." },
+        "onDetect": { "enum": ["alert", "freeze"], "description": "What an unmanaged transfer does besides counting against the budget. Default alert." },
+        "pollSeconds": { "type": "integer", "minimum": 0 },
+        "chains": { "$ref": "#/$defs/stringList", "description": "Registered EVM chains to watch (their registry USDC). Default base-sepolia." },
+        "wallets": { "type": "array", "items": { "$ref": "#/$defs/evmAddress" }, "description": "Wallets to watch besides the agent wallet and its delegated children." },
+        "ignoreTo": { "type": "array", "items": { "$ref": "#/$defs/evmAddress" }, "description": "Recipients whose transfers are legitimate movements (the operator's own treasury)." },
+        "lookbackBlocks": { "type": "integer", "minimum": 1 },
+        "maxBlockRange": { "type": "integer", "minimum": 1 },
+        "matchWindowSeconds": { "type": "integer", "minimum": 0 },
+        "graceSeconds": { "type": "integer", "minimum": 0, "description": "How long a fresh unmatched transfer waits for SpendVeto's own ledger record before it is judged. Default 120." }
+      }
+    },
+    "attestations": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Governed-spend attestations: proof for a seller that a payment passed this policy.",
+      "properties": {
+        "ttlSeconds": { "type": "integer", "minimum": 30, "maximum": 900, "description": "Lifetime of a minted attestation. Default 300." },
+        "trustedIssuers": { "type": "array", "items": { "$ref": "#/$defs/evmAddress" }, "description": "Other SpendVeto issuers whose attestations this instance accepts as a seller." },
+        "requireOnCatalog": { "type": "boolean", "description": "Refuse catalog payments that carry no valid attestation. Default false." }
+      }
+    },
+    "reputation": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Federated counterparty reputation.",
+      "properties": {
+        "enabled": { "type": "boolean", "description": "Default true." },
+        "trustedPublishers": { "type": "array", "items": { "$ref": "#/$defs/evmAddress" }, "description": "Publishers whose signed feeds may be imported. Empty means none (fail closed)." },
+        "importedAction": { "enum": ["deny", "review"], "description": "What an imported block does: refuse (deny) or ask a human (review). Default deny." },
+        "publisherName": { "type": "string", "minLength": 1, "maxLength": 80, "description": "Name on this instance's published feed." }
+      }
+    },
+    "upi": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "India UPI AutoPay mandates (amounts in INR).",
+      "properties": {
+        "maxPerTxnINR": { "$ref": "#/$defs/usd" },
+        "maxPerDayINR": { "$ref": "#/$defs/usd" },
+        "allowedPayeeVpas": { "type": "array", "items": { "type": "string", "pattern": "^[a-zA-Z0-9._-]{2,256}@[a-zA-Z]{2,64}$" } },
+        "allowedCategories": { "$ref": "#/$defs/stringList" }
+      }
+    },
+    "eu": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "EU SEPA Direct Debit under PSD2 (amounts in EUR).",
+      "properties": {
+        "maxPerTxnEUR": { "$ref": "#/$defs/usd" },
+        "maxPerDayEUR": { "$ref": "#/$defs/usd" },
+        "allowedPayeeIbans": { "$ref": "#/$defs/stringList" },
+        "allowedCategories": { "$ref": "#/$defs/stringList" },
+        "pspFraudRateBps": { "type": "number", "minimum": 0 }
+      }
+    },
+    "uk": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "UK Faster Payments (amounts in GBP).",
+      "properties": {
+        "maxPerTxnGBP": { "$ref": "#/$defs/usd" },
+        "maxPerDayGBP": { "$ref": "#/$defs/usd" },
+        "allowedPayeeAccounts": { "type": "array", "items": { "type": "string", "pattern": "^\\d{6}:\\d{8}$" } },
+        "allowedCategories": { "$ref": "#/$defs/stringList" },
+        "reimbursementCapGBP": { "type": "number", "exclusiveMinimum": 0 }
+      }
+    },
+    "br": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Brazil Pix and Pix Automatico (amounts in BRL).",
+      "properties": {
+        "maxPerTxnBRL": { "$ref": "#/$defs/usd" },
+        "maxPerDayBRL": { "$ref": "#/$defs/usd" },
+        "allowedPayeeKeys": { "$ref": "#/$defs/stringList" },
+        "allowedCategories": { "$ref": "#/$defs/stringList" },
+        "nighttimeWindow": { "enum": ["20-6", "22-6"] },
+        "nighttimeLimitBRL": { "$ref": "#/$defs/usd" }
+      }
+    },
+    "us": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "US ACH debits under Nacha and Reg E (amounts in USD).",
+      "properties": {
+        "maxPerTxnUSD": { "$ref": "#/$defs/usd" },
+        "maxPerDayUSD": { "$ref": "#/$defs/usd" },
+        "allowedPayeeAccounts": { "type": "array", "items": { "type": "string", "pattern": "^\\d{9}:\\d{4,17}$" } },
+        "allowedCategories": { "$ref": "#/$defs/stringList" }
+      }
+    }
+  },
+  "$defs": {
+    "usd": { "type": "number", "minimum": 0 },
+    "positiveUsd": { "type": "number", "exclusiveMinimum": 0 },
+    "stringList": { "type": "array", "items": { "type": "string", "minLength": 1 } },
+    "httpUrl": { "type": "string", "pattern": "^https?://" },
+    "evmAddress": { "type": "string", "pattern": "^0x[0-9a-fA-F]{40}$" },
+    "mcc": { "type": ["string", "integer"], "pattern": "^\\d{4}$" },
+    "priceRow": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["inputPerM", "outputPerM"],
+      "properties": {
+        "inputPerM": { "type": "number", "minimum": 0 },
+        "outputPerM": { "type": "number", "minimum": 0 },
+        "cacheReadPerM": { "type": "number", "minimum": 0 }
+      }
+    }
+  }
+}

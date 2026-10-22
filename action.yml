@@ -1,0 +1,44 @@
+# SpendVeto policy check — lint agent budgets in CI.
+#
+# A typo in a policy file fails OPEN: "maxPerHourUsd" is not "maxPerHourUSD",
+# the engine never reads it, and the agent runs on a budget nobody wrote. This
+# action validates policy files against the open policy-v1 schema
+# (https://spendveto.com/schemas/policy-v1.json) before they ship.
+#
+#   - uses: revanthrajeev/spendveto@main
+#     with:
+#       policy: config/agent-policy.json
+#       strict: true
+#
+# Runs the validator straight from this checkout — no npm install, no network
+# call, nothing sent anywhere.
+name: SpendVeto policy check
+description: Validate AI-agent spend policies (budgets, approvals, payees, chains) against the open SpendVeto policy-v1 schema.
+author: Revanth Rajeev
+branding:
+  icon: shield
+  color: green
+inputs:
+  policy:
+    description: Path to the policy file, relative to the repository root.
+    required: false
+    default: data/policy.json
+  strict:
+    description: Also fail on warnings — limits that contradict each other, such as an approval threshold above the per-call cap.
+    required: false
+    default: "false"
+runs:
+  using: composite
+  steps:
+    - uses: actions/setup-node@v4
+      with:
+        node-version: 22
+    - name: Validate policy
+      shell: bash
+      env:
+        POLICY_FILE: ${{ inputs.policy }}
+        STRICT: ${{ inputs.strict }}
+      run: |
+        args=("$GITHUB_WORKSPACE/$POLICY_FILE")
+        if [ "$STRICT" = "true" ]; then args+=("--strict"); fi
+        SPENDVETO_DATA_DIR="$RUNNER_TEMP/spendveto" node "$GITHUB_ACTION_PATH/bin/spendveto.mjs" validate "${args[@]}"

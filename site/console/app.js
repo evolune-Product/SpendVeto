@@ -10,7 +10,7 @@ const S = { entries: [], balances: {}, mode: "…", stats: null, tools: [], appr
 const frozenSet = () => new Set(S.freezes.filter((f) => !f.unfrozen).map((f) => f.address.toLowerCase()));
 
 /* ---------- router ---------- */
-const PAGES = ["overview", "approvals", "budgets", "ledger", "chains", "analytics", "trust", "policy", "agents", "report"];
+const PAGES = ["overview", "ai", "costs", "payouts", "approvals", "budgets", "ledger", "chains", "analytics", "trust", "network", "policy", "agents", "report"];
 const PROXY_BASE = "http://localhost:8404";
 function route() {
   const page = PAGES.includes(location.hash.slice(1)) ? location.hash.slice(1) : "overview";
@@ -38,10 +38,10 @@ function renderOverview() {
     $("stat-row").innerHTML = [
       ["Governed spend", money(s.paid.usd), "green"],
       ["Blocked before it moved", money(s.blocked.usd), "copper"],
-      ["Stopped attempts", s.blocked.count, "copper"],
+      ["Paid around the gate", money(s.unmanaged?.usd || 0), s.unmanaged?.usd ? "rust" : ""],
+      ["Stopped attempts", `${s.blocked.count} <span class="hint">of ${s.totalAttempts}</span>`, "copper"],
       ["Failed attempts", s.failed.count, "rust"],
       ["Wallets frozen", s.frozenWallets, s.frozenWallets ? "rust" : ""],
-      ["Total attempts", s.totalAttempts, ""],
     ].map(([k, v, c]) => `<div class="stat"><div class="k">${k}</div><div class="v ${c}">${v}</div></div>`).join("");
   }
   $("ov-catalog").innerHTML = S.tools.map((t) =>
@@ -266,11 +266,144 @@ async function renderReport() {
 }
 $("rp-days").addEventListener("change", renderReport);
 
+/* ---------- AI spend (LLM guard) ---------- */
+let aiFormFilled = false;
+let aiConnectLoaded = false;
+function renderAi() {
+  const s = S.llm;
+  if (!s || !s.totals) return;
+  $("nav-ai-badge").hidden = !s.totals.blockedDay;
+  $("nav-ai-badge").textContent = s.totals.blockedDay;
+  $("ai-stats").innerHTML = [
+    ["AI spend (24h)", money(s.totals.spentDayUSD), "green"],
+    ["Model requests", s.totals.requestsDay, ""],
+    ["Blocked before the model", s.totals.blockedDay, s.totals.blockedDay ? "copper" : ""],
+    ["Loop freezes", s.totals.loopFreezesDay, s.totals.loopFreezesDay ? "rust" : ""],
+    ["Mode", s.mode, s.mode === "observe" ? "copper" : "green"],
+    ["In flight", s.totals.inFlight, ""],
+  ].map(([k, v, c]) => `<div class="stat"><div class="k">${k}</div><div class="v ${c}">${esc(v)}</div></div>`).join("");
+  $("ai-agents").innerHTML = s.identities.map((i) => {
+    const top = Object.entries(i.models || {}).sort((a, b) => b[1] - a[1])[0];
+    const ctl = i.frozen ? `<button class="btn go mini" onclick="unfreezeId('${esc(i.frozen.id)}')">Unfreeze</button>` : `<button class="btn deny mini" onclick="freezeAddr('${esc(i.address)}')">Freeze</button>`;
+    return `<tr><td>${esc(i.label || short(i.address))} <span class="hint">${esc(i.kind || "")}</span></td><td class="num">${money(i.spentDayUSD)}</td><td class="num">${money(i.spentHourUSD)}</td><td class="num">${money(i.remainingDayUSD)}</td><td class="num">${i.requestsDay}</td><td>${esc(top ? top[0] : "—")}</td><td>${i.frozen ? `<span class="tag rust">frozen</span> <span class="hint">${esc(i.frozen.reason)}</span>` : '<span class="tag green">ok</span>'}</td><td>${ctl}</td></tr>`;
+  }).join("") || `<tr><td colspan="8" class="empty">No model traffic yet — point an agent at this server with one of the lines above.</td></tr>`;
+  $("ai-decisions").innerHTML = (s.recentDecisions || []).map((d) =>
+    `<tr><td>${when(d.ts)}</td><td>${esc(d.agent || "—")}</td><td>${esc(d.model || "—")}</td><td><span class="tag ${d.observeOnly ? "" : "rust"}">${esc(d.code || "")}${d.observeOnly ? " · observe" : ""}</span></td><td>${esc(d.reason || "")}</td></tr>`).join("") || `<tr><td colspan="5" class="empty">Nothing blocked in the last 24 hours.</td></tr>`;
+  if (!aiFormFilled && s.settings) {
+    const f = $("ai-form").elements;
+    f.dailyBudgetUSD.value = s.settings.dailyBudgetUSD;
+    f.hourlyBudgetUSD.value = s.settings.hourlyBudgetUSD;
+    f.maxRequestUSD.value = s.settings.maxRequestUSD;
+    f.sessionBudgetUSD.value = s.settings.sessionBudgetUSD ?? "";
+    f.maxRequestsPerMinute.value = s.settings.maxRequestsPerMinute;
+    f.loopThreshold.value = s.settings.loop?.threshold ?? 6;
+    f.mode.value = s.mode;
+    aiFormFilled = true;
+  }
+  if (!aiConnectLoaded) {
+    aiConnectLoaded = true;
+    fetch("/api/llm/connect").then((r) => r.json()).then((c) => {
+      if (!c.clients) return;
+      $("ai-connect").innerHTML = c.clients.map((x) => `<div class="kv"><span class="k">${esc(x.name)}</span><span class="v"><code>${esc(x.line)}</code></span></div>`).join("");
+      $("ai-connect-note").textContent = c.note || "";
+    }).catch(() => {});
+  }
+}
+window.unfreezeId = (id) => act(`/api/freezes/${id}/unfreeze`, { method: "POST" });
+$("ai-form").addEventListener("submit", async (ev) => {
+  ev.preventDefault();
+  const f = ev.target.elements;
+  const body = {
+    dailyBudgetUSD: Number(f.dailyBudgetUSD.value), hourlyBudgetUSD: Number(f.hourlyBudgetUSD.value), maxRequestUSD: Number(f.maxRequestUSD.value),
+    sessionBudgetUSD: f.sessionBudgetUSD.value ? Number(f.sessionBudgetUSD.value) : null, maxRequestsPerMinute: Number(f.maxRequestsPerMinute.value),
+    loop: { threshold: Number(f.loopThreshold.value) }, mode: f.mode.value,
+  };
+  const { ok, body: out } = await api("/api/llm/settings", { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+  const note = $("ai-form-note");
+  note.classList.toggle("err", !ok);
+  note.textContent = ok ? "Saved — applies to the next request." : out.error || "failed";
+  aiFormFilled = false;
+  refresh();
+});
+
+/* ---------- Costs (FinOps) + Payouts ---------- */
+function renderCosts() {
+  const c = S.costs;
+  if (c && c.rows) {
+    const byRail = Object.fromEntries((S.costsRail?.rows || []).map((r) => [r.key, r.costUSD]));
+    $("costs-stats").innerHTML = [
+      ["Total (30d)", money(S.costsRail?.totalCostUSD), "green"],
+      ["Model tokens", money(byRail["model tokens"]), ""],
+      ["x402 / tools", money(byRail["x402 / tools"]), ""],
+      ["Cards", money(byRail["cards"]), ""],
+      ["Fiat payouts", money(byRail["fiat payouts"]), ""],
+      ["Blocked", money(S.costsRail?.totalBlockedUSD), "copper"],
+    ].map(([k, v, cl]) => `<div class="stat"><div class="k">${k}</div><div class="v ${cl}">${v}</div></div>`).join("");
+    $("costs-rows").innerHTML = c.rows.map((r) => `<tr><td>${esc(r.key)}</td><td class="num">${money(r.costUSD)}</td><td class="num">${r.count}</td><td class="num">${r.blockedCount ? `${money(r.blockedUSD)} · ${r.blockedCount}` : "—"}</td></tr>`).join("") || `<tr><td colspan="4" class="empty">No spend in the last 30 days.</td></tr>`;
+  }
+  const rb = S.rebilling;
+  if (rb && rb.settings) {
+    $("rebill-settings").textContent = rb.settings.enabled ? `on · markup ${rb.settings.markupPct}% · meter "${rb.settings.eventName}" · customer tag "${rb.settings.customerTag}"` : "off — enable with PUT /api/rebilling { enabled: true, markupPct } and STRIPE_SECRET_KEY";
+    $("rebill-rows").innerHTML = (rb.customers || []).map((x) => `<tr><td>${esc(x.customer)}</td><td class="num">${money(x.costUSD)}</td><td class="num">${money(x.billedUSD)}</td><td class="num">${money(x.marginUSD)}</td><td class="num">${x.events}${x.failed ? ` · ${x.failed} failed` : ""}</td></tr>`).join("") || `<tr><td colspan="5" class="empty">Nothing rebilled yet.</td></tr>`;
+  }
+}
+function renderPayouts() {
+  const p = S.payouts;
+  if (!p || !p.providers) return;
+  $("payouts-stats").innerHTML = [
+    ["Paid out", money(p.totals.executedUSD), "green"],
+    ["Awaiting approval", p.totals.awaitingApproval, p.totals.awaitingApproval ? "copper" : ""],
+    ["Failed", p.totals.failed, p.totals.failed ? "rust" : ""],
+    ["Denied", p.totals.denied, ""],
+  ].map(([k, v, cl]) => `<div class="stat"><div class="k">${k}</div><div class="v ${cl}">${v}</div></div>`).join("");
+  $("payout-providers").innerHTML = p.providers.map((x) => `<tr><td>${esc(x.label)}</td><td>${x.configured ? '<span class="tag green">configured</span>' : '<span class="tag">not configured</span>'}</td><td class="hint">${esc(x.needs)}</td></tr>`).join("");
+  $("payout-rows").innerHTML = (p.payouts || []).map((x) => `<tr><td>${when(x.createdAt)}</td><td>${esc(x.agent)}</td><td>${esc(x.provider)}</td><td class="addr">${esc(x.payee)}</td><td class="num">${esc(x.amount)} ${esc(x.currency)}</td><td class="num">${money(x.amountUSD)}</td><td class="status-${x.status === "executed" ? "paid" : x.status === "failed" || x.status === "denied" ? "blocked" : "pending"}">${esc(x.status)}${x.providerStatus ? ` <span class="hint">${esc(x.providerStatus)}</span>` : ""}</td><td class="hint">${esc(x.providerId || x.approvalReason || "")}</td></tr>`).join("") || `<tr><td colspan="8" class="empty">No payouts yet.</td></tr>`;
+}
+$("costs-group").addEventListener("change", () => refresh());
+
+/* ---------- Network: attestations, reputation, policy schema ---------- */
+function renderNetwork() {
+  const a = S.attestations;
+  const r = S.reputation;
+  const v = S.policyCheck;
+  if (a && a.issuer) {
+    $("net-issuer").innerHTML = `<div class="addr">${esc(a.issuer)}</div><p class="hint" style="margin-top:0.5rem">${a.persistent ? "persistent key (SERVER_SIGNER_KEY)" : "per-process key — set SERVER_SIGNER_KEY so this address survives restarts"} · attestations last ${a.settings.ttlSeconds}s · ${a.settings.requireOnCatalog ? "required on this catalog" : "optional on this catalog"} · <a href="/.well-known/spendveto-issuer.json" target="_blank">issuer document ↗</a></p>`;
+    $("net-attestations").innerHTML = (a.recent || []).slice(0, 12).map((x) => `<tr><td>${when(x.iat * 1000)}</td><td class="addr">${esc(short(x.sub))}</td><td class="addr">${x.aud ? esc(short(x.aud)) : '<span class="hint">catalog</span>'}</td><td>${esc(x.res)}</td><td class="num">$${esc(x.amt)}</td><td>${x.dec === "approved" ? '<span class="tag copper" title="a human approved this spend">approved</span>' : '<span class="tag green">allowed</span>'}</td></tr>`).join("") || `<tr><td colspan="6" class="empty">None yet — every governed x402 payment carries one.</td></tr>`;
+  }
+  if (r && r.settings) {
+    $("rep-rows").innerHTML = (r.reports || []).map((x) => `<tr><td class="addr">${esc(x.subject)}</td><td>${esc(x.kind)}</td><td>${x.severity === "block" ? '<span class="tag rust">block</span>' : '<span class="tag copper">review</span>'}</td><td class="num">${x.count}</td><td>${when(x.lastSeen)}</td><td>${x.share ? "yes" : "no"}</td><td><button class="btn ghost mini" onclick="removeReport('${esc(x.id)}')">remove</button></td></tr>`).join("") || `<tr><td colspan="7" class="empty">No reports. A reported counterparty is refused on every rail.</td></tr>`;
+    const trusted = r.settings.trustedPublishers || [];
+    $("rep-settings").innerHTML = `<p class="hint" style="margin-bottom:0.8rem">Publishing as <b>${esc(r.settings.publisherName || "SpendVeto instance")}</b> (${esc(short(r.publisher))}) · imported blocks <b>${esc(r.settings.importedAction)}</b> · trusted publishers: ${trusted.length ? trusted.map((p) => `<span class="addr">${esc(short(p))}</span>`).join(", ") : "none, so no feed is accepted"} · <a href="/api/reputation/feed" target="_blank">your signed feed ↗</a></p>`;
+    $("feed-rows").innerHTML = (r.feeds || []).map((f) => `<tr><td class="addr">${esc(short(f.publisher))}</td><td>${esc(f.name)}</td><td class="num">${f.entries}</td><td>${when(f.issuedAt)}</td><td>${when(f.importedAt)}</td><td>${f.trusted ? '<span class="tag green">trusted</span>' : '<span class="tag">untrusted — ignored</span>'}</td></tr>`).join("") || `<tr><td colspan="6" class="empty">No imported feeds.</td></tr>`;
+  }
+  if (v && Array.isArray(v.errors)) {
+    const items = [...v.errors.map((e) => `<li><b>${esc(e.path)}</b> ${esc(e.message)}</li>`), ...v.warnings.map((w) => `<li>${esc(w.path)} ${esc(w.message)}</li>`)].join("");
+    $("net-policy").innerHTML = v.valid && !v.warnings.length
+      ? `<p><span class="tag green">valid</span> every key is one the engine reads, and no limits contradict each other.</p>`
+      : `<p>${v.valid ? '<span class="tag copper">valid, with warnings</span>' : '<span class="tag rust">invalid</span> a key the engine never reads is a limit that isn\'t enforced.'}</p><ul class="hint" style="margin:0.6rem 0 0 1.1rem">${items}</ul>`;
+  }
+  $("net-stats").innerHTML = [
+    ["Attestations issued", a ? a.issued : "—", "green"],
+    ["Counterparty reports", r ? (r.reports || []).length : "—", ""],
+    ["Imported feeds", r ? (r.feeds || []).length : "—", ""],
+    ["Policy", v ? (v.valid ? (v.warnings.length ? "warnings" : "valid") : "invalid") : "—", v && !v.valid ? "rust" : v && v.warnings.length ? "copper" : "green"],
+  ].map(([k, val, cl]) => `<div class="stat"><div class="k">${k}</div><div class="v ${cl}">${esc(val)}</div></div>`).join("");
+}
+window.removeReport = (id) => act(`/api/reputation/reports/${encodeURIComponent(id)}`, { method: "DELETE" });
+$("rep-form").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const f = new FormData(e.target);
+  const { ok, body } = await api("/api/reputation/reports", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ subject: f.get("subject"), kind: f.get("kind"), severity: f.get("severity"), reason: f.get("reason") }) });
+  $("rep-result").textContent = ok ? `Reported. Payments to it are now ${body.report?.severity === "block" ? "refused" : "sent to a human"} on every rail.` : body.reason || body.error || "Couldn't save the report.";
+  if (ok) e.target.reset();
+  await refresh();
+});
+
 /* ---------- refresh loop ---------- */
 let trustTick = 0;
 async function refresh() {
   try {
-    const [ledger, stats, catalog, approvals, delegations, freezes, chains, analytics, policy, packs, rails] = await Promise.all([
+    const [ledger, stats, catalog, approvals, delegations, freezes, chains, analytics, policy, packs, rails, llm, costs, costsRail, rebilling, payoutsSummary, attestations, reputation, policyCheck] = await Promise.all([
       fetch("/api/ledger").then((r) => r.json()),
       fetch("/api/stats").then((r) => r.json()),
       fetch("/api/catalog").then((r) => r.json()),
@@ -282,10 +415,18 @@ async function refresh() {
       fetch("/api/policy").then((r) => r.json()),
       fetch("/api/policy-packs").then((r) => r.json()),
       fetch("/api/rails").then((r) => r.json()),
+      fetch("/api/llm/summary").then((r) => r.json()).catch(() => null),
+      fetch(`/api/costs?groupBy=${encodeURIComponent($("costs-group").value)}&days=30`).then((r) => r.json()).catch(() => null),
+      fetch("/api/costs?groupBy=rail&days=30").then((r) => r.json()).catch(() => null),
+      fetch("/api/rebilling").then((r) => r.json()).catch(() => null),
+      fetch("/api/payouts").then((r) => r.json()).catch(() => null),
+      fetch("/api/attestations").then((r) => r.json()).catch(() => null),
+      fetch("/api/reputation").then((r) => r.json()).catch(() => null),
+      fetch("/api/policy/validate").then((r) => r.json()).catch(() => null),
     ]);
-    Object.assign(S, { entries: ledger.entries || [], balances: ledger.balances || {}, mode: ledger.mode, stats, tools: catalog.tools || [], approvals: approvals.approvals || [], delegations: delegations.delegations || [], freezes: freezes.freezes || [], chains: chains.chains || [], analytics, policy, packs: packs.packs || [], rails: rails.rails || [] });
+    Object.assign(S, { entries: ledger.entries || [], balances: ledger.balances || {}, mode: ledger.mode, stats, tools: catalog.tools || [], approvals: approvals.approvals || [], delegations: delegations.delegations || [], freezes: freezes.freezes || [], chains: chains.chains || [], analytics, policy, packs: packs.packs || [], rails: rails.rails || [], llm, costs, costsRail, rebilling, payouts: payoutsSummary, attestations, reputation, policyCheck });
     $("mode-badge").textContent = S.mode;
-    renderOverview(); renderApprovals(); renderBudgets(); renderLedger(); renderChains(); renderAnalytics(); fillPolicyForm(false); renderReport();
+    renderOverview(); renderAi(); renderCosts(); renderPayouts(); renderNetwork(); renderApprovals(); renderBudgets(); renderLedger(); renderChains(); renderAnalytics(); fillPolicyForm(false); renderReport();
     if (trustTick++ % 3 === 0) { renderTrustList(); renderAgentsList(); }
   } catch (err) {
     console.error("console refresh failed", err);

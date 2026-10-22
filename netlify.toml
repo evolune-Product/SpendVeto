@@ -25,3 +25,12 @@
   for = "/*.html"
   [headers.values]
     Cache-Control = "public, max-age=0, must-revalidate"
+
+# The policy schema is an open standard: editors, validators and CI fetch it
+# from anywhere, so it is served cross-origin with its JSON Schema media type.
+[[headers]]
+  for = "/schemas/*"
+  [headers.values]
+    Content-Type = "application/schema+json"
+    Access-Control-Allow-Origin = "*"
+    Cache-Control = "public, max-age=3600"

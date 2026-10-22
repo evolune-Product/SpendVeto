@@ -29,7 +29,7 @@ export const RAILS = [
   roadmapRail("uk-faster-payments-pisp", "UK Faster Payments (Open Banking / PISP)", "UK — governed today via /api/uk/evaluate (Confirmation of Payee, PSR APP fraud reimbursement exposure); settlement is a slot: initiating a Faster Payments transaction requires PISP authorisation from the FCA, which SpendVeto does not hold. SpendVeto decides, it never initiates Faster Payments"),
   roadmapRail("br-pix-automatico", "Brazil Pix (Pix Automático / Open Finance)", "Brazil — governed today via /api/br/evaluate (BCB nighttime limit, Pix Automático scheduling and retry rules); settlement is a slot: initiating Pix requires registration as a BCB-regulated participant, which SpendVeto does not hold. SpendVeto decides, it never initiates Pix"),
   roadmapRail("us-ach-nacha", "US ACH (Nacha Operating Rules)", "United States — governed today via /api/us/evaluate (Nacha WEB debit account validation, Regulation E consumer-authorization rules); settlement is a slot: originating an ACH entry requires an Originating Depository Financial Institution relationship, which SpendVeto does not hold. SpendVeto decides, it never originates ACH entries"),
-  roadmapRail("stripe-mpp", "Stripe Machine Payments", "fiat machine payments — adapter slot"),
+  roadmapRail("stripe-mpp", "Machine Payments Protocol (Stripe + Tempo)", "governed today via /api/mpp/evaluate (charge, session and subscription offers on Tempo, EVM, Stripe and card methods; integrations/mppx.js plugs it into the official mppx client) — settlement is a slot: mppx pays the server directly, SpendVeto decides before the credential exists"),
   safeAllowance,
 ];
 
@@ -37,7 +37,9 @@ export function getRail(id) {
   return RAILS.find((r) => r.id === id);
 }
 
-// Metadata-only view for APIs/UIs — never leaks the pay functions.
+// Metadata-only view for APIs/UIs — never leaks the pay functions. A rail
+// whose settlement needs optional packages also says whether they're
+// installed and how to add them (x402-live: one entry per chain family).
 export function railsCatalog() {
-  return RAILS.map(({ id, name, status, note }) => ({ id, name, status, note }));
+  return RAILS.map(({ id, name, status, note, availability }) => ({ id, name, status, note, ...(availability ? availability() : {}) }));
 }

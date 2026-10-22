@@ -8,18 +8,22 @@
 <link rel="stylesheet" href="./style.css" />
 </head>
 <body>
-<div class="demo-banner">Demo console — real data captured from a local SpendVeto run, no server behind this page. Clicks change this tab only. <a href="/playground.html">Playground</a> · <a href="/docs.html">Run your own</a></div>
+<div class="demo-banner">Demo console — real decisions captured from a local SpendVeto run (simulate-mode crypto; model, payout and billing calls answered by local test providers), no server behind this page. Clicks change this tab only. <a href="/playground.html">Playground</a> · <a href="/docs.html">Run your own</a></div>
 <div class="shell">
   <aside class="side">
     <div class="brand">SPENDVETO<span> console</span></div>
     <nav>
       <a href="#overview" data-nav="overview">Overview</a>
+      <a href="#ai" data-nav="ai">AI spend <b class="badge" id="nav-ai-badge" hidden>0</b></a>
+      <a href="#costs" data-nav="costs">Costs</a>
+      <a href="#payouts" data-nav="payouts">Payouts</a>
       <a href="#approvals" data-nav="approvals">Approvals <b class="badge" id="nav-approvals-badge" hidden>0</b></a>
       <a href="#budgets" data-nav="budgets">Budgets</a>
       <a href="#ledger" data-nav="ledger">Ledger</a>
       <a href="#chains" data-nav="chains">Chains</a>
       <a href="#analytics" data-nav="analytics">Analytics</a>
       <a href="#trust" data-nav="trust">Trust</a>
+      <a href="#network" data-nav="network">Network</a>
       <a href="#policy" data-nav="policy">Policy</a>
       <a href="#agents" data-nav="agents">Agents</a>
       <a href="#report" data-nav="report">Report</a>
@@ -40,6 +44,51 @@
         <div class="card"><h2>Wallet balances <span class="hint">per chain · freeze = kill switch</span></h2><div id="ov-balances"></div></div>
       </div>
       <div class="card"><h2>Recent activity</h2><table class="tbl"><thead><tr><th>time</th><th>wallet</th><th>resource</th><th>amount</th><th>status</th><th>detail</th></tr></thead><tbody id="ov-recent"></tbody></table></div>
+    </section>
+
+    <section data-page="ai" hidden>
+      <header><h1>AI spend</h1><p>Every model call your agents make — checked against its budget before it reaches the provider, booked at the provider's own usage numbers after.</p></header>
+      <div class="stat-row" id="ai-stats"></div>
+      <div class="two-col">
+        <div class="card">
+          <h2>Connect an agent <span class="hint">one line · your key passes through, never stored</span></h2>
+          <div id="ai-connect"></div>
+          <p class="hint" id="ai-connect-note"></p>
+        </div>
+        <div class="card">
+          <h2>Budgets <span class="hint">per agent · applies to every request</span></h2>
+          <form id="ai-form" class="form">
+            <label>Daily budget (USD, rolling 24h) <input name="dailyBudgetUSD" type="number" step="0.01" min="0.01" /></label>
+            <label>Hourly budget (USD) <input name="hourlyBudgetUSD" type="number" step="0.01" min="0.01" /></label>
+            <label>Max per request (USD, worst case) <input name="maxRequestUSD" type="number" step="0.01" min="0.01" /></label>
+            <label>Per-session budget (USD) <span class="hint">Claude Code sessions · blank = off</span> <input name="sessionBudgetUSD" type="number" step="0.01" min="0.01" /></label>
+            <label>Requests per minute <input name="maxRequestsPerMinute" type="number" step="1" min="1" /></label>
+            <label>Loop freeze after N identical tool results <input name="loopThreshold" type="number" step="1" min="2" /></label>
+            <label>Mode <select name="mode"><option value="enforce">enforce — block</option><option value="observe">observe — record only</option></select></label>
+            <button class="btn go" type="submit">Save budgets</button>
+            <p class="note" id="ai-form-note"></p>
+          </form>
+        </div>
+      </div>
+      <div class="card"><h2>Agents <span class="hint">last 24 hours</span></h2><table class="tbl"><thead><tr><th>agent</th><th>spent 24h</th><th>last hour</th><th>left today</th><th>requests</th><th>mostly</th><th>status</th><th></th></tr></thead><tbody id="ai-agents"></tbody></table></div>
+      <div class="card"><h2>Recent decisions <span class="hint">blocks, and what observe mode would have blocked</span></h2><table class="tbl"><thead><tr><th>time</th><th>agent</th><th>model</th><th>code</th><th>reason</th></tr></thead><tbody id="ai-decisions"></tbody></table></div>
+    </section>
+
+    <section data-page="costs" hidden>
+      <header><h1>Costs</h1><p>Every rail in one view — model tokens, x402 tools, cards, fiat payouts — allocated by team, customer, agent or model. Model spend exports as FOCUS v1.4 for your FinOps tools.</p></header>
+      <div class="stat-row" id="costs-stats"></div>
+      <div class="card">
+        <h2>Spend by <select id="costs-group"><option value="rail">rail</option><option value="team">team</option><option value="customer">customer</option><option value="agent">agent</option><option value="model">model</option><option value="provider">provider</option></select> <span class="hint">last 30 days · tag requests with <code>x-spendveto-tags: team=…,customer=…</code></span> <a class="btn ghost mini" id="focus-link" href="/api/costs/focus.csv">Download FOCUS CSV</a></h2>
+        <table class="tbl"><thead><tr><th>key</th><th>cost</th><th>count</th><th>blocked</th></tr></thead><tbody id="costs-rows"></tbody></table>
+      </div>
+      <div class="card"><h2>Rebilling <span class="hint">customer-tagged model spend → Stripe Billing meter events, at your markup</span></h2><div id="rebill-settings" class="hint"></div><table class="tbl"><thead><tr><th>customer</th><th>cost</th><th>billed</th><th>margin</th><th>events</th></tr></thead><tbody id="rebill-rows"></tbody></table></div>
+    </section>
+
+    <section data-page="payouts" hidden>
+      <header><h1>Payouts</h1><p>Agents paying people and vendors in real money — Stripe, RazorpayX (UPI / IMPS / NEFT / RTGS), PayPal, Modern Treasury (ACH / RTP / wire). New payees and large amounts wait in Approvals.</p></header>
+      <div class="stat-row" id="payouts-stats"></div>
+      <div class="card"><h2>Providers</h2><table class="tbl"><thead><tr><th>provider</th><th>status</th><th>needs</th></tr></thead><tbody id="payout-providers"></tbody></table></div>
+      <div class="card"><h2>Recent payouts</h2><table class="tbl"><thead><tr><th>when</th><th>agent</th><th>provider</th><th>payee</th><th>amount</th><th>USD</th><th>status</th><th>provider ref</th></tr></thead><tbody id="payout-rows"></tbody></table></div>
     </section>
 
     <section data-page="approvals" hidden>
@@ -104,6 +153,40 @@
         <div id="trust-result"></div>
       </div>
       <div class="card"><h2>Known wallets</h2><table class="tbl"><thead><tr><th>wallet</th><th>score</th><th>grade</th><th>paid</th><th>blocked</th><th>failed</th><th>freezes</th></tr></thead><tbody id="trust-list"></tbody></table></div>
+    </section>
+
+    <section data-page="network" hidden>
+      <header><h1>Network</h1><p>The open trust layer: attestations a seller verifies offline, counterparty reports shared across companies as signed hashes, and the policy schema.</p></header>
+      <div class="stat-row" id="net-stats"></div>
+      <div class="two-col">
+        <div class="card">
+          <h2>Issuer identity <span class="hint">sellers pin this address to accept your attestations</span></h2>
+          <div id="net-issuer"></div>
+          <h2 style="margin-top:1.4rem">Recent attestations</h2>
+          <div class="tbl-scroll"><table class="tbl"><thead><tr><th>when</th><th>payer</th><th>payee</th><th>resource</th><th>ceiling</th><th>decision</th></tr></thead><tbody id="net-attestations"></tbody></table></div>
+        </div>
+        <div class="card">
+          <h2>Policy check <span class="hint">the live policy against spendveto.com/schemas/policy-v1.json</span></h2>
+          <div id="net-policy"></div>
+        </div>
+      </div>
+      <div class="card">
+        <h2>Report a counterparty <span class="hint">refused (block) or sent to a human (review) on every rail</span></h2>
+        <form id="rep-form" class="inline-form">
+          <input name="subject" type="text" placeholder="0x… · name@upi · IBAN · domain · card-merchant:id" required />
+          <select name="kind"><option>scam</option><option>fraud</option><option value="prompt_injection">prompt injection</option><option value="non_delivery">non-delivery</option><option>chargeback</option><option>malware</option><option>impersonation</option><option>other</option></select>
+          <select name="severity"><option value="block">block</option><option value="review">review</option></select>
+          <input name="reason" type="text" placeholder="internal note (never published)" />
+          <button class="btn go" type="submit">Report</button>
+        </form>
+        <p class="form-note" id="rep-result"></p>
+        <table class="tbl"><thead><tr><th>counterparty</th><th>kind</th><th>severity</th><th>count</th><th>last seen</th><th>in feed</th><th></th></tr></thead><tbody id="rep-rows"></tbody></table>
+      </div>
+      <div class="card">
+        <h2>Trusted publishers &amp; imported feeds <span class="hint">a feed is accepted only from an address on the trusted list</span></h2>
+        <div id="rep-settings"></div>
+        <table class="tbl"><thead><tr><th>publisher</th><th>name</th><th>entries</th><th>issued</th><th>imported</th><th>status</th></tr></thead><tbody id="feed-rows"></tbody></table>
+      </div>
     </section>
 
     <section data-page="policy" hidden>

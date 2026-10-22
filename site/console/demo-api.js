@@ -60,6 +60,29 @@
       if (d) d.revoked = now();
       return json({ ok: true });
     }
+    if (path === "/api/llm/settings" && method === "PUT") {
+      const sum = s["/api/llm/summary"];
+      if (sum) {
+        const { mode, loop, ...rest } = body;
+        Object.assign(sum.settings, rest, loop ? { loop: { ...sum.settings.loop, ...loop } } : {});
+        if (mode) sum.mode = mode;
+      }
+      return json({ settings: sum?.settings || {} });
+    }
+    if (path === "/api/reputation/reports" && method === "POST") {
+      const rep = s["/api/reputation"];
+      const raw = String(body.subject || "").trim();
+      if (!rep || !raw) return json({ error: "subject_required", reason: "subject is required — the counterparty identifier" }, 400);
+      const subject = /^0x[0-9a-fA-F]+$/.test(raw) || raw.includes("@") ? raw.toLowerCase() : raw;
+      const row = { id: `rep_demo_${Date.now()}`, subject, kind: body.kind || "other", severity: body.severity === "review" ? "review" : "block", share: true, count: 1, firstSeen: now(), lastSeen: now() };
+      rep.reports.push(row);
+      return json({ ok: true, created: true, report: row }, 201);
+    }
+    if ((m = path.match(/^\/api\/reputation\/reports\/([^/?]+)$/)) && method === "DELETE") {
+      const rep = s["/api/reputation"];
+      if (rep) rep.reports = rep.reports.filter((r) => r.id !== decodeURIComponent(m[1]));
+      return json({ ok: true });
+    }
     if (path === "/api/policy" && method === "PUT") {
       Object.assign(s["/api/policy"], body);
       return json(s["/api/policy"]);

@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <meta name="color-scheme" content="dark" />
 <title>SpendVeto Docs — x402, MCP & API Reference for AI Agent Spend Governance</title>
-<meta name="description" content="Quickstart, CLI commands, full API reference, policy configuration, and MCP setup for SpendVeto — the open-source spend-governance layer for x402 AI agent payments." />
+<meta name="description" content="Quickstart, CLI commands, full API reference, policy configuration, and MCP setup for SpendVeto — the open-source spend controls for AI agents: model tokens, x402, cards, payouts, and the network layer." />
 <meta name="keywords" content="x402 documentation, MCP server AI agent, AI agent spend governance API, x402 API reference, AI agent payment policy" />
 <link rel="canonical" href="https://spendveto.com/docs.html" />
 <meta name="robots" content="index, follow, max-image-preview:large, max-snippet:-1" />
@@ -14,13 +14,13 @@
 <meta property="og:locale" content="en_US" />
 <meta property="og:url" content="https://spendveto.com/docs.html" />
 <meta property="og:title" content="SpendVeto Docs — x402, MCP & API Reference for AI Agent Spend Governance" />
-<meta property="og:description" content="Quickstart, CLI commands, full API reference, policy configuration, and MCP setup for SpendVeto — the open-source spend-governance layer for x402 AI agent payments." />
+<meta property="og:description" content="Quickstart, CLI commands, full API reference, policy configuration, and MCP setup for SpendVeto — the open-source spend controls for AI agents: model tokens, x402, cards, payouts, and the network layer." />
 <meta property="og:image" content="https://spendveto.com/assets/generated/og-default.png" />
 <meta property="og:image:width" content="1200" />
 <meta property="og:image:height" content="630" />
 <meta name="twitter:card" content="summary_large_image" />
 <meta name="twitter:title" content="SpendVeto Docs — x402, MCP & API Reference for AI Agent Spend Governance" />
-<meta name="twitter:description" content="Quickstart, CLI commands, full API reference, policy configuration, and MCP setup for SpendVeto — the open-source spend-governance layer for x402 AI agent payments." />
+<meta name="twitter:description" content="Quickstart, CLI commands, full API reference, policy configuration, and MCP setup for SpendVeto — the open-source spend controls for AI agents: model tokens, x402, cards, payouts, and the network layer." />
 <meta name="twitter:image" content="https://spendveto.com/assets/generated/og-default.png" />
 <script type="application/ld+json">
 {
@@ -67,6 +67,8 @@
   <div class="nav-links">
     <a href="./pricing.html">Pricing</a>
     <a href="./index.html">Home</a>
+    <a href="./guides.html">Guides</a>
+    <a href="./network.html">Network</a>
     <a href="./pitch.html">Pitch</a>
     <a class="nav-cta" href="./signup.html">Join waitlist</a>
   </div>
@@ -89,7 +91,7 @@
 
   <article>
     <h1>Documentation</h1>
-    <p class="lede">SpendVeto is a governance gate in front of a catalog of paid (x402/USDC) endpoints, reachable three ways — CLI, delegated child agents, and any MCP client. Everything on this page is exercised by the 382-assertion suite in <code>npm run verify</code>.</p>
+    <p class="lede">SpendVeto is a governance gate in front of a catalog of paid (x402/USDC) endpoints, reachable three ways — CLI, delegated child agents, and any MCP client. Everything on this page is exercised by the 482-assertion suite in <code>npm run verify</code>.</p>
 
     <h2 id="quickstart">Quickstart</h2>
     <pre class="block"><span class="p">$</span> git clone https://github.com/revanthrajeev/spendveto.git &amp;&amp; cd spendveto &amp;&amp; npm install
@@ -109,7 +111,8 @@
         <tr><td><code>npm run proxy</code></td><td>Enforcement proxy (:8404): keyless agents POST intents; custody signs after governance</td></tr>
         <tr><td><code>npm run policy [-- apply &lt;pack&gt;]</code></td><td>List or apply policy packs (cautious / standard / production)</td></tr>
         <tr><td><code>npm run apikey -- [role] [label]</code></td><td>Mint an admin-surface API key (role: viewer / approver / admin). First key flips the server to auth-required.</td></tr>
-        <tr><td><code>npm run verify</code></td><td>382 end-to-end assertions, headless</td></tr>
+        <tr><td><code>npx spendveto</code> · <code>npm start</code></td><td>The <code>spendveto</code> CLI: starts the server on loopback and prints the one-line setup for Claude Code, Codex and the SDKs; also <code>spendveto budget &lt;usd/day&gt;</code>, <code>status</code>, <code>observe</code> / <code>enforce</code>, <code>freeze</code> / <code>unfreeze &lt;agent&gt;</code>, <code>connect</code>, <code>mcp</code>, <code>validate [policy.json] [--strict]</code> (lint a policy against the open schema; exit 1 on errors — the same check the GitHub Action runs). State lives in <code>SPENDVETO_DATA_DIR</code> (default <code>~/.spendveto</code> for an installed copy)</td></tr>
+        <tr><td><code>npm run verify</code></td><td>482 end-to-end assertions, headless</td></tr>
         <tr><td><code>npm run site</code></td><td>Serve this marketing site (:8403)</td></tr>
       </tbody>
     </table></div>
@@ -186,7 +189,7 @@ const tools = await createSpendVetoTools({ agentToken: "tg_…" });
         <tr><td><code>GET /api/ledger</code> · <code>POST /api/ledger/event</code></td><td>Full ledger; client-side event logging</td></tr>
         <tr><td><code>GET /api/stats</code> · <code>GET /api/analytics</code></td><td>Paid/blocked totals; per-tool, per-wallet + per-chain rollups</td></tr>
         <tr><td><code>GET /metrics</code></td><td>Same numbers as <code>/api/stats</code>, in Prometheus text-exposition format</td></tr>
-        <tr><td><code>GET /api/chains</code></td><td>15-chain registry across eight signature families: status, per-chain settlement (live / ready / simulated), canonical stablecoin address, RPC</td></tr>
+        <tr><td><code>GET /api/chains</code></td><td>20-chain registry across eight signature families: status, per-chain settlement (live / ready / simulated), canonical stablecoin address, RPC</td></tr>
         <tr><td><code>GET /api/rails</code></td><td>Rail adapter registry — one pay() contract; x402 live, AP2/ACP/MPP/Safe-AllowanceModule slots (see <code>docs/safe-allowance.md</code> in the repo)</td></tr>
         <tr><td><code>GET /api/receipts/:id</code> · <code>POST /api/receipts/verify</code></td><td>Receipt lookup + independent ECDSA verification</td></tr>
         <tr><td><code>GET /api/ledger/verify-chain</code></td><td>Tamper-evidence: confirm the ledger hash-chain is intact; reports the first broken row</td></tr>
@@ -203,21 +206,50 @@ const tools = await createSpendVetoTools({ agentToken: "tg_…" });
         <tr><td><code>GET/POST /api/freezes</code> · <code>POST /api/freezes/:id/unfreeze</code></td><td>Kill switch</td></tr>
         <tr><td><code>GET /api/trust/:address</code></td><td>Agent trust score (0–100 + grade) from governance history</td></tr>
         <tr><td><code>POST /api/acp/checkout</code></td><td>ACP: check a checkout session against the shared payment token that funds it — merchant, ceiling, category, currency, and whether the declared total matches its own line items</td></tr>
+        <tr><td><code>POST /api/mpp/evaluate</code></td><td>MPP (Stripe + Tempo): send the 402&#x27;s <code>WWW-Authenticate</code> value (or the challenges mppx parsed); every offer is priced or refused, MPP&#x27;s own rules run (splits as payees, session escrow and deposit cap, subscriptions to a human, expired or malformed challenges), then the policy engine. Returns the offer to pay plus a <code>chargeId</code> or <code>sessionId</code> — allowed money is held at once.</td></tr>
+        <tr><td><code>POST /api/mpp/charges/:id/report</code> · <code>POST /api/mpp/sessions/:id/voucher</code> · <code>/close</code> · <code>GET /api/mpp</code></td><td>Report a charge paid (with the server&#x27;s <code>Payment-Receipt</code>) or failed; record cumulative vouchers (never backwards, never past the approved deposit); close a session to book what it consumed. Unreported charges are booked as paid when their challenge expires.</td></tr>
+        <tr><td><code>POST /api/outofband/scan</code> · <code>POST /api/outofband/transfers</code> · <code>GET /api/outofband</code></td><td>Out-of-band spend: reconcile the governed wallets&#x27; on-chain stablecoin transfers (read from each chain&#x27;s RPC, or delivered by an indexer webhook) against the ledger. A transfer SpendVeto never authorized is booked as <code>unmanaged</code> against the same budgets and delegation caps, alerted, and with <code>outOfBand.onDetect: "freeze"</code> freezes the wallet.</td></tr>
         <tr><td><code>POST /api/integrity/bind</code> · <code>POST /api/integrity/verify</code></td><td>Request integrity: bind an authorization to a canonical digest of the request, then refuse at execution if the payload changed. Single-use, TTL-bounded, agent-scoped</td></tr>
         <tr><td><code>GET /api/disputes/:entryHash/evidence</code> · <code>POST /api/disputes/verify</code></td><td>Dispute evidence pack: the spend pinned in its hash chain, the policy in force, the approval and the signed consents — one bundle, signed over its own digest</td></tr>
         <tr><td><code>POST /api/upto/authorize</code></td><td>x402 <code>upto</code> scheme: record a variable-amount authorization. Policy decides on <code>maxUSD</code> — the ceiling the signature permits — not the price the seller quoted, and the open ceiling is held against the budget until it resolves</td></tr>
         <tr><td><code>POST /api/upto/settle</code> · <code>POST /api/upto/void</code></td><td>Settle the amount actually charged (releasing the unused headroom back to the budget) or cancel the authorization. Settling above the maximum, twice, or after the deadline is refused: <code>upto_over_settlement</code>, <code>upto_already_settled</code>, <code>upto_expired</code></td></tr>
         <tr><td><code>GET /api/upto</code> · <code>GET /api/upto/holds/:address</code></td><td>Open authorizations, released headroom, and seller utilisation — plus the single number the budget check folds in: how much this wallet has signed away but not yet spent</td></tr>
+        <tr><td><code>POST /v1/messages</code> · <code>POST /v1/chat/completions</code> · <code>POST /v1/responses</code></td><td>The LLM spend guard: point Claude Code (<code>ANTHROPIC_BASE_URL</code>), Codex or any OpenAI/Anthropic SDK (<code>OPENAI_BASE_URL=…/v1</code>) at the server. Each request is checked against the agent's daily / hourly / per-request / per-session budget, requests-per-minute limit (429 + <code>retry-after</code>), model allow/block list, kill switch and loop detector before it reaches the provider; the actual cost is booked from the provider's usage. Refusals: HTTP 402 with <code>spendveto.code</code> (<code>llm_daily_budget</code>, <code>llm_loop_detected</code>, <code>frozen</code>, <code>delegation_cap</code>…). Also served under <code>/anthropic/v1/*</code> and <code>/openai/v1/*</code></td></tr>
+        <tr><td><code>GET /api/llm/summary</code> · <code>GET /api/llm/connect</code> · <code>GET|PUT /api/llm/settings</code></td><td>Per-agent model spend (24h, last hour, remaining, top models, sessions, freezes), recent decisions; copy-paste connection lines; the guard's settings (<code>policy.llm</code>: budgets, <code>mode</code> enforce/observe, <code>loop</code>, <code>allowedModels</code>/<code>blockedModels</code>, <code>prices</code> overrides, <code>requireAgentToken</code>)</td></tr>
+        <tr><td><code>POST /api/cards/stripe/authorization</code> · <code>POST /api/cards/lithic/asa</code></td><td>Card authorization webhooks (Stripe Issuing real-time authorizations, Lithic Auth Stream Access), signature-verified, answered in each provider's format. <code>policy.cards</code>: <code>maxAuthorizationUSD</code>, <code>dailyBudgetUSD</code>, <code>maxAuthorizationsPerHour</code>, <code>blockedMccs</code>/<code>allowedMccs</code>, <code>allowedCurrencies</code></td></tr>
+        <tr><td><code>POST /api/payouts</code></td><td>Governed fiat payout: <code>{ provider: "stripe"|"razorpayx"|"paypal"|"moderntreasury", amount, currency, payee, method, purpose, idempotencyKey, tags }</code> with the agent's <code>tg_</code> token. Caps, daily budget, velocity, purpose list, delegation caps; a new payee or large amount returns 202 and waits for a human approval in the Console. Non-USD needs an operator-declared rate in <code>policy.payouts.fxRates</code>. <code>GET /api/payouts</code> lists providers (configured or not) and recent payouts</td></tr>
+        <tr><td><code>GET /api/costs?groupBy=…</code> · <code>GET /api/costs/focus.csv</code></td><td>One cost view across model tokens, x402 tools, cards and payouts, grouped by rail, any request tag (<code>x-spendveto-tags: team=…,customer=…</code>), agent, model or provider; model spend exported as FOCUS v1.4 (all 21 mandatory columns)</td></tr>
+        <tr><td><code>GET|PUT /api/rebilling</code></td><td>Customer-tagged model spend → Stripe Billing meter events at your markup (micro-dollars, de-duplicated); cost, billed and margin per customer. <code>policy.llm.tagBudgets</code> caps a customer's or team's spend across agents</td></tr>
+        <tr><td><code>GET|POST /api/cards</code> · <code>GET /api/cards/decisions</code></td><td>Register a card to an agent label (and optionally a delegated wallet, sharing its cascading cap); recent card decisions</td></tr>
+        <tr><td><code>POST /api/authcapture/evaluate</code> · <code>POST /api/authcapture/authorize</code></td><td>x402 <code>auth-capture</code> scheme: vet a route before signing (canonical escrow and collector, deadline order, <code>policy.authCapture.maxHoldSeconds</code> / <code>minRefundWindowSeconds</code>, fee recipient, collect-only routes that would strand funds), then decide on the authorized maximum. <code>authorize</code> also records the escrow hold against the budget</td></tr>
+        <tr><td><code>POST /api/authcapture/:id/capture</code> · <code>/charge</code> · <code>/void</code> · <code>/refund</code> · <code>/reclaimed</code></td><td>Seller lifecycle checked against the signed terms: <code>ac_over_capture</code>, <code>ac_capture_after_deadline</code>, <code>ac_already_charged</code>, <code>ac_over_charge</code>, <code>ac_over_refund</code>, <code>ac_refund_after_deadline</code>. Captured or charged money enters the ledger; the maximum never does</td></tr>
+        <tr><td><code>GET /api/authcapture</code> · <code>GET /api/authcapture/reclaimable</code></td><td>Payments, held / captured / refunded totals — and money left behind: holds past their capture deadline that only the buyer's own <code>reclaim</code> can recover</td></tr>
+        <tr><td><code>POST /api/attestations</code></td><td>Governed-spend attestation: <code>{ address, resource, price, payee?, rail?, chain?, toolId?, category? }</code>. Runs the server-side policy check first; 403 with the policy's own code on a refusal, 409 <code>approval_required</code> above the approval line until a human has approved. Returns <code>{ token: "sva1.…", claims }</code> — send the token as <code>X-SpendVeto-Attestation</code> with the payment (the SDK path does this automatically)</td></tr>
+        <tr><td><code>POST /api/attestations/verify</code> · <code>GET /api/attestations</code> · <code>GET /.well-known/spendveto-issuer.json</code></td><td>Check a token the way a seller would (this instance plus <code>policy.attestations.trustedIssuers</code>; nothing consumed); recent attestations issued; the issuer address a seller pins. Sellers verify offline with <code>integrations/seller-express.js</code> → <code>requireGovernedAgent({ trustedIssuers, audience, price })</code></td></tr>
+        <tr><td><code>POST /api/reputation/reports</code> · <code>DELETE /api/reputation/reports/:id</code></td><td>Report a counterparty (<code>{ subject, kind, severity: "block"|"review", reason, share }</code>) — an address, UPI VPA, IBAN, email, domain or <code>card-merchant:&lt;network id&gt;</code>. Enforced by the policy engine, payouts and card authorizations</td></tr>
+        <tr><td><code>GET /api/reputation/feed</code> · <code>POST /api/reputation/import</code> · <code>PUT /api/reputation/settings</code></td><td>Publish your reports as a signed feed of hashes; import another publisher's feed (only if its address is in <code>trustedPublishers</code>; edited, forged and rolled-back feeds refused); set <code>trustedPublishers</code>, <code>importedAction</code> (<code>deny</code> | <code>review</code>), <code>publisherName</code></td></tr>
+        <tr><td><code>GET /api/reputation</code> · <code>GET /api/reputation/check?subject=…</code></td><td>Reports, imported feeds and settings; the verdict (<code>block</code> | <code>review</code> | <code>clear</code>) for one or more counterparties</td></tr>
+        <tr><td><code>POST /api/policy/validate</code> · <code>GET /api/policy/validate</code> · <code>GET /api/policy/schema</code></td><td>Validate a policy (or the live one) against the open policy-v1 schema: unknown keys with did-you-mean, types, enums, registered chain ids, contradictory-limit warnings; the schema itself (also at <code>https://spendveto.com/schemas/policy-v1.json</code>)</td></tr>
         <tr><td><code>GET /api/otel/spans</code></td><td>Governance decisions as OTLP spans; pass a W3C <code>traceparent</code> and the refusal lands inside the agent trace that caused it</td></tr>
         <tr><td><code>GET /api/policy</code></td><td>Active policy</td></tr>
       </tbody>
     </table></div>
 
+    <h2 id="network">The network layer</h2>
+    <p>Three open formats, specified in <a href="https://github.com/revanthrajeev/spendveto/blob/main/docs/NETWORK.md">docs/NETWORK.md</a>: <b>governed-spend attestations</b> (<code>sva1</code> tokens a seller verifies offline), <b>reputation feeds</b> (signed lists of hashed counterparties, imported only from publishers you trust), and the <b>policy schema</b> (<code>https://spendveto.com/schemas/policy-v1.json</code>). Add <code>"$schema": "https://spendveto.com/schemas/policy-v1.json"</code> to a policy file for editor autocomplete, and lint it in CI:</p>
+    <pre class="block">- uses: revanthrajeev/spendveto@main
+  with:
+    policy: config/agent-policy.json
+    strict: true</pre>
+    <p>A seller that only sells to governed agents adds one middleware:</p>
+    <pre class="block">import { requireGovernedAgent } from "spendveto/integrations/seller-express.js";
+app.get("/api/report", requireGovernedAgent({ trustedIssuers: ["0xBuyerIssuer…"], audience: "0xYourPayTo…", price: 0.25 }), handler);</pre>
+
     <h2 id="modes">Modes</h2>
     <p><b>simulate</b> (default): real keypairs, real signature verification, nonce replay protection, local settlement — zero setup. <b>testnet</b>: the real x402 v2 packages, facilitator-adaptive: the gate asks its facilitator what it can settle at boot and brings every supported registry chain live (multi-chain 402s, per-chain USDC). The public facilitator settles Base Sepolia — fund one wallet at faucet.circle.com and set <code>SPENDVETO_MODE=testnet</code>; a CDP facilitator key unlocks its mainnet chains with zero code changes.</p>
 
     <h2 id="verify">Verification</h2>
-    <p><code>npm run verify</code> boots everything headlessly and runs <b>382 assertions</b>: forged-signature rejection, all three approval outcomes, cascading caps, tool + chain scoping, chain-scoped signatures with per-chain balances, burst auto-freeze, manual freeze/unfreeze, signed-receipt verification, CSV export, per-chain analytics, webhook delivery to a live receiver, and a real MCP stdio JSON-RPC session.</p>
+    <p><code>npm run verify</code> boots everything headlessly and runs <b>482 assertions</b>: forged-signature rejection, all three approval outcomes, cascading caps, tool + chain scoping, chain-scoped signatures with per-chain balances, burst auto-freeze, manual freeze/unfreeze, signed-receipt verification, CSV export, per-chain analytics, webhook delivery to a live receiver, and a real MCP stdio JSON-RPC session.</p>
   </article>
 </div>
 

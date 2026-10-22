@@ -25,8 +25,9 @@
 
 import { readFileSync, existsSync } from "node:fs";
 import { fileURLToPath } from "node:url";
+import { dataPath } from "../shared-config.js";
 
-const LIST_PATH = fileURLToPath(new URL("../data/sanctions/ofac-digital-currency.json", import.meta.url));
+const LIST_PATH = dataPath("sanctions", "ofac-digital-currency.json");
 
 const EVM_ADDRESS = /^0x[0-9a-fA-F]{40}$/;
 const XRP_ADDRESS = /^r[1-9A-HJ-NP-Za-km-z]{24,34}$/;
@@ -46,6 +47,10 @@ const CHAIN_FAMILY = {
   optimism: "evm",
   avalanche: "evm",
   "arc-testnet": "evm",
+  // Tempo (MPP's home chain, server/mpp.js) is EVM-compatible: the same key
+  // controls the same 0x address there, so OFAC's EVM addresses apply.
+  tempo: "evm",
+  "tempo-moderato": "evm",
   "solana-devnet": "solana",
   xrpl: "xrp",
 };

@@ -37,8 +37,9 @@
 import { readFileSync, writeFileSync, existsSync, mkdirSync } from "node:fs";
 import { randomUUID } from "node:crypto";
 import { fileURLToPath } from "node:url";
+import { DATA_DIR as STATE_DIR } from "../shared-config.js";
 
-const DATA_DIR = fileURLToPath(new URL("../data", import.meta.url));
+const DATA_DIR = STATE_DIR;
 const UPTO_PATH = `${DATA_DIR}/upto.json`;
 
 const round = (n) => Math.round(n * 1e6) / 1e6;

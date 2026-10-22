@@ -56,6 +56,24 @@ export async function waitForApproval(tool, account, timeoutMs) {
   return { outcome: "timeout", id: created.id };
 }
 
+// A governed-spend attestation for the seller (server/attestations.js): the
+// server re-runs the policy check and signs only if it passes. Best effort —
+// a seller that doesn't ask for one is unaffected if this fails, and one that
+// does will refuse the payment itself, which is the right place to refuse.
+export async function requestAttestation(tool, account, chain) {
+  try {
+    const r = await fetch(`${BASE_URL}/api/attestations`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ address: account.address, resource: tool.path, price: tool.price, payee: tool.payTo, toolId: tool.id, category: tool.category, chain, rail: "x402" }),
+    });
+    if (!r.ok) return null;
+    return (await r.json()).token || null;
+  } catch {
+    return null;
+  }
+}
+
 // The full governed pipeline shared by the CLI and the MCP server:
 // policy check → human approval if required → pay (either mode) → log.
 // `onStatus` receives progress strings for whichever UI is driving this.
@@ -83,7 +101,9 @@ async function governedCallUnlocked(tool, account, { onStatus = () => {}, approv
 
   if (policyCheck.requiresApproval) {
     onStatus(
-      `Price $${tool.price} is above the $${policyCheck.policy.requireApprovalAboveUSD} auto-approve line — requesting human sign-off on the dashboard (${BASE_URL}/).`
+      policyCheck.reputation
+        ? `The payee is flagged for review (${policyCheck.reputation.summary}) — requesting human sign-off on the dashboard (${BASE_URL}/).`
+        : `Price $${tool.price} is above the $${policyCheck.policy.requireApprovalAboveUSD} auto-approve line — requesting human sign-off on the dashboard (${BASE_URL}/).`
     );
     const { outcome } = await waitForApproval(tool, account, approvalTimeoutMs);
     if (outcome === "denied") {
@@ -112,9 +132,11 @@ async function governedCallUnlocked(tool, account, { onStatus = () => {}, approv
   try {
     // The rail is resolved from the registry — governance above, rails below.
     const rail = getRail(MODE === "testnet" ? "x402-live" : "x402-simulate");
-    const data = await rail.pay({ tool, account, chain, baseUrl: BASE_URL, query });
+    const attestation = await requestAttestation(tool, account, chain);
+    const data = await rail.pay({ tool, account, chain, baseUrl: BASE_URL, query, attestation });
     if (MODE === "testnet") {
-      await logEvent({ address: account.address, resource: tool.path, price: tool.price, chain, status: "paid" });
+      const settlement = data?.[Symbol.for("spendveto.settlement")];
+      await logEvent({ address: account.address, resource: tool.path, price: tool.price, chain, status: "paid", ...(settlement?.transaction ? { txHash: settlement.transaction } : {}) });
     }
     return { ok: true, stage: "paid", data, policyCheck };
   } catch (err) {
