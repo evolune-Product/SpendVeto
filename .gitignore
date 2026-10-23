@@ -18,6 +18,7 @@ data/attestations.json
 data/reputation.json
 data/mpp.json
 data/outofband.json
+data/mcpguard.json
 data/policy.json.bak
 data/sanctions/
 *.log

@@ -200,6 +200,25 @@
         "graceSeconds": { "type": "integer", "minimum": 0, "description": "How long a fresh unmatched transfer waits for SpendVeto's own ledger record before it is judged. Default 120." }
       }
     },
+    "mcpGuard": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "spendveto guard: SpendVeto in front of a payment provider's MCP server (Razorpay, Stripe, PayPal, Cashfree, Square). Amounts in other currencies use policy.payouts.fxRates.",
+      "properties": {
+        "maxPerCallUSD": { "$ref": "#/$defs/usd" },
+        "dailyBudgetUSD": { "$ref": "#/$defs/usd" },
+        "maxSpendCallsPerHour": { "type": "integer", "minimum": 0 },
+        "requireApprovalAboveUSD": { "$ref": "#/$defs/usd" },
+        "collect": { "enum": ["allow", "approve", "deny"], "description": "Tools that bring money in (payment links, orders, invoices). Default allow." },
+        "change": { "enum": ["allow", "approve", "deny"], "description": "State changes with no money moving. Default allow." },
+        "risky": { "enum": ["allow", "approve", "deny"], "description": "Changes that cost money or trust (accepting a dispute, cancelling a subscription). Default approve." },
+        "unknown": { "enum": ["allow", "approve", "deny"], "description": "Tools the profile doesn't know and that don't read. Default deny." },
+        "allowedRecipients": { "$ref": "#/$defs/stringList", "description": "Transfer and payout recipients that skip the new-recipient approval." },
+        "defaultCurrency": { "type": "string", "pattern": "^[A-Z]{3}$", "description": "Currency for a spend that names none and whose provider has no default (e.g. USD for Stripe refunds)." },
+        "tools": { "type": "object", "additionalProperties": { "enum": ["read", "collect", "spend", "change", "risky", "allow", "approve", "deny"] }, "description": "Per-tool overrides, keyed \"tool\" or \"profile:tool\"." },
+        "requireAgentToken": { "type": "boolean" }
+      }
+    },
     "attestations": {
       "type": "object",
       "additionalProperties": false,

@@ -3971,6 +3971,140 @@ try {
   );
   writeFileSync(`${ROOT}data/policy.json`, JSON.stringify(LOOSE_POLICY, null, 2));
 
+  // --- MCP guard (server/mcpguard.js + mcp/guard.js): SpendVeto in front of a payment provider's MCP server ---
+  // The agent side is the real MCP SDK client, the guard is the real guard
+  // process, and the provider is a local MCP server with Razorpay's tool names
+  // (scripts/fixtures/mock-payment-mcp.mjs) that logs every call it receives —
+  // so "refused" can be proven to mean "the provider never saw it".
+  const { Client: GuardMcpClient } = await import("@modelcontextprotocol/sdk/client/index.js");
+  const { StdioClientTransport: GuardStdio } = await import("@modelcontextprotocol/sdk/client/stdio.js");
+  const { classify: guardClassify } = await import("../server/mcpguard.js");
+  const { pseudoAddress: guardPseudo } = await import("../server/llmguard.js");
+  const guardLog = join(mkdtempSync(join(tmpdir(), "spendveto-guard-")), "upstream.jsonl");
+  const upstreamSaw = (tool) => (existsSync(guardLog) ? readFileSync(guardLog, "utf8").trim().split("\n").filter(Boolean).map((l) => JSON.parse(l)) : []).filter((c) => !tool || c.tool === tool);
+  const GUARD_POLICY = { ...LOOSE_POLICY, payouts: { fxRates: { INR: 0.012 } }, mcpGuard: { maxPerCallUSD: 10, dailyBudgetUSD: 15, requireApprovalAboveUSD: 5 } };
+  writeFileSync(`${ROOT}data/policy.json`, JSON.stringify(GUARD_POLICY, null, 2));
+  const guardClient = new GuardMcpClient({ name: "verify-agent", version: "1.0.0" });
+  await guardClient.connect(new GuardStdio({
+    command: process.execPath,
+    args: [join(ROOT, "mcp/guard.js"), "razorpay", "--", process.execPath, join(ROOT, "scripts/fixtures/mock-payment-mcp.mjs")],
+    env: { ...process.env, SPENDVETO_URL: BASE, SPENDVETO_AGENT: "refund-bot", MOCK_MCP_LOG: guardLog },
+    stderr: "pipe",
+  }));
+  const guardCall = (name, args) => guardClient.callTool({ name, arguments: args });
+  const guardText = (r) => (r.content || []).map((c) => c.text).join("\n");
+  const guardLedger = async () => (await fetch(`${BASE}/api/ledger`).then((r) => r.json())).entries.filter((e) => e.category === "mcp" && e.agent === "refund-bot");
+
+  const guardTools = (await guardClient.listTools()).tools;
+  const descOf = (n) => guardTools.find((t) => t.name === n)?.description || "";
+  check(
+    "the guard lists the provider's own tools through the agent's MCP client, marking the ones SpendVeto decides: a refund moves money, revoking a saved card needs a human, an unknown tool is refused, a read is untouched",
+    guardTools.length === 5 && descOf("create_refund").startsWith("[SpendVeto: moves money out") && descOf("revoke_token").startsWith("[SpendVeto: a human approves") &&
+      descOf("create_brand_new_widget").startsWith("[SpendVeto: refused unless") && descOf("fetch_payment") === "Fetch a payment by id",
+    guardTools.map((t) => t.name).join(", ")
+  );
+
+  const readRes = await guardCall("fetch_payment", { payment_id: "pay_A" });
+  const refundOk = await guardCall("create_refund", { payment_id: "pay_A", amount: 30000 });
+  const refundFail = await guardCall("create_refund", { payment_id: "pay_fail", amount: 1000 });
+  const bookedOk = (await guardLedger()).filter((e) => e.status === "paid");
+  check(
+    "reads pass straight through; a ₹300 refund is priced at the operator's declared rate ($3.60), forwarded, and booked only once the provider confirms it — a refund the provider rejects books nothing",
+    !readRes.isError && upstreamSaw("fetch_payment").length === 1 && !refundOk.isError && upstreamSaw("create_refund").length === 2 && refundFail.isError &&
+      bookedOk.length === 1 && bookedOk[0].amount === 3.6 && bookedOk[0].currency === "INR" && bookedOk[0].originalAmount === 300 && bookedOk[0].fx?.rate === 0.012,
+    `booked ${bookedOk.map((e) => e.amount).join(",")}`
+  );
+
+  const overCap = await guardCall("create_refund", { payment_id: "pay_B", amount: 100000 });
+  check(
+    "over the per-call cap a refund is refused before the provider sees it, with a reason and a fix the model can act on",
+    overCap.isError && /mcp_spend_cap/.test(guardText(overCap)) && /What to do:/.test(guardText(overCap)) && upstreamSaw("create_refund").length === 2,
+    guardText(overCap).split("\n")[0].slice(0, 110)
+  );
+
+  const needsHuman = await guardCall("create_refund", { payment_id: "pay_B", amount: 50000 });
+  const humanAsk = JSON.parse(guardText(needsHuman).split("\n").pop()).spendveto;
+  await jsonReq(`/api/approvals/${humanAsk.approvalId}/decide`, { decision: "approved" });
+  const afterHuman = await guardCall("create_refund", { payment_id: "pay_B", amount: 50000 });
+  const againAfter = await guardCall("create_refund", { payment_id: "pay_B", amount: 50000 });
+  const usedApproval = await fetch(`${BASE}/api/approvals/${humanAsk.approvalId}`).then((r) => r.json());
+  check(
+    "above the approval line a human signs off: the call waits with an approval id and goes through once approved, and that call consumes the approval — repeating the refund doesn't ride on it",
+    needsHuman.isError && humanAsk.decision === "requires_approval" && !afterHuman.isError && usedApproval.consumed === true && againAfter.isError && upstreamSaw("create_refund").length === 3,
+    `${humanAsk.decision} → ${afterHuman.isError ? "error" : "paid"} → consumed=${usedApproval.consumed} → repeat ${againAfter.isError ? "refused" : "paid again"}`
+  );
+
+  const fullRefund = await guardCall("create_refund", { payment_id: "pay_C" });
+  const fullBooked = (await guardLedger()).filter((e) => e.status === "paid").pop();
+  const lastTwo = upstreamSaw().slice(-2).map((c) => c.tool).join(",");
+  check(
+    "a full refund names no amount, so the guard reads the payment first and SpendVeto prices that (₹400 → $4.80) before the refund goes through",
+    !fullRefund.isError && lastTwo === "fetch_payment,create_refund" && fullBooked?.amount === 4.8,
+    `upstream ${lastTwo}, booked ${fullBooked?.amount}`
+  );
+
+  const overDay = await guardCall("create_refund", { payment_id: "pay_D", amount: 10000 });
+  check(
+    "the rolling daily budget holds across calls: $3.60 + $6.00 + $4.80 spent, so a $1.20 refund would pass $15 and is refused",
+    overDay.isError && /mcp_daily_budget/.test(guardText(overDay)),
+    guardText(overDay).split("\n")[0].slice(0, 120)
+  );
+
+  const widget = await guardCall("create_brand_new_widget", { name: "x" });
+  const revoke = await guardCall("revoke_token", { customer_id: "cust_1", token_id: "token_1" });
+  const link = await guardCall("create_payment_link", { amount: 10000 });
+  check(
+    "an unclassified write is refused fail-closed (the provider never sees it), revoking a customer's saved card waits for a human, and a payment link — money coming in — passes",
+    widget.isError && /mcp_tool_unclassified/.test(guardText(widget)) && upstreamSaw("create_brand_new_widget").length === 0 &&
+      revoke.isError && /mcp_requires_approval/.test(guardText(revoke)) && upstreamSaw("revoke_token").length === 0 && !link.isError && upstreamSaw("create_payment_link").length === 1,
+    `widget=${widget.isError} revoke=${revoke.isError} link=${!link.isError}`
+  );
+
+  writeFileSync(`${ROOT}data/policy.json`, JSON.stringify({ ...GUARD_POLICY, payouts: {}, mcpGuard: { ...GUARD_POLICY.mcpGuard, dailyBudgetUSD: 1000 } }, null, 2));
+  const noRate = await guardCall("create_refund", { payment_id: "pay_E", amount: 1000 });
+  writeFileSync(`${ROOT}data/policy.json`, JSON.stringify({ ...GUARD_POLICY, mcpGuard: { ...GUARD_POLICY.mcpGuard, dailyBudgetUSD: 1000 } }, null, 2));
+  const guardFreeze = await jsonReq("/api/freezes", { address: guardPseudo("label:refund-bot"), reason: "verify: guard kill switch" });
+  const frozenRefund = await guardCall("create_refund", { payment_id: "pay_E", amount: 1000 });
+  await fetch(`${BASE}/api/freezes/${guardFreeze.body.id}/unfreeze`, { method: "POST" });
+  check(
+    "no guessed exchange rates and the kill switch: without a declared INR rate the refund is refused, and a frozen agent's refund is refused — neither reaches the provider",
+    noRate.isError && /mcp_fx_rate_missing/.test(guardText(noRate)) && frozenRefund.isError && /frozen/.test(guardText(frozenRefund)) && upstreamSaw("create_refund").length === 4,
+    `${/mcp_fx_rate_missing/.test(guardText(noRate))} / ${/frozen/.test(guardText(frozenRefund))}`
+  );
+  await guardClient.close();
+
+  const shapes = {
+    stripeRefund: guardClassify("stripe", "stripe_api_write", { method: "POST", path: "/v1/refunds", params: { payment_intent: "pi_1", amount: 500, currency: "usd" } }),
+    stripeTransfer: guardClassify("stripe", "stripe_api_write", { method: "POST", path: "/v1/transfers", params: { destination: "acct_1", amount: 1000, currency: "usd" } }),
+    stripeLink: guardClassify("stripe", "stripe_api_write", { method: "POST", path: "/v1/payment_links", params: {} }).kind,
+    stripeCancel: guardClassify("stripe", "stripe_api_write", { method: "DELETE", path: "/v1/subscriptions/sub_1" }).kind,
+    stripeRead: guardClassify("stripe", "stripe_api_read", { path: "/v1/charges" }).kind,
+    paypalRefund: guardClassify("paypal", "create_refund", { capture_id: "c1", amount: { value: "12.50", currency_code: "USD" } }),
+    paypalDispute: guardClassify("paypal", "accept_dispute_claim", { dispute_id: "PP-D-1" }).kind,
+    cashfreePayout: guardClassify("cashfree", "standard-transfer-v2", { transfer_amount: 250, beneficiary_details: { beneficiary_id: "bene_1" } }),
+    cashfreeBatch: guardClassify("cashfree", "batch-transfer-v2", { transfers: [{ transfer_amount: 100 }, { transfer_amount: 50 }] }),
+    squareRefund: guardClassify("square", "make_api_request", { service: "refunds", method: "refund_payment", request: { payment_id: "p1", amount_money: { amount: 400, currency: "USD" } } }),
+    squareList: guardClassify("square", "make_api_request", { service: "payments", method: "list_payments", request: {} }).kind,
+    genericPayout: guardClassify("generic", "issue_payout", { amount: 5000, currency: "usd" }),
+  };
+  check(
+    "the profiles read each provider's own shapes: Stripe's one write tool is classified by the API it calls (refund and transfer priced in cents, a payment link collects, a DELETE is risky), PayPal's money objects, Cashfree's rupee payouts and batch sums, Square's generic request, and a money word in an unknown server's tool name",
+    shapes.stripeRefund.kind === "spend" && shapes.stripeRefund.amount?.major === 5 && shapes.stripeRefund.amount.currency === "USD" && shapes.stripeRefund.payee === "pi_1" &&
+      shapes.stripeTransfer.recipient === true && shapes.stripeTransfer.amount?.major === 10 && shapes.stripeLink === "collect" && shapes.stripeCancel === "risky" && shapes.stripeRead === "read" &&
+      shapes.paypalRefund.amount?.major === 12.5 && shapes.paypalDispute === "risky" &&
+      shapes.cashfreePayout.amount?.major === 250 && shapes.cashfreePayout.amount.currency === "INR" && shapes.cashfreePayout.recipient && shapes.cashfreeBatch.amount?.major === 150 && shapes.cashfreeBatch.forceApproval &&
+      shapes.squareRefund.amount?.major === 4 && shapes.squareList === "read" && shapes.genericPayout.kind === "spend" && shapes.genericPayout.amount?.major === 50,
+    JSON.stringify({ stripe: shapes.stripeRefund.amount, paypal: shapes.paypalRefund.amount, cashfree: shapes.cashfreePayout.amount, square: shapes.squareRefund.amount })
+  );
+  const guardSchema = validatePolicy({ mcpGuard: { maxPerCallUSD: 10, risky: "approve", tools: { "razorpay:create_qr_code": "deny" } } });
+  const guardTypo = validatePolicy({ mcpGuard: { maxPerCallUsd: 10, tools: { create_qr_code: "maybe" } } });
+  check(
+    "the policy standard covers the guard: an mcpGuard section validates, and a mis-cased cap or an override that isn't an action is an error",
+    guardSchema.valid && guardTypo.errors.some((e) => e.path === "/mcpGuard/maxPerCallUsd") && guardTypo.errors.some((e) => e.path === "/mcpGuard/tools/create_qr_code"),
+    JSON.stringify(guardTypo.errors.map((e) => e.path))
+  );
+  writeFileSync(`${ROOT}data/policy.json`, JSON.stringify(LOOSE_POLICY, null, 2));
+
   // --- Multi-chain live settlement wiring (facilitator-adaptive) ---
   // In testnet mode the gate asks its facilitator (GET /supported) what it can
   // settle and brings every matching registry chain live: per-chain scheme

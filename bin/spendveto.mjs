@@ -10,6 +10,7 @@
 //   spendveto mcp                               # run the MCP server (stdio)
 //   spendveto validate [policy.json] [--strict] # lint a policy file against the open schema (CI)
 //   spendveto rails                             # which x402 chain SDKs are installed, and how to add the rest
+//   spendveto guard <razorpay|stripe|paypal|…>  # put SpendVeto in front of a payment provider's MCP server
 import { spawn } from "node:child_process";
 import { existsSync, readFileSync, writeFileSync, mkdirSync, openSync } from "node:fs";
 import { homedir } from "node:os";
@@ -177,6 +178,13 @@ try {
     case "connect":
       console.log("\n" + (await connectLines()) + "\n");
       break;
+    case "guard": {
+      // MCP over stdio, like `spendveto mcp`: the agent's client launches this
+      // in place of the provider's server (see mcp/guard.js for the options).
+      const child = spawn(process.execPath, [join(ROOT, "mcp", "guard.js"), ...args], { cwd: ROOT, env: { SPENDVETO_URL: BASE, ...process.env }, stdio: "inherit" });
+      child.on("exit", (code) => process.exit(code ?? 0));
+      break;
+    }
     case "mcp": {
       const child = spawn(process.execPath, [join(ROOT, "mcp", "server.js")], { cwd: ROOT, env: { ...process.env, SPENDVETO_DATA_DIR: DATA_DIR }, stdio: "inherit" });
       child.on("exit", (code) => process.exit(code ?? 0));
@@ -219,7 +227,7 @@ try {
     case "help":
     case "--help":
     case "-h":
-      console.log(readFileSync(fileURLToPath(import.meta.url), "utf8").split("\n").slice(1, 12).map((l) => l.replace(/^\/\/ ?/, "")).join("\n"));
+      console.log(readFileSync(fileURLToPath(import.meta.url), "utf8").split("\n").slice(1, 13).map((l) => l.replace(/^\/\/ ?/, "")).join("\n"));
       break;
     default:
       throw new Error(`unknown command "${cmd}" — try: spendveto help`);
