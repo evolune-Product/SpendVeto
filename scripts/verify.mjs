@@ -4020,110 +4020,136 @@ try {
     let out = "";
     proc.stdout.on("data", (d) => (out += d));
     proc.stderr.on("data", (d) => (out += d));
-    for (let i = 0; i < 25; i++) {
+    // Testnet mode loads every x402 chain adapter at boot (simulate mode
+    // doesn't), so it can take noticeably longer to become ready than the
+    // main server — especially with several other child processes already
+    // competing for CPU this deep into the suite. 60 tries (~12s) gives it
+    // real headroom; the response is captured here so the caller never needs
+    // a second, unguarded fetch that would crash the whole run if the server
+    // still wasn't up (ECONNREFUSED is uncaught outside this loop).
+    let chains = null;
+    for (let i = 0; i < 60 && !chains; i++) {
       await sleep(200);
       try {
         const r = await fetch("http://localhost:8401/api/chains");
-        if (r.ok) break;
+        if (r.ok) chains = await r.json();
       } catch {}
     }
-    return { proc, getOut: () => out };
+    return { proc, getOut: () => out, chains: chains || { chains: [], liveSettlementChains: [] } };
   };
 
+  // Each scenario below drives one live testnet-mode server over real HTTP.
+  // If that server is ever slow enough to outlast bootTestnet's own patience
+  // (environment-dependent — testnet mode loads every chain adapter, unlike
+  // simulate mode), every fetch in the scenario would otherwise throw
+  // ECONNREFUSED and crash the whole suite, losing every check after it. Each
+  // scenario is wrapped so a boot problem becomes one clean, diagnosable FAIL
+  // instead — the process always moves on to kill its server and continue.
+  async function testnetScenario(label, run) {
+    try {
+      await run();
+    } catch (err) {
+      check(`testnet scenario (${label}) ran without crashing the suite`, false, `${err.message} — server output: ${(testnetProc?.getOut() || "").split("\n").slice(0, 15).join(" / ")}`);
+    }
+    if (testnetProc) testnetProc.proc.kill();
+  }
+
   testnetProc = await bootTestnet();
-  const tnChains = await fetch("http://localhost:8401/api/chains").then((r) => r.json());
-  check(
-    "testnet gate brings live every registry chain the facilitator settles AND this instance can sign — 17 of 20, with Algorand, Cardano and opt-in-only XRPL mainnet left out",
-    tnChains.mode === "testnet" && tnChains.liveSettlementChains?.length === 17 &&
-      tnChains.chains.filter((c) => !["algorand-testnet", "cardano-preprod", "xrpl"].includes(c.id)).every((c) => c.settlement === "live") &&
-      ["algorand-testnet", "cardano-preprod", "xrpl"].every((id) => !tnChains.liveSettlementChains.includes(id)),
-    `live=${tnChains.liveSettlementChains?.join(",")}`
-  );
-  const tn402 = await fetch("http://localhost:8401/api/agent/translate");
-  const tn402Text = (tn402.headers.get("PAYMENT-REQUIRED") || "") + " " + (await tn402.text());
-  const decoded402 = tn402Text.includes("eip155") ? tn402Text : Buffer.from(tn402.headers.get("PAYMENT-REQUIRED") || "", "base64").toString("utf8") + " " + tn402Text;
-  const advertised = REG_CHAINS.filter((c) => decoded402.includes(c.caip2)).map((c) => c.id);
-  check(
-    "a real x402 v2 402 advertises one payment option per live chain — seventeen CAIP-2 networks in one challenge, and never a chain it cannot sign",
-    tn402.status === 402 && advertised.length === 17 && ["algorand-testnet", "cardano-preprod", "xrpl"].every((id) => !advertised.includes(id)),
-    `status=${tn402.status} advertised=${advertised.join(",")}`
-  );
-  // Each EVM option must carry its OWN token's EIP-712 domain: an EIP-3009
-  // authorization signed against the wrong name is rejected by the token.
-  // Circle's mainnet USDC signs as "USD Coin", its testnet as "USDC" — a
-  // single hardcoded "USDC" (this gate until v0.26.0) broke every mainnet.
-  let tnChallenge = null;
-  try { tnChallenge = JSON.parse(Buffer.from(tn402.headers.get("PAYMENT-REQUIRED") || "", "base64").toString("utf8")); } catch {}
-  const optFor = (caip2) => tnChallenge?.accepts?.find((a) => a.network === caip2);
-  check(
-    "every EVM payment option in a live 402 carries its own token's EIP-712 domain — USD Coin on Base/Ethereum mainnet, USDC on Base Sepolia, USDT0 v1 on Stable",
-    optFor("eip155:8453")?.extra?.name === "USD Coin" && optFor("eip155:1")?.extra?.name === "USD Coin" &&
-      optFor("eip155:84532")?.extra?.name === "USDC" && optFor("eip155:988")?.extra?.name === "USDT0" && optFor("eip155:988")?.extra?.version === "1" &&
-      REG_CHAINS.filter((c) => !c.family).every((c) => optFor(c.caip2)?.extra?.name === c.eip712?.name && optFor(c.caip2)?.extra?.version === c.eip712?.version),
-    REG_CHAINS.filter((c) => !c.family).map((c) => `${c.id}=${optFor(c.caip2)?.extra?.name}/${optFor(c.caip2)?.extra?.version}`).join(" ")
-  );
-  // x402 upstream (#3542, Sep 2026) fixed paid routes being reachable unpaid
-  // when the framework dispatches an encoded path the route matcher never
-  // saw. Pin that no spelling of a paid route serves content without paying.
-  const bypassPaths = ["/api/agent/%74ranslate", "/api/%61gent/translate", "/api/agent%2Ftranslate", "/API/AGENT/TRANSLATE",
-    "/api/agent/Translate", "/api/agent/translate/", "//api/agent/translate", "/api/agent/./translate", "/api/x/../agent/translate"];
-  const bypassCodes = [];
-  for (const p of bypassPaths) {
-    const r = await new Promise((resolve) => {
-      const req = httpRequest({ host: "localhost", port: 8401, path: p, method: "GET" }, (res) => { res.resume(); resolve(res.statusCode); });
+  const tnChains = testnetProc.chains;
+  await testnetScenario("facilitator advertises every chain", async () => {
+    check(
+      "testnet gate brings live every registry chain the facilitator settles AND this instance can sign — 17 of 20, with Algorand, Cardano and opt-in-only XRPL mainnet left out",
+      tnChains.mode === "testnet" && tnChains.liveSettlementChains?.length === 17 &&
+        tnChains.chains.filter((c) => !["algorand-testnet", "cardano-preprod", "xrpl"].includes(c.id)).every((c) => c.settlement === "live") &&
+        ["algorand-testnet", "cardano-preprod", "xrpl"].every((id) => !tnChains.liveSettlementChains.includes(id)),
+      `live=${tnChains.liveSettlementChains?.join(",")}`
+    );
+    const tn402 = await fetch("http://localhost:8401/api/agent/translate");
+    const tn402Text = (tn402.headers.get("PAYMENT-REQUIRED") || "") + " " + (await tn402.text());
+    const decoded402 = tn402Text.includes("eip155") ? tn402Text : Buffer.from(tn402.headers.get("PAYMENT-REQUIRED") || "", "base64").toString("utf8") + " " + tn402Text;
+    const advertised = REG_CHAINS.filter((c) => decoded402.includes(c.caip2)).map((c) => c.id);
+    check(
+      "a real x402 v2 402 advertises one payment option per live chain — seventeen CAIP-2 networks in one challenge, and never a chain it cannot sign",
+      tn402.status === 402 && advertised.length === 17 && ["algorand-testnet", "cardano-preprod", "xrpl"].every((id) => !advertised.includes(id)),
+      `status=${tn402.status} advertised=${advertised.join(",")}`
+    );
+    // Each EVM option must carry its OWN token's EIP-712 domain: an EIP-3009
+    // authorization signed against the wrong name is rejected by the token.
+    // Circle's mainnet USDC signs as "USD Coin", its testnet as "USDC" — a
+    // single hardcoded "USDC" (this gate until v0.26.0) broke every mainnet.
+    let tnChallenge = null;
+    try { tnChallenge = JSON.parse(Buffer.from(tn402.headers.get("PAYMENT-REQUIRED") || "", "base64").toString("utf8")); } catch {}
+    const optFor = (caip2) => tnChallenge?.accepts?.find((a) => a.network === caip2);
+    check(
+      "every EVM payment option in a live 402 carries its own token's EIP-712 domain — USD Coin on Base/Ethereum mainnet, USDC on Base Sepolia, USDT0 v1 on Stable",
+      optFor("eip155:8453")?.extra?.name === "USD Coin" && optFor("eip155:1")?.extra?.name === "USD Coin" &&
+        optFor("eip155:84532")?.extra?.name === "USDC" && optFor("eip155:988")?.extra?.name === "USDT0" && optFor("eip155:988")?.extra?.version === "1" &&
+        REG_CHAINS.filter((c) => !c.family).every((c) => optFor(c.caip2)?.extra?.name === c.eip712?.name && optFor(c.caip2)?.extra?.version === c.eip712?.version),
+      REG_CHAINS.filter((c) => !c.family).map((c) => `${c.id}=${optFor(c.caip2)?.extra?.name}/${optFor(c.caip2)?.extra?.version}`).join(" ")
+    );
+    // x402 upstream (#3542, Sep 2026) fixed paid routes being reachable unpaid
+    // when the framework dispatches an encoded path the route matcher never
+    // saw. Pin that no spelling of a paid route serves content without paying.
+    const bypassPaths = ["/api/agent/%74ranslate", "/api/%61gent/translate", "/api/agent%2Ftranslate", "/API/AGENT/TRANSLATE",
+      "/api/agent/Translate", "/api/agent/translate/", "//api/agent/translate", "/api/agent/./translate", "/api/x/../agent/translate"];
+    const bypassCodes = [];
+    for (const p of bypassPaths) {
+      const r = await new Promise((resolve) => {
+        const req = httpRequest({ host: "localhost", port: 8401, path: p, method: "GET" }, (res) => { res.resume(); resolve(res.statusCode); });
+        req.on("error", () => resolve(0));
+        req.end();
+      });
+      bypassCodes.push(r);
+    }
+    check(
+      "no encoded, re-cased or dot-segment spelling of a paid route is served unpaid by the live x402 gate",
+      bypassCodes.every((c) => c === 402 || c === 404),
+      bypassPaths.map((p, i) => `${p}=${bypassCodes[i]}`).join(" ")
+    );
+    const rawStatus = (method, path) => new Promise((resolve) => {
+      const req = httpRequest({ host: "localhost", port: 8401, path, method }, (res) => { res.resume(); resolve(res.statusCode); });
       req.on("error", () => resolve(0));
       req.end();
     });
-    bypassCodes.push(r);
-  }
-  check(
-    "no encoded, re-cased or dot-segment spelling of a paid route is served unpaid by the live x402 gate",
-    bypassCodes.every((c) => c === 402 || c === 404),
-    bypassPaths.map((p, i) => `${p}=${bypassCodes[i]}`).join(" ")
-  );
-  const rawStatus = (method, path) => new Promise((resolve) => {
-    const req = httpRequest({ host: "localhost", port: 8401, path, method }, (res) => { res.resume(); resolve(res.statusCode); });
-    req.on("error", () => resolve(0));
-    req.end();
+    // x402 #3796 (2026-10-13): HEAD reached paid GET handlers unpaid. Express
+    // answers HEAD with the GET handler, so this gate WAS exposed — HEAD got a
+    // 200 and the paid handler ran — until v0.26.0 gated HEAD explicitly.
+    const headProbes = [...TOOLS.map((t) => t.path), "/API/AGENT/TRANSLATE", "/api/agent/translate/"];
+    const headCodes = [];
+    for (const p of headProbes) headCodes.push(await rawStatus("HEAD", p));
+    check(
+      "a HEAD request never runs a paid handler unpaid — every paid route, and its re-cased and trailing-slash spellings, answers HEAD with the 402 challenge",
+      headCodes.every((c) => c === 402 || c === 404) && headCodes.slice(0, TOOLS.length).every((c) => c === 402),
+      headProbes.map((p, i) => `HEAD ${p}=${headCodes[i]}`).join(" ")
+    );
+    // x402 #3577 (2026-10-02): an absolute-form request target
+    // (GET http://other.host/paid HTTP/1.1) slipped past a matcher that read the
+    // raw target while the router stripped the authority. Not exposed here
+    // (Express parses the path) — pinned so it stays that way.
+    const absoluteProbes = [["GET", "http://evil.example/api/agent/translate"], ["GET", "https://localhost:8401/api/agent/review"], ["HEAD", "http://evil.example/api/agent/summarize"]];
+    const absoluteCodes = [];
+    for (const [m, p] of absoluteProbes) absoluteCodes.push(await rawStatus(m, p));
+    check(
+      "an absolute-form request target naming another host is gated exactly like the plain path — never served unpaid",
+      absoluteCodes.every((c) => c === 402),
+      absoluteProbes.map(([m, p], i) => `${m} ${p}=${absoluteCodes[i]}`).join(" ")
+    );
   });
-  // x402 #3796 (2026-10-13): HEAD reached paid GET handlers unpaid. Express
-  // answers HEAD with the GET handler, so this gate WAS exposed — HEAD got a
-  // 200 and the paid handler ran — until v0.26.0 gated HEAD explicitly.
-  const headProbes = [...TOOLS.map((t) => t.path), "/API/AGENT/TRANSLATE", "/api/agent/translate/"];
-  const headCodes = [];
-  for (const p of headProbes) headCodes.push(await rawStatus("HEAD", p));
-  check(
-    "a HEAD request never runs a paid handler unpaid — every paid route, and its re-cased and trailing-slash spellings, answers HEAD with the 402 challenge",
-    headCodes.every((c) => c === 402 || c === 404) && headCodes.slice(0, TOOLS.length).every((c) => c === 402),
-    headProbes.map((p, i) => `HEAD ${p}=${headCodes[i]}`).join(" ")
-  );
-  // x402 #3577 (2026-10-02): an absolute-form request target
-  // (GET http://other.host/paid HTTP/1.1) slipped past a matcher that read the
-  // raw target while the router stripped the authority. Not exposed here
-  // (Express parses the path) — pinned so it stays that way.
-  const absoluteProbes = [["GET", "http://evil.example/api/agent/translate"], ["GET", "https://localhost:8401/api/agent/review"], ["HEAD", "http://evil.example/api/agent/summarize"]];
-  const absoluteCodes = [];
-  for (const [m, p] of absoluteProbes) absoluteCodes.push(await rawStatus(m, p));
-  check(
-    "an absolute-form request target naming another host is gated exactly like the plain path — never served unpaid",
-    absoluteCodes.every((c) => c === 402),
-    absoluteProbes.map(([m, p], i) => `${m} ${p}=${absoluteCodes[i]}`).join(" ")
-  );
-  testnetProc.proc.kill();
   await sleep(300);
 
   // Adaptive the other way: the facilitator now claims only base-sepolia, so
   // only base-sepolia may go live — the other nineteen report settlement-ready.
   mockSupportedCaip2 = [REG_CHAINS.find((c) => c.id === "base-sepolia").caip2];
   testnetProc = await bootTestnet();
-  const tnChains2 = await fetch("http://localhost:8401/api/chains").then((r) => r.json());
-  check(
-    "the live set is the facilitator's truth: a facilitator supporting one chain yields exactly one live + nineteen settlement-ready",
-    tnChains2.liveSettlementChains?.length === 1 && tnChains2.liveSettlementChains[0] === "base-sepolia" &&
-      tnChains2.chains.filter((c) => c.settlement === "ready").length === 19,
-    `live=${tnChains2.liveSettlementChains?.join(",")} ready=${tnChains2.chains.filter((c) => c.settlement === "ready").length}`
-  );
-  testnetProc.proc.kill();
+  const tnChains2 = testnetProc.chains;
+  await testnetScenario("facilitator advertises one chain", async () => {
+    check(
+      "the live set is the facilitator's truth: a facilitator supporting one chain yields exactly one live + nineteen settlement-ready",
+      tnChains2.liveSettlementChains?.length === 1 && tnChains2.liveSettlementChains[0] === "base-sepolia" &&
+        tnChains2.chains.filter((c) => c.settlement === "ready").length === 19,
+      `live=${tnChains2.liveSettlementChains?.join(",")} ready=${tnChains2.chains.filter((c) => c.settlement === "ready").length}`
+    );
+  });
   await sleep(300);
 
   // XRPL mainnet is real money, so it has its own opt-in variable: with the
@@ -4131,14 +4157,15 @@ try {
   // stayed out above; set its own variable and it — and only then — goes live.
   mockSupportedCaip2 = REG_CHAINS.map((c) => c.caip2);
   testnetProc = await bootTestnet({ SERVER_PAYOUT_ADDRESS_XRPL_MAINNET: "rHb9CJAWyB4rj91VRWn96DkukG4bwdtyTh" });
-  const tnChains3 = await fetch("http://localhost:8401/api/chains").then((r) => r.json());
-  check(
-    "XRPL mainnet goes live only through its own SERVER_PAYOUT_ADDRESS_XRPL_MAINNET opt-in — enabling the XRPL testnet can never switch real money on",
-    tnChains3.liveSettlementChains?.includes("xrpl") && tnChains3.liveSettlementChains?.includes("xrpl-testnet") && tnChains3.liveSettlementChains?.length === 18 &&
-      !tnChains.liveSettlementChains.includes("xrpl") && tnChains.liveSettlementChains.includes("xrpl-testnet"),
-    `with opt-in: ${tnChains3.liveSettlementChains?.length} live, xrpl=${tnChains3.liveSettlementChains?.includes("xrpl")}`
-  );
-  testnetProc.proc.kill();
+  const tnChains3 = testnetProc.chains;
+  await testnetScenario("XRPL mainnet opt-in", async () => {
+    check(
+      "XRPL mainnet goes live only through its own SERVER_PAYOUT_ADDRESS_XRPL_MAINNET opt-in — enabling the XRPL testnet can never switch real money on",
+      tnChains3.liveSettlementChains?.includes("xrpl") && tnChains3.liveSettlementChains?.includes("xrpl-testnet") && tnChains3.liveSettlementChains?.length === 18 &&
+        !tnChains.liveSettlementChains.includes("xrpl") && tnChains.liveSettlementChains.includes("xrpl-testnet"),
+      `with opt-in: ${tnChains3.liveSettlementChains?.length} live, xrpl=${tnChains3.liveSettlementChains?.includes("xrpl")}`
+    );
+  });
   testnetProc = null;
   mockFacil.close();
   mockFacil = null;
