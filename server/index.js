@@ -6,6 +6,7 @@ import express from "express";
 import { loadOptional } from "./optional.js";
 import { parseChallenges, assessChallenge, mppHoldUSD, authorizeCharge, reportCharge, openSession, recordVoucher, closeSession, mppState } from "./mpp.js";
 import { outOfBandSettings, reconcile, scanChains, outOfBandState } from "./outofband.js";
+import { createMcpGuard } from "./mcpguard.js";
 import { MODE, PORT, TOOLS, CHAINS, FACILITATOR_URL, findChain, DEFAULT_CHAIN, dataPath, PACKAGE_DATA_DIR } from "../shared-config.js";
 import { randomUUID } from "node:crypto";
 import { writeFileSync } from "node:fs";
@@ -1693,6 +1694,36 @@ const payouts = createPayouts({
   pseudoAddress,
   reputationCheck: (subjects) => reputation.check(subjects),
 });
+// MCP guard (server/mcpguard.js + mcp/guard.js): SpendVeto in front of a payment
+// provider's MCP server. The guard process asks here before the provider sees
+// any call that isn't a read, and reports how the provider answered.
+const mcpGuard = createMcpGuard({
+  dataPath,
+  loadPolicy: () => readJsonFile(POLICY_FILE, {}),
+  checkPolicy,
+  policyHash: () => policyHash(),
+  appendLedgerEntry,
+  getLedger,
+  findActiveFreeze,
+  listDelegations,
+  createApproval,
+  listApprovals,
+  findApprovableFor,
+  consumeApproval,
+  readAgents: () => readJsonFile(dataPath("agents.json"), []),
+  childAddress: childAddressFor,
+  pseudoAddress,
+  reputationCheck: (subjects) => reputation.check(subjects),
+});
+app.post("/api/mcpguard/evaluate", async (req, res) => {
+  const out = await mcpGuard.evaluate(req, req.body || {});
+  res.status(out.status).json(out.json);
+});
+app.post("/api/mcpguard/calls/:id/report", (req, res) => {
+  const out = mcpGuard.report(req.params.id, req.body || {});
+  res.status(out.status).json(out.json);
+});
+app.get("/api/mcpguard", (req, res) => res.json(mcpGuard.summary()));
 app.post("/api/payouts", async (req, res) => {
   const out = await payouts.create(req, req.body || {});
   res.status(out.status).json(out.json);

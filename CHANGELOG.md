@@ -2,6 +2,23 @@
 
 Every feature listed here is exercised by the end-to-end suite (`npm run verify`) — the suite grew from 33 assertions at the first public cut to **114** at v0.7.0. If a claim isn't an assertion, it doesn't ship.
 
+## 0.32.0 — 2026-10-23
+
+`spendveto guard`: SpendVeto in front of a payment provider's MCP server. Razorpay, Stripe, PayPal, Cashfree and Square publish MCP servers, so an agent with a merchant key can refund, transfer and charge with a tool call. Now the agent's MCP client launches the guard instead, and the provider only sees what SpendVeto allowed.
+
+- **`mcp/guard.js`** is an MCP proxy over stdio. It connects to the provider's server (hosted, over Streamable HTTP, or any command, including `mcp-remote` for OAuth servers), lists its tools unchanged but marked where SpendVeto decides, and asks the SpendVeto server before every call that isn't a read. When SpendVeto can't be reached, only reads pass.
+- **`server/mcpguard.js` + `POST /api/mcpguard/evaluate`** classify each call as read, collect, spend, change, risky or unknown, from provider profiles built on the docs' tool names (checked Oct 23, 2026).
+  - Stripe's single `stripe_api_write` tool is classified by the API path it calls; Square's `make_api_request` by service and method.
+  - A spend is priced in USD at the operator's declared rate (`policy.payouts.fxRates`; no rate, no spend), then checked against the per-call cap, rolling daily budget, hourly velocity, kill switch, reputation and delegation caps.
+  - A human approves above the approval line, for a recipient not on the allowlist, for a batch, and for risky changes (accepting a dispute, cancelling a subscription, revoking a saved card, sweeping the balance).
+  - Unknown tools are refused.
+  - A full refund names no amount, so the guard reads the payment and SpendVeto prices that.
+  - An amount the guard can't read goes to a human.
+- **Outcomes are booked from the provider's answer.** `POST /api/mcpguard/calls/:id/report` books a spend only when the provider confirms it; a failure releases its hold, and an unreported spend is booked once its hold expires. `GET /api/mcpguard` shows recent calls.
+- **`spendveto guard <profile>`** in the CLI; a new `mcpGuard` section in the policy standard.
+- **`pg` became a devDependency** (the Governance API in `govern/` runs from a checkout and isn't published).
+- **Verify: 492** (+10). The real MCP SDK client drives the real guard against a local Razorpay-shaped server that logs what reached it; Stripe, PayPal, Cashfree and Square shapes are checked through the classifier. 495 with `../prediction-copilot` alongside.
+
 ## 0.31.0 — 2026-10-19
 
 Out-of-band spend detection: caps that hold when the agent pays around the gate (GitHub issue #1). SpendVeto governed every payment that passed through it. An agent holding its own key could also send USDC straight from its wallet, pay through another facilitator, or use a second MCP server's rail — every in-gate call would pass while the budget was exceeded in aggregate.

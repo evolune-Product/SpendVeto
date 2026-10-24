@@ -4,7 +4,7 @@
 
 [**Live site + playground**](https://spendveto.com) · [**Docs**](https://spendveto.com/docs.html) · [**npm**](https://www.npmjs.com/package/spendveto) · Apache-2.0 · x402 + MCP native
 
-**Every claim in this README is executed before it ships.** `npm run verify` runs **482 end-to-end assertions** from a clean clone — real secp256k1 keypairs, real ECDSA verification, a real MCP stdio JSON-RPC session, and a synthetic runaway agent frozen mid-burst. If a claim isn't a test, it doesn't ship; features that can't work locally yet are declared slots that refuse honestly, never stubs that pretend.
+**Every claim in this README is executed before it ships.** `npm run verify` runs **492 end-to-end assertions** from a clean clone — real secp256k1 keypairs, real ECDSA verification, a real MCP stdio JSON-RPC session, and a synthetic runaway agent frozen mid-burst. If a claim isn't a test, it doesn't ship; features that can't work locally yet are declared slots that refuse honestly, never stubs that pretend.
 
 What *isn't* true yet is stated just as plainly: no external security audit, no customers. Settlement is testnet and simulate only, by default, for every chain. XRPL mainnet settlement (real money, RLUSD) is fully wired but **disabled unless an operator explicitly opts in** — that's their decision and their risk; we don't run, monitor, or control anyone's deployment. Funding positioning and market numbers live in [`PITCH.md`](./PITCH.md).
 
@@ -112,6 +112,40 @@ SpendVeto governs every payment that passes through it. An agent that holds its 
 
 This is detection, not prevention: an agent holding its own key can always sign something. The guarantee that nothing gets around the gate is custody — the keyless enforcement proxy below — or sellers that require governed-spend attestations.
 
+## Guard a payment provider's MCP server (`spendveto guard`)
+
+Razorpay, Stripe, PayPal, Cashfree and Square publish MCP servers, so an agent holding a merchant key can refund, transfer and charge with one tool call, with nothing in between to set a budget or ask a human. `spendveto guard` sits between the agent and that server (`mcp/guard.js`, decisions in `server/mcpguard.js`). The agent sees the provider's own tools; reads pass through; every other call is decided by SpendVeto before the provider sees it.
+
+Use the guard in place of the provider's server in Claude Desktop, Claude Code or Cursor, with SpendVeto running (`npx spendveto`):
+
+```json
+{
+  "mcpServers": {
+    "razorpay": {
+      "command": "npx",
+      "args": ["-y", "spendveto", "guard", "razorpay"],
+      "env": { "RAZORPAY_KEY_ID": "rzp_live_…", "RAZORPAY_KEY_SECRET": "…", "SPENDVETO_AGENT": "support-agent" }
+    }
+  }
+}
+```
+
+| Kind | Examples | What happens |
+|---|---|---|
+| read | `fetch_payment`, `list_*`, `stripe_api_read` | Passes through |
+| collect (money in) | payment links, orders, invoices, captures | Allowed by default |
+| spend (money out) | refunds, transfers, payouts | Priced in USD at your declared rate, then the per-call cap, daily budget, velocity, kill switch, reputation and delegation caps; a human above the approval line or for a new recipient |
+| risky | accepting a dispute, cancelling a subscription, revoking a saved card, sweeping the balance to the bank | A human approves |
+| unknown | a tool the profile doesn't know | Refused, never guessed |
+
+- **A full refund names no amount,** so the guard reads the payment first and SpendVeto prices that.
+- **Stripe's single `stripe_api_write` tool** is classified by the API path it calls (a refund, a transfer, a payment link, a DELETE); Square's `make_api_request` by service and method.
+- **Refusals come back as tool errors** with a code and a fix the model can act on. For an approval, a human approves in the Console and the agent repeats the same call.
+- **If SpendVeto is down, only reads pass.** The guard fails closed.
+- Profiles: `razorpay`, `stripe`, `paypal`, `cashfree`, `square`, and `generic` for any other server (`--url`/`--header`, or `-- <command>`). Rules live in `policy.mcpGuard`; non-USD amounts use `policy.payouts.fxRates`.
+
+Tested with the real MCP SDK client and the real guard process against a local server that uses Razorpay's tool names. Tool names come from each provider's docs (Oct 23, 2026). Most argument schemas aren't published, which is why an amount the guard can't read goes to a human instead of through.
+
 ## India: UPI mandate governance
 
 `POST /api/upi/evaluate` decides allow / requires_approval / deny for an agent's UPI mandate debit with the RBI Digital Payments E-mandate Framework (2026) rules — human authentication on the first debit and above ₹15,000 (₹1,00,000 for insurance, mutual funds, card bills), 24 h pre-debit notice, withdrawn and expired mandates refused — deterministic, INR end to end, verdict ECDSA-signed, payee VPA masked. **Evaluator only:** it does not initiate or settle UPI, is not a PSP, and claims no NPCI/RBI approval (NPCI's agent protocol is not live). "Requires approval" always means a human completes the customer's authentication. Try the rules in your browser at `site/upi.html`. Operator policy goes under `policy.upi` (`maxPerTxnINR`, `maxPerDayINR`, `allowedPayeeVpas`, `allowedCategories`).
@@ -148,9 +182,9 @@ npm run call -- summarize      # $0.02 — above the approval line: go approve/d
 npm run call -- translate      # $0.005
 ```
 
-`npm run verify` runs the whole thing headlessly — **482 end-to-end assertions**: catalog, forged-signature rejection, hard policy blocks, all three approval outcomes (approved / denied / timed-out-fails-closed), delegation caps including the n-level cascade, tool + chain scoping, multichain settlement (chain-scoped signatures, per-chain balances, chain allowlists), runaway-burst auto-freeze, the manual kill switch, signed-receipt verification, CSV export, per-tool/per-wallet/per-chain analytics, webhook alerts actually arriving at a live receiver, structured self-correcting denials, side-effect-free dry runs, TTL grant expiry, one-click approval links, the stats endpoint, AP2 mandate-chain drift detection, human-not-present authority, governed Bazaar discovery, ACP shared-payment-token scope, request-integrity binding (including a payload swapped after authorization), signed dispute evidence packs and their tamper detection, OpenTelemetry span export under an inbound traceparent, governed-spend attestations verified offline by a seller (replay, payer binding, tampering), signed reputation feeds crossing organizations (trust, rollback, digest), policy-schema validation in the CLI and the GitHub Action, and a real MCP stdio JSON-RPC round trip.
+`npm run verify` runs the whole thing headlessly — **492 end-to-end assertions**: catalog, forged-signature rejection, hard policy blocks, all three approval outcomes (approved / denied / timed-out-fails-closed), delegation caps including the n-level cascade, tool + chain scoping, multichain settlement (chain-scoped signatures, per-chain balances, chain allowlists), runaway-burst auto-freeze, the manual kill switch, signed-receipt verification, CSV export, per-tool/per-wallet/per-chain analytics, webhook alerts actually arriving at a live receiver, structured self-correcting denials, side-effect-free dry runs, TTL grant expiry, one-click approval links, the stats endpoint, AP2 mandate-chain drift detection, human-not-present authority, governed Bazaar discovery, ACP shared-payment-token scope, request-integrity binding (including a payload swapped after authorization), signed dispute evidence packs and their tamper detection, OpenTelemetry span export under an inbound traceparent, governed-spend attestations verified offline by a seller (replay, payer binding, tampering), signed reputation feeds crossing organizations (trust, rollback, digest), policy-schema validation in the CLI and the GitHub Action, and a real MCP stdio JSON-RPC round trip.
 
-> **On the number:** a fresh clone runs **482** assertions. Three more exercise a real cross-project integration against [Basis](https://github.com/revanthrajeev/basis) and run only when `../prediction-copilot` is checked out beside this repo — the suite prints `(skipped: cross-project Basis integration test …)` when it isn't. Every published number is the 482 anyone can reproduce.
+> **On the number:** a fresh clone runs **492** assertions. Three more exercise a real cross-project integration against [Basis](https://github.com/revanthrajeev/basis) and run only when `../prediction-copilot` is checked out beside this repo — the suite prints `(skipped: cross-project Basis integration test …)` when it isn't. Every published number is the 492 anyone can reproduce.
 
 **Marketing site**: `npm run site` serves the deploy-ready landing page (Three.js hero, animated product walkthrough) at http://localhost:8403 — `site/` is fully static and self-contained, drop it on Vercel/Netlify as-is. Includes an **interactive playground** (`site/playground.html`) that runs the real policy-decision logic client-side — set a budget, fire agent spend, watch it pass/pause/block — and a **use-cases** page grounded in real 2026 agent-spend scenarios.
 
@@ -465,6 +499,7 @@ server/
   mpp.js                    MPP (Stripe + Tempo) offers: parse, price, MPP's own rules, holds, sessions, vouchers
   optional.js               chain SDKs as optional peers: loadOptional(), the install command when one is missing
   outofband.js              out-of-band spend: governed wallets' on-chain transfers reconciled against the ledger
+  mcpguard.js               spendveto guard: provider profiles, what each MCP tool does with money, the decision
 spec/
   policy-v1.schema.json     the open policy standard (JSON Schema 2020-12), hosted at spendveto.com/schemas/
 integrations/             LangChain, OpenAI Agents, ElizaOS adapters, mppx.js (govern the MPP client) + seller-express.js (require governed agents)
@@ -483,6 +518,7 @@ rails/
   x402-testnet.js          real on-chain rail: Base Sepolia via the public facilitator
 mcp/
   server.js                MCP middleware: paid catalog + spendveto_status over stdio
+  guard.js                 spendveto guard: MCP proxy in front of Razorpay/Stripe/PayPal/Cashfree/Square servers
 proxy/
   server.js                enforcement proxy: key custody, agents POST intents (:8404)
 dashboard/                the Console: 14 pages (overview, AI spend, costs, payouts, approvals, budgets, ledger, chains, analytics, trust, network, policy, agents, report) with create/edit/freeze/apply controls
@@ -492,7 +528,7 @@ scripts/
   policy.mjs                list/apply policy packs
   site.mjs                  serves the marketing site on :8403
   sdk-python/               Python client (pip install ./sdk-python), same surface as the npm SDK
-  verify.mjs                482 end-to-end assertions incl. MCP stdio round trip + multichain + auto-freeze
+  verify.mjs                492 end-to-end assertions incl. MCP stdio round trip + multichain + auto-freeze
 data/
   policy.json               editable spend rules incl. anomaly burst threshold + alertWebhookUrl
   policy-packs/             importable governance presets (cautious/standard/production)
