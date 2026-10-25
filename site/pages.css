@@ -85,8 +85,14 @@ footer {
   display: flex; justify-content: space-between; align-items: center; gap: 1rem; flex-wrap: wrap;
   color: var(--faint); font-size: 0.8rem; background: var(--bg);
 }
-footer .links { display: flex; gap: 1.6rem; }
+footer .links { display: flex; flex-wrap: wrap; gap: 0.6rem 1.6rem; }
 footer a:hover { color: var(--ink); }
+footer .backers { display: flex; align-items: center; gap: 1rem; flex-wrap: wrap; }
+footer .backers img { display: block; }
+footer .inception { display: flex; align-items: center; gap: 0.65rem; }
+footer .inception img { border-radius: 6px; }
+footer .inception span { max-width: 26ch; line-height: 1.4; font-size: 0.74rem; }
+footer .tm { flex-basis: 100%; margin: 0; font-size: 0.68rem; line-height: 1.5; opacity: 0.75; }
 
 table.data { width: 100%; border-collapse: collapse; font-size: 0.88rem; }
 .data th, .data td { padding: 0.85rem 1rem; text-align: left; border-bottom: 1px solid var(--line); }

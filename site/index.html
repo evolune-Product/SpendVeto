@@ -556,8 +556,14 @@
     display: flex; justify-content: space-between; align-items: center; gap: 1rem; flex-wrap: wrap;
     color: var(--faint); font-size: 0.8rem; position: relative; z-index: 2; background: var(--bg);
   }
-  footer .links { display: flex; gap: 1.6rem; }
+  footer .links { display: flex; flex-wrap: wrap; gap: 0.6rem 1.6rem; }
   footer a:hover { color: var(--ink); }
+  footer .backers { display: flex; align-items: center; gap: 1rem; flex-wrap: wrap; }
+  footer .backers img { display: block; }
+  footer .inception { display: flex; align-items: center; gap: 0.65rem; }
+  footer .inception img { border-radius: 6px; }
+  footer .inception span { max-width: 26ch; line-height: 1.4; font-size: 0.74rem; }
+  footer .tm { flex-basis: 100%; margin: 0; font-size: 0.68rem; line-height: 1.5; opacity: 0.75; }
 </style>
 <script type="application/ld+json">
 {
@@ -1240,9 +1246,10 @@
 <footer>
   <span class="wordmark">SPENDVETO<span class="tick">_</span></span>
   <span>Prototype — simulate mode by default, x402 testnet on Base Sepolia. Every claim on this page is covered by SpendVeto&#x27;s automated test suite.</span>
-  <a href="https://www.producthunt.com/products/spendveto?embed=true&utm_source=badge-featured&utm_medium=badge&utm_campaign=badge-spendveto" target="_blank" rel="noopener noreferrer" style="display:inline-block; margin: 0.6rem 0;">
-    <img alt="SpendVeto - Spend governance for AI agents that pay for things | Product Hunt" width="200" height="43" src="./assets/producthunt-featured.svg" style="display:block" />
-  </a>
+  <div class="backers">
+    <a class="inception" href="https://www.nvidia.com/en-us/startups/" target="_blank" rel="noopener"><img src="./assets/nvidia-inception-badge.png" alt="NVIDIA Inception Program member badge" width="91" height="36" loading="lazy" /><span>Built by Evolune EdgeTech LLP, a member of NVIDIA Inception.</span></a>
+    <a href="https://www.producthunt.com/products/spendveto?embed=true&utm_source=badge-featured&utm_medium=badge&utm_campaign=badge-spendveto" target="_blank" rel="noopener noreferrer"><img src="./assets/producthunt-featured.svg" alt="SpendVeto on Product Hunt" width="167" height="36" loading="lazy" /></a>
+  </div>
   <div class="links">
     <a href="./guides.html">Guides</a>
     <a href="./network.html">Network</a>
@@ -1257,6 +1264,7 @@
     <a href="./signin.html">Sign in</a>
     <a href="./signup.html">Waitlist</a>
   </div>
+  <p class="tm">© 2026 NVIDIA, the NVIDIA logo, and NVIDIA Inception are trademarks and/or registered trademarks of NVIDIA Corporation in the U.S. and other countries.</p>
 </footer>
 
 </div><!-- /canvas-frame -->

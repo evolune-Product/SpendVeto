@@ -33,6 +33,7 @@ Every claim on this site is executed before it is published: 492 end-to-end asse
 
 ## Key facts
 
+- **Company**: built by Evolune EdgeTech LLP (India), a member of NVIDIA Inception. Product Hunt: https://www.producthunt.com/products/spendveto
 - **License**: proprietary (Evolune EdgeTech LLP); free to self-host. Network formats: https://spendveto.com/spec/NETWORK.md
 - **Verification**: 492 end-to-end assertions, all passing, re-run on every change.
 - **Modes**: `simulate` (default, zero setup, real secp256k1 keypairs and real ECDSA verification, local settlement) and `testnet` (real x402 v2, facilitator-adaptive multichain).
