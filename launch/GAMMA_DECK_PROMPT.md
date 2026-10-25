@@ -15,7 +15,7 @@ anything.
 
 **Slide 1 — Title**
 Design direction for the whole deck: dark background (near-black, #070a08), one accent green (#46d68c), clean geometric sans headings (Space Grotesk or similar), minimal — technical/developer-infrastructure aesthetic like Stripe or Vercel decks, NOT flashy or consumer-startup style. No stock photos. Use diagrams/icons for the product-flow and market-sizing slides, not photography.
-Content: SpendVeto. Tagline: "The spend-governance layer for AI agents that pay for things." Sub-line: "Payment rails move an agent's money. SpendVeto decides whether it should be allowed to move it." Footer: open source, Apache-2.0, x402 + MCP native.
+Content: SpendVeto. Tagline: "The spend-governance layer for AI agents that pay for things." Sub-line: "Payment rails move an agent's money. SpendVeto decides whether it should be allowed to move it." Footer: self-hosted, x402 + MCP native.
 
 ---
 
@@ -34,7 +34,7 @@ Headline: "The seller side is commoditizing monthly. The buyer side is funded �
 Body points:
 - Seller side (getting paid) is commoditizing fast: Cloudflare opened its x402 Monetization Gateway waitlist July 1, 2026; Stripe has the Machine Payments Protocol; Nevermined, xpay.sh, Zuplo, Apify all monetize MCP tools for sellers.
 - Buyer-side governance (stopping agents from overspending) is now being funded but stays closed: Catena Labs raised a $30M Series A in May 2026 (a16z crypto + Acrew) and is filing for a national trust bank charter; Payman is a closed fiat platform.
-- The open position: open-source, self-hostable, rail-neutral, MCP-native buyer-side governance. Position it as "the GitLab to their bank" — works with any rail or custodian, competes with none.
+- The open position: self-hostable, rail-neutral, MCP-native buyer-side governance. Position it as "the GitLab to their bank" — works with any rail or custodian, competes with none.
 
 ---
 
@@ -59,10 +59,10 @@ Table with columns: Player | What they are | What they don't do.
 Rows:
 - Coinbase x402 ecosystem — the payment rail itself — no buyer-side policy, budgets, or approvals
 - Skyfire ($9.5M seed, Coinbase Ventures + a16z CSX) — wallets, identity, payment execution — not a policy/governance SDK
-- Payman — spend limits, approvals, allowlists — closed, fiat/enterprise, not open-source, not x402/MCP-native
-- Catena Labs ($30M Series A, May 2026, a16z crypto + Acrew; filing for a bank charter) — closest funded competitor, governance layer for agent transactions — custodial and closed, becoming a regulated bank, not open-source or self-hostable
+- Payman — spend limits, approvals, allowlists — closed, fiat/enterprise, not self-hostable, not x402/MCP-native
+- Catena Labs ($30M Series A, May 2026, a16z crypto + Acrew; filing for a bank charter) — closest funded competitor, governance layer for agent transactions — custodial and closed, becoming a regulated bank, not self-hostable
 - Google AP2 / Mastercard Agent Pay — authorization protocols/standards — standards, not developer tooling (SpendVeto can implement them)
-Closing line: "The gap: open-source, developer-first, buyer-side governance that plugs into the stack agents already use (MCP)."
+Closing line: "The gap: neutral, developer-first, buyer-side governance that plugs into the stack agents already use (MCP)."
 
 ---
 
@@ -70,7 +70,7 @@ Closing line: "The gap: open-source, developer-first, buyer-side governance that
 TAM: $3–5T global agentic-commerce spend by 2030 (McKinsey); stablecoins already moved $4.5T in Q1 2026 alone.
 Analog: business spend-management software (built for human spenders) is $26B today, projected $56B by 2032 — agents are the next, faster-growing cohort of spenders, currently unserved.
 SAM: 590,000 x402 buyers + the fast-growing MCP ecosystem.
-SOM (first 18–24 months): a few hundred paying teams via a hosted tier ≈ $1–3M ARR — the open-source-led wedge.
+SOM (first 18–24 months): a few hundred paying teams via a hosted tier ≈ $1–3M ARR — the self-hosted-led wedge.
 
 ---
 
@@ -99,15 +99,15 @@ Left column, "Not true yet":
 - No hosted multi-tenant platform yet (self-host only today).
 - Solo-founder stage, no customers, no revenue yet.
 Right column, "The plan (next 30–60 days and beyond)":
-- Open-source repo is live at github.com/revanthrajeev/spendveto — next: list in MCP tool registries and framework directories, sign up 3–5 design partners running real agent fleets, launch publicly (Show HN / dev communities).
+- Live at spendveto.com and on npm (npx spendveto) — next: list in MCP tool registries and framework directories, sign up 3–5 design partners running real agent fleets, launch publicly (Show HN / dev communities).
 - Funded milestones: hosted multi-tenant platform (orgs, SSO, RBAC), Postgres-backed storage at scale, mainnet settlement post-audit, SOC 2 readiness.
 Caption: "Every gap above is a funded next milestone, not a hidden flaw."
 
 ---
 
 **Slide 10 — Ask / close**
-Headline: "Open source is the distribution. The hosted platform is the business."
-State the ask generically (adjust the number before presenting — this deck is not accelerator-specific): seeking pre-seed capital to fund a security audit, the hosted platform build, and initial design-partner rollout. Repo: github.com/revanthrajeev/spendveto — open source, Apache-2.0, browse the code and the 298-assertion verify suite directly.
+Headline: "Free self-hosting is the distribution. The hosted platform is the business."
+State the ask generically (adjust the number before presenting — this deck is not accelerator-specific): seeking pre-seed capital to fund a security audit, the hosted platform build, and initial design-partner rollout. Code and the verification suite are available to investors on request (invest@spendveto.com).
 Tone note for this whole deck: confident but evidence-first — every claim should read as backed by something specific (a test count, a dollar figure with a source, a competitor's actual funding round), never a generic superlative like "revolutionary" or "game-changing." This is a technical infrastructure product; the deck should read like it was built by an engineer, not a marketer.
 
 === COPY TO HERE ===

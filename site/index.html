@@ -4,8 +4,8 @@
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <meta name="color-scheme" content="dark" />
-<title>SpendVeto — Spend Limits &amp; a Kill Switch for AI Agents (Open Source)</title>
-<meta name="description" content="Budgets, loop detection and a kill switch for AI agents — Claude Code, Codex, OpenAI/Anthropic SDKs, x402, cards and payouts. Open source; 492 tested claims." />
+<title>SpendVeto — Spend Limits &amp; a Kill Switch for AI Agents</title>
+<meta name="description" content="Budgets, loop detection and a kill switch for AI agents — Claude Code, Codex, OpenAI/Anthropic SDKs, x402, cards and payouts. Self-hosted; 492 tested claims." />
 <meta name="keywords" content="AI agent spending limit, AI agent budget, Claude Code cost limit, Codex budget, LLM budget proxy, AI agent kill switch, runaway agent loop, agent payments governance, x402, agentic commerce, AI FinOps, spend attestation, MCP" />
 <link rel="canonical" href="https://spendveto.com/" />
 <meta name="robots" content="index, follow, max-image-preview:large, max-snippet:-1" />
@@ -13,14 +13,14 @@
 <meta property="og:site_name" content="SpendVeto" />
 <meta property="og:locale" content="en_US" />
 <meta property="og:url" content="https://spendveto.com/" />
-<meta property="og:title" content="SpendVeto — Spend Limits & a Kill Switch for AI Agents (Open Source)" />
-<meta property="og:description" content="Budgets, loop detection and a kill switch for AI agents — Claude Code, Codex, OpenAI/Anthropic SDKs, x402, cards and payouts. Open source; 492 tested claims." />
+<meta property="og:title" content="SpendVeto — Spend Limits & a Kill Switch for AI Agents" />
+<meta property="og:description" content="Budgets, loop detection and a kill switch for AI agents — Claude Code, Codex, OpenAI/Anthropic SDKs, x402, cards and payouts. Self-hosted; 492 tested claims." />
 <meta property="og:image" content="https://spendveto.com/assets/generated/og-default.png" />
 <meta property="og:image:width" content="1200" />
 <meta property="og:image:height" content="630" />
 <meta name="twitter:card" content="summary_large_image" />
-<meta name="twitter:title" content="SpendVeto — Spend Limits & a Kill Switch for AI Agents (Open Source)" />
-<meta name="twitter:description" content="Budgets, loop detection and a kill switch for AI agents — Claude Code, Codex, OpenAI/Anthropic SDKs, x402, cards and payouts. Open source; 492 tested claims." />
+<meta name="twitter:title" content="SpendVeto — Spend Limits & a Kill Switch for AI Agents" />
+<meta name="twitter:description" content="Budgets, loop detection and a kill switch for AI agents — Claude Code, Codex, OpenAI/Anthropic SDKs, x402, cards and payouts. Self-hosted; 492 tested claims." />
 <meta name="twitter:image" content="https://spendveto.com/assets/generated/og-default.png" />
 <link rel="icon" href="./assets/favicon.svg" />
 <style>
@@ -570,7 +570,7 @@
       "url": "https://spendveto.com",
       "logo": "https://spendveto.com/assets/generated/og-default.png",
       "sameAs": [
-        "https://github.com/revanthrajeev/spendveto"
+        "https://www.npmjs.com/package/spendveto"
       ],
       "founder": [
         { "@type": "Person", "name": "Revanth Rajeev" },
@@ -597,11 +597,9 @@
       "softwareVersion": "0.32.0",
       "operatingSystem": "Cross-platform (Node.js)",
       "url": "https://spendveto.com",
-      "downloadUrl": "https://github.com/revanthrajeev/spendveto",
-      "codeRepository": "https://github.com/revanthrajeev/spendveto",
-      "license": "https://www.apache.org/licenses/LICENSE-2.0",
+      "downloadUrl": "https://www.npmjs.com/package/spendveto",
       "programmingLanguage": "JavaScript",
-      "description": "Buyer-side spend governance for AI agents. Payment rails move an agent's money; SpendVeto decides whether it should be allowed to move it — per-call caps, hourly budgets, rate limits, payee allowlists, human approvals that fail closed, nested budget delegation, runaway auto-freeze, a hash-chained tamper-evident ledger, request-integrity binding, ACP/AP2 mandate-scope checks, dispute evidence packs, and OpenTelemetry decision spans. Open source under Apache-2.0, x402 and MCP native.",
+      "description": "Buyer-side spend governance for AI agents. Payment rails move an agent's money; SpendVeto decides whether it should be allowed to move it — per-call caps, hourly budgets, rate limits, payee allowlists, human approvals that fail closed, nested budget delegation, runaway auto-freeze, a hash-chained tamper-evident ledger, request-integrity binding, ACP/AP2 mandate-scope checks, dispute evidence packs, and OpenTelemetry decision spans. Self-hosted, x402 and MCP native.",
       "featureList": [
         "Per-call caps, hourly budgets and call-rate limits enforced before payment",
         "Human-in-the-loop approvals that fail closed on timeout",
@@ -625,7 +623,7 @@
         "AI FinOps: tag allocation, tag budgets, FOCUS v1.4 export, Stripe Billing rebilling",
         "Governed-spend attestations a seller verifies offline",
         "Federated counterparty reputation feeds shared as signed hashes",
-        "Open policy standard (JSON Schema) with a CLI, API and GitHub Action validator"
+        "Open policy standard (JSON Schema) with a CLI and API validator"
       ],
       "offers": [
         {
@@ -633,7 +631,7 @@
           "name": "Self-host",
           "price": "0",
           "priceCurrency": "USD",
-          "description": "Free forever, Apache-2.0"
+          "description": "Free to self-host"
         },
         {
           "@type": "Offer",
@@ -664,7 +662,7 @@
           "name": "Is this a real product or a demo?",
           "acceptedAnswer": {
             "@type": "Answer",
-            "text": "Real and open source (Apache-2.0). It runs on your machine today: real ECDSA signatures, real x402 settlement on six testnets, and a 492-assertion end-to-end suite (npm run verify) that exercises every claim on this page. The hosted platform — managed custody, orgs, SSO — is a waitlist today, not yet a live product."
+            "text": "Real. It runs on your machine today: real ECDSA signatures, real x402 settlement on six testnets, and a 492-assertion end-to-end suite (npm run verify) that exercises every claim on this page. The hosted platform — managed custody, orgs, SSO — is a waitlist today, not yet a live product."
           }
         },
         {
@@ -884,7 +882,7 @@
         <div class="problem-points">
           <p class="point reveal"><span><b>Every rail answers "how does the agent pay?"</b> Coinbase, Stripe, Visa, Mastercard, Google, Cloudflare — all shipping agent payments in 2026.</span></p>
           <p class="point reveal"><span><b>Almost nobody answers the question teams ask first:</b> how do I stop it from overspending? Runaway loops don't get tired. They get invoiced.</span></p>
-          <p class="point reveal"><span><b>SpendVeto is the buyer side.</b> The policy layer that sits above every rail — open source, developer-first, plugged into the stack agents already use.</span></p>
+          <p class="point reveal"><span><b>SpendVeto is the buyer side.</b> The policy layer that sits above every rail — self-hosted, developer-first, plugged into the stack agents already use.</span></p>
         </div>
       </div>
       <div class="terminal mono reveal hud">
@@ -1073,7 +1071,7 @@
           <tr><td>Seller-verifiable proof the buyer's policy allowed the spend</td><td class="hl yes">✓ attestations</td><td class="no">user mandates (AP2) · agent identity (Visa TAP)</td><td class="no">—</td><td class="no">—</td></tr>
           <tr><td>Fraud reports shared across companies</td><td class="hl yes">✓ signed hash feeds</td><td class="no">—</td><td class="no">—</td><td class="no">—</td></tr>
           <tr><td>Open policy standard</td><td class="hl yes">✓ JSON Schema</td><td class="no">—</td><td class="no">—</td><td class="no">—</td></tr>
-          <tr><td>Open source</td><td class="hl yes">✓ Apache-2.0</td><td class="no">protocols</td><td class="no">—</td><td class="no">—</td></tr>
+          <tr><td>Self-hosted: your keys never leave your machine</td><td class="hl yes">✓</td><td class="no">—</td><td class="no">—</td><td class="no">—</td></tr>
           <tr><td>On-chain-enforced settlement (Safe AllowanceModule)</td><td class="hl" style="color:var(--copper)">roadmap</td><td class="no">—</td><td class="no">—</td><td class="no">—</td></tr>
         </tbody>
       </table>
@@ -1163,7 +1161,7 @@
     <div class="reveal" style="display:grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 1rem; margin-top: 1.6rem;">
       <div style="border:1px solid var(--line); border-radius:14px; padding:1.3rem 1.4rem; background:rgba(12,17,14,0.6);"><b style="color:#eef3ed">Spend attestations</b><p style="color:var(--dim); line-height:1.65; font-size:0.92rem; margin-top:0.5rem;">When your policy says yes, the payment carries a signed, five-minute proof of it. Sellers verify it offline with one middleware and can refuse agents nobody governs: 3-D Secure, for agents.</p></div>
       <div style="border:1px solid var(--line); border-radius:14px; padding:1.3rem 1.4rem; background:rgba(12,17,14,0.6);"><b style="color:#eef3ed">Shared reputation</b><p style="color:var(--dim); line-height:1.65; font-size:0.92rem; margin-top:0.5rem;">Flag a scam payee once and every company that trusts you refuses it, on every rail: crypto addresses, UPI VPAs, IBANs, card merchants. Feeds carry hashes, never data.</p></div>
-      <div style="border:1px solid var(--line); border-radius:14px; padding:1.3rem 1.4rem; background:rgba(12,17,14,0.6);"><b style="color:#eef3ed">An open policy standard</b><p style="color:var(--dim); line-height:1.65; font-size:0.92rem; margin-top:0.5rem;">Agent budgets as a published JSON Schema. Lint them in CI with one GitHub Action, so a typo can't silently remove a limit.</p></div>
+      <div style="border:1px solid var(--line); border-radius:14px; padding:1.3rem 1.4rem; background:rgba(12,17,14,0.6);"><b style="color:#eef3ed">An open policy standard</b><p style="color:var(--dim); line-height:1.65; font-size:0.92rem; margin-top:0.5rem;">Agent budgets as a published JSON Schema. Lint them in CI with one command, so a typo can't silently remove a limit.</p></div>
     </div>
     <div class="cta-row reveal" style="margin-top:1.6rem;">
       <a class="btn btn-ghost" href="./network.html">How the network works →</a>
@@ -1194,13 +1192,12 @@
       <a class="btn btn-ghost reveal" href="./docs.html#sdk" style="margin-top: 0.6rem;">SDK &amp; LangChain docs →</a>
     </div>
     <div class="codebox mono reveal hud">
-      <div><span class="p">$</span> git clone https://github.com/revanthrajeev/spendveto.git &amp;&amp; cd spendveto &amp;&amp; npm install</div>
-      <div><span class="p">$</span> npm run server &nbsp;<span class="c"># dashboard on :8402</span></div>
-      <div><span class="p">$</span> npm run call -- summarize &nbsp;<span class="c"># go approve it</span></div>
-      <div><span class="p">$</span> npm run delegate -- 0.03 "intern" --tools translate --chains base-sepolia</div>
-      <div><span class="p">$</span> claude mcp add spendveto -- node mcp/server.js</div>
-      <div><span class="p">$</span> node bin/spendveto.mjs validate data/policy.json &nbsp;<span class="c"># lint budgets, CI-ready</span></div>
-      <div><span class="p">$</span> npm run verify &nbsp;<span class="c"># 492 assertions, end to end</span></div>
+      <div><span class="p">$</span> npx spendveto &nbsp;<span class="c"># console + spend guard on :8402</span></div>
+      <div><span class="p">$</span> ANTHROPIC_BASE_URL=http://127.0.0.1:8402 claude</div>
+      <div><span class="p">$</span> npx spendveto budget 10 &nbsp;<span class="c"># $10/day per agent</span></div>
+      <div><span class="p">$</span> npx spendveto guard razorpay &nbsp;<span class="c"># guard a payment MCP server</span></div>
+      <div><span class="p">$</span> claude mcp add spendveto -- npx spendveto mcp</div>
+      <div><span class="p">$</span> npx spendveto validate policy.json &nbsp;<span class="c"># lint budgets before they ship</span></div>
     </div>
   </div>
 </section>
@@ -1210,7 +1207,7 @@
     <p class="counter reveal"><b>FAQ</b> Straight answers</p>
     <h2 class="reveal">Asked before you had to ask.</h2>
     <div class="faq" style="margin-top: 1.5rem;">
-      <details class="reveal"><summary>Is this a real product or a demo?</summary><p>Real and open source (Apache-2.0). It runs on your machine today: real ECDSA signatures, real x402 settlement on six testnets, and a <b>492-assertion end-to-end suite</b> (<span class="mono">npm run verify</span>) that exercises every claim on this page. The hosted platform — managed custody, orgs, SSO — is a waitlist today, not yet a live product.</p></details>
+      <details class="reveal"><summary>Is this a real product or a demo?</summary><p>Real. It runs on your machine today: real ECDSA signatures, real x402 settlement on six testnets, and a <b>492-assertion end-to-end suite</b> (<span class="mono">npm run verify</span>) that exercises every claim on this page. The hosted platform — managed custody, orgs, SSO — is a waitlist today, not yet a live product.</p></details>
       <details class="reveal"><summary>Does SpendVeto hold my keys?</summary><p>Your choice of two trust models, both self-hosted. <b>Library mode:</b> agents hold their own wallets and the governance pipeline runs inside their own call path. <b>Enforcement proxy:</b> agents are keyless — they POST spending intents, and the proxy’s custody wallet signs only after freeze, policy, caps, scopes, and approvals all pass. Keys never leave your machine either way.</p></details>
       <details class="reveal"><summary>Which chains work today?</summary><p>Twenty registered chains across eight signature families run the full governed pipeline end to end — chain-scoped signatures, per-chain balances, chain allowlists. <b>On-chain settlement is live on six testnets</b> (Base Sepolia, Solana devnet, Aptos, Stellar, Hedera and XRPL testnet) through x402’s public facilitator; the rest settle locally until a facilitator supports them. XRPL mainnet is wired but off unless an operator opts in.</p></details>
       <details class="reveal"><summary>What happens when an agent goes rogue?</summary><p>The burst detector freezes it <b>mid-loop</b> — by default, ten payment attempts inside ten seconds trips the freeze automatically. Every wallet also has a one-click manual kill switch. A frozen wallet is refused even when it presents a correctly signed payment (403, not a fresh challenge), and its trust score collapses to an F.</p></details>
@@ -1228,7 +1225,7 @@
 
 <section class="final">
   <div class="shell">
-    <p class="counter reveal" style="justify-content:center; display:flex;"><b>Apache-2.0</b> Open source</p>
+    <p class="counter reveal" style="justify-content:center; display:flex;"><b>Self-hosted</b> your machine, your keys</p>
     <h2 class="reveal">Give your agents a budget, <span style="color:var(--green)">not a blank check.</span></h2>
     <div class="cta-row reveal">
       <a class="btn btn-primary" href="./signup.html">Join the waitlist</a>
@@ -1242,11 +1239,11 @@
 
 <footer>
   <span class="wordmark">SPENDVETO<span class="tick">_</span></span>
-  <span>Prototype in public — simulate mode by default, x402 testnet on Base Sepolia. Every claim on this page is covered by <span class="mono">npm run verify</span>.</span>
+  <span>Prototype — simulate mode by default, x402 testnet on Base Sepolia. Every claim on this page is covered by SpendVeto&#x27;s automated test suite.</span>
   <a href="https://www.producthunt.com/products/spendveto?embed=true&utm_source=badge-featured&utm_medium=badge&utm_campaign=badge-spendveto" target="_blank" rel="noopener noreferrer" style="display:inline-block; margin: 0.6rem 0;">
     <img alt="SpendVeto - Spend governance for AI agents that pay for things | Product Hunt" width="200" height="43" src="./assets/producthunt-featured.svg" style="display:block" />
   </a>
-  <div class="links"><a href="https://github.com/revanthrajeev/spendveto" target="_blank" rel="noopener">GitHub</a>
+  <div class="links">
     <a href="./guides.html">Guides</a>
     <a href="./network.html">Network</a>
     <a href="./ai-spend.html">AI spend</a>

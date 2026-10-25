@@ -220,7 +220,7 @@ try {
       const missing = families.filter((f) => !f.installed);
       if (missing.length) {
         const all = [...new Set(missing.flatMap((f) => f.install.replace(/^npm install /, "").split(" ")))];
-        console.log(`\n  Add them in the project you run spendveto from:\n    npm install spendveto ${all.join(" ")}\n  or clone the repo, where npm install brings every rail:\n    git clone https://github.com/revanthrajeev/spendveto && cd spendveto && npm install\n`);
+        console.log(`\n  Add them in the project you run spendveto from:\n    npm install spendveto ${all.join(" ")}\n`);
       } else console.log("\n  Every rail family is installed.\n");
       break;
     }

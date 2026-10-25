@@ -8,7 +8,7 @@
 
 1. `Show HN: SpendVeto – spend policies, approvals and a kill switch for AI agents that pay`
 2. `Show HN: I gave my AI agent a wallet, then built the thing that says no`
-3. `Show HN: Open-source spend governance for x402/MCP agents (budgets, approvals, kill switch)`
+3. `Show HN: Self-hosted spend governance for x402/MCP agents (budgets, approvals, kill switch)`
 
 ## Body
 
@@ -80,7 +80,7 @@ The bet: seller-side agent payments are commoditizing fast (Cloudflare, Stripe, 
 a dozen startups all help tools charge). Almost nobody is building for the side that
 *holds the wallet*. Every newly paid tool makes that gap more expensive.
 
-Code: https://github.com/revanthrajeev/spendveto (Apache-2.0)
+Install: npx spendveto · https://spendveto.com
 Site + a playground that runs the real policy logic client-side: https://spendveto.com
 
 I'd love to hear how people running agent fleets actually think about spend control —

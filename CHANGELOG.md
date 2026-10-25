@@ -2,6 +2,10 @@
 
 Every feature listed here is exercised by the end-to-end suite (`npm run verify`) — the suite grew from 33 assertions at the first public cut to **114** at v0.7.0. If a claim isn't an assertion, it doesn't ship.
 
+## Licensing — 2026-10-25
+
+SpendVeto is now proprietary software of Evolune EdgeTech LLP (`LICENSE`, `NOTICE`), and the source repository is private. Versions released before this change (npm `spendveto` ≤ 0.31.0, `spendveto-sdk` 0.1.0) were licensed under Apache-2.0 and stay under it for whoever received them; every later version is covered by the SpendVeto Proprietary License. `package.json` is marked `"private": true`. The site, README, OpenAPI document and llms.txt no longer link to the repository, and the network specification moved to https://spendveto.com/spec/NETWORK.md.
+
 ## 0.32.0 — 2026-10-23
 
 `spendveto guard`: SpendVeto in front of a payment provider's MCP server. Razorpay, Stripe, PayPal, Cashfree and Square publish MCP servers, so an agent with a merchant key can refund, transfer and charge with a tool call. Now the agent's MCP client launches the guard instead, and the provider only sees what SpendVeto allowed.

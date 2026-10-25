@@ -1,6 +1,6 @@
 # spendveto-sdk
 
-Thin, dependency-free client for the [SpendVeto](https://github.com/revanthrajeev/spendveto)
+Thin, dependency-free client for the [SpendVeto](https://spendveto.com)
 spend-governance proxy. Agents never hold a wallet — they call these methods,
 and the proxy runs the full governance pipeline (freeze → policy → delegation
 caps → human approval) before signing anything.
@@ -41,6 +41,6 @@ Every refusal is a typed `SpendVetoDenialError` carrying a machine-readable
 retry-looping.
 
 Requires a running SpendVeto proxy (`npm run proxy`) and server (`npm run
-server`) — see the [main repo](https://github.com/revanthrajeev/spendveto).
+server`) — see the [main repo](https://spendveto.com).
 
-Apache-2.0.
+Proprietary. Copyright © 2026 Evolune EdgeTech LLP.

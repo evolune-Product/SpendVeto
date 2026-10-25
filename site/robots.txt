@@ -1,5 +1,5 @@
 # SpendVeto — spend governance for AI agents
-# Open source: https://github.com/revanthrajeev/spendveto
+# https://spendveto.com
 
 User-agent: *
 Allow: /
@@ -7,7 +7,7 @@ Disallow: /signin.html
 
 # AI crawlers and answer engines are explicitly welcome. This is a developer
 # tool for the agent economy — being readable by agents is the point, not a
-# leak. Nothing here is private; the entire source is public under Apache-2.0.
+# leak. Everything on this site is public by design.
 User-agent: GPTBot
 Allow: /
 

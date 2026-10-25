@@ -54,7 +54,7 @@
       "author": { "@type": "Organization", "@id": "https://spendveto.com/#org", "name": "SpendVeto" },
       "publisher": { "@type": "Organization", "@id": "https://spendveto.com/#org", "name": "SpendVeto" },
       "about": ["AI agent payments", "spend governance", "agentic commerce", "payment fraud prevention"],
-      "isBasedOn": "https://github.com/revanthrajeev/spendveto/blob/main/docs/NETWORK.md"
+      "isBasedOn": "https://spendveto.com/spec/NETWORK.md"
     },
     {
       "@type": "BreadcrumbList",
@@ -148,16 +148,15 @@ app.get("/api/report",
 <pre class="term">spendveto validate policy.json --strict
 #   error    /maxPerHourUsd  unknown key "maxPerHourUsd" — … did you mean "maxPerHourUSD"?
 
-# .github/workflows/policy.yml — no install, nothing sent anywhere
-- uses: revanthrajeev/spendveto@main
-  with: { policy: config/agent-policy.json, strict: true }</pre>
+# .github/workflows/policy.yml — nothing sent anywhere
+- run: npx spendveto validate config/agent-policy.json --strict</pre>
 <p>The validator catches unknown keys, wrong types, unregistered chain ids, and limits that contradict each other, such as an approval threshold above the per-call cap. It implements exactly the JSON Schema keywords the schema uses and refuses a schema that uses any others, so no rule can go silently unenforced.</p>
 
 <h2>Why a platform can't copy a network</h2>
 <ul>
 <li><b>It gets better with other people's adoption.</b> A seller can only require governed agents once buyers can prove governance, and every buyer that can makes requiring it cheaper for the next seller. Every publisher makes every subscriber's blocklist better. A rival that starts later starts with an empty network.</li>
 <li><b>It has to be neutral.</b> An agent's budget spans rails that compete with each other. A card network, a processor or a model provider can govern its own traffic. It can't be the referee of everyone else's.</li>
-<li><b>The formats are open.</b> Anyone can verify an attestation with any Ethereum library, implement a feed, or validate a policy. The specification is <a class="inline" href="https://github.com/revanthrajeev/spendveto/blob/main/docs/NETWORK.md">public</a> and the reference implementation is Apache-2.0. Standards spread because nobody has to ask permission.</li>
+<li><b>The formats are open.</b> Anyone can verify an attestation with any Ethereum library, implement a feed, or validate a policy. The <a class="inline" href="./spec/NETWORK.md">specification</a> is published in full and free to implement. Standards spread because nobody has to ask permission.</li>
 <li><b>Your data stays yours.</b> There is no central database to trust: issuers sign, verifiers verify, subscribers choose whom to trust.</li>
 </ul>
 <p>Every behavior on this page is exercised by <code>npm run verify</code> (492 end-to-end assertions): offline verification, forged and replayed tokens, payer binding, feeds refused until trusted, edits and rollbacks rejected, the same report enforced on payouts and card swipes, and the GitHub Action failing a typo.</p>
@@ -170,13 +169,13 @@ app.get("/api/report",
 <details><summary>Why can't a payment platform just build this?</summary><p>A platform can build spend limits for its own rail. An agent's spending crosses model providers, stablecoins, cards and bank payouts, and a seller needs proof that holds whichever rail the money used. The attestation, reputation-feed and policy formats are open and get more useful with every company that runs them, which a single rail owner can't replicate by itself.</p></details>
 </div>
 
-<div class="row-btns"><a class="pill pill-primary" href="https://github.com/revanthrajeev/spendveto" target="_blank" rel="noopener">Get it on GitHub →</a><a class="pill pill-ghost" href="https://github.com/revanthrajeev/spendveto/blob/main/docs/NETWORK.md" target="_blank" rel="noopener">Read the specification</a><a class="pill pill-ghost" href="./console/">Open the console demo</a></div>
+<div class="row-btns"><a class="pill pill-primary" href="./docs.html">Get started →</a><a class="pill pill-ghost" href="./spec/NETWORK.md">Read the specification</a><a class="pill pill-ghost" href="./console/">Open the console demo</a></div>
 </div>
 
 <footer>
   <span class="wordmark">SPENDVETO<span class="tick">_</span></span>
-  <span>Open source, Apache-2.0. Every claim on this page is covered by <span class="mono">npm run verify</span>.</span>
-  <div class="links"><a href="https://github.com/revanthrajeev/spendveto" target="_blank" rel="noopener">GitHub</a>
+  <span>Every claim on this page is covered by SpendVeto&#x27;s automated test suite.</span>
+  <div class="links">
     <a href="./ai-spend.html">AI spend</a>
     <a href="./network.html">Network</a>
     <a href="./guides.html">Guides</a>

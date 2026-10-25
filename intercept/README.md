@@ -16,10 +16,9 @@ Charles, Fiddler, or HTTP Toolkit's own `mockttp` (what this is built on) work.
 To intercept HTTPS, this gateway generates a local root CA and dynamically signs a leaf
 certificate for every domain it sees, the same technique every TLS-debugging proxy uses. Anything
 that trusts this CA will trust certificates this process generates on the fly. That is real
-cryptographic trust infrastructure, not a toy, and the honest framing is: **a closed SaaS cannot
-credibly ask for this level of trust, and an open-source, self-hosted, fully-readable tool can** —
-but only if it actually earns that by being narrow, scoped, and auditable rather than a black box
-that happens to be open-source. This file and `gateway.mjs` are short on purpose, so reading all of
+cryptographic trust infrastructure, not a toy, and the honest framing is: **a hosted SaaS cannot
+credibly ask for this level of trust, and a self-hosted tool that runs entirely on the operator's machine can** —
+but only if it actually earns that by being narrow, scoped, and auditable rather than a black box. This file and `gateway.mjs` are short on purpose, so reading all of
 it is a reasonable bar to clear before trusting it with real traffic.
 
 ## Scope, by default

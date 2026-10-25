@@ -5,14 +5,14 @@
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <meta name="color-scheme" content="dark" />
 <title>Cap Your AI Agent's Spend in One Line — Claude Code, Codex, OpenAI &amp; Anthropic SDKs | SpendVeto</title>
-<meta name="description" content="A budget, loop detection and a kill switch in front of every model call your agents make. Point Claude Code, Codex or any OpenAI/Anthropic SDK at SpendVeto with one environment variable — your key passes through, never stored. Free and open source." />
+<meta name="description" content="A budget, loop detection and a kill switch in front of every model call your agents make. Point Claude Code, Codex or any OpenAI/Anthropic SDK at SpendVeto with one environment variable — your key passes through, never stored. Free to self-host." />
 <link rel="canonical" href="https://spendveto.com/ai-spend.html" />
 <meta name="robots" content="index, follow, max-image-preview:large, max-snippet:-1" />
 <meta property="og:type" content="website" />
 <meta property="og:site_name" content="SpendVeto" />
 <meta property="og:url" content="https://spendveto.com/ai-spend.html" />
 <meta property="og:title" content="Cap your AI agent's spend in one line | SpendVeto" />
-<meta property="og:description" content="A budget, loop detection and a kill switch in front of every model call — Claude Code, Codex, OpenAI and Anthropic SDKs. Free and open source." />
+<meta property="og:description" content="A budget, loop detection and a kill switch in front of every model call — Claude Code, Codex, OpenAI and Anthropic SDKs. Free to self-host." />
 <meta property="og:image" content="https://spendveto.com/assets/generated/og-default.png" />
 <meta name="twitter:card" content="summary_large_image" />
 <link rel="icon" href="./assets/favicon.svg" />
@@ -74,7 +74,6 @@
 <pre class="term">npx spendveto
 #   Console   http://127.0.0.1:8402
 #   Budget    $25.00/day · $10.00/hour · $5.00/request per agent</pre>
-<p class="src">Or from a clone: <code>git clone https://github.com/revanthrajeev/spendveto &amp;&amp; cd spendveto &amp;&amp; npm install &amp;&amp; npm start</code>. The first run installs dependencies (about two minutes); after that it starts in seconds. Node 22 or newer recommended (Node 20.18 runs it, with npm engine warnings). State lives in <code>~/.spendveto</code>.</p>
 
 <h2>2 · Point your agent at it</h2>
 <pre class="term">ANTHROPIC_BASE_URL=http://127.0.0.1:8402 claude          # Claude Code
@@ -111,13 +110,13 @@ ANTHROPIC_BASE_URL=http://127.0.0.1:8402                 # Anthropic SDKs</pre>
 
 <h2>Prefer an SDK?</h2>
 <p>The <code>spendveto-sdk</code> client (and its Python twin in <code>sdk-python/</code>) governs calls through SpendVeto's enforcement proxy instead — <code>npm run quickstart:ai</code> shows an agent spending a $0.0015 budget down to a refusal.</p>
-<div class="row-btns"><a class="pill pill-primary" href="https://github.com/revanthrajeev/spendveto" target="_blank" rel="noopener">Get it on GitHub →</a><a class="pill pill-ghost" href="./console/">Open the console demo</a></div>
+<div class="row-btns"><a class="pill pill-primary" href="./docs.html">Get started →</a><a class="pill pill-ghost" href="./console/">Open the console demo</a></div>
 </div>
 
 <footer>
   <span class="wordmark">SPENDVETO<span class="tick">_</span></span>
-  <span>Prototype in public — simulate mode by default, x402 testnet on Base Sepolia. Every claim on this page is covered by <span class="mono">npm run verify</span>.</span>
-  <div class="links"><a href="https://github.com/revanthrajeev/spendveto" target="_blank" rel="noopener">GitHub</a>
+  <span>Prototype — simulate mode by default, x402 testnet on Base Sepolia. Every claim on this page is covered by SpendVeto&#x27;s automated test suite.</span>
+  <div class="links">
     <a href="./use-cases.html">Use cases</a>
     <a href="./guides.html">Guides</a>
     <a href="./network.html">Network</a>

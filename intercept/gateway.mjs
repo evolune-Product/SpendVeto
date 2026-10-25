@@ -7,7 +7,7 @@
 // SAME function the SDK and the enforcement proxy call, not a reimplementation of it) before the
 // payment ever reaches the real server. A denied call never leaves this machine.
 //
-// This is the "govern what you didn't build" move described in launch material: an open-source,
+// This is the "govern what you didn't build" move described in launch material: a self-hosted,
 // self-hosted, auditable tool can credibly ask an operator to trust a local MITM proxy with their
 // own traffic in a way a closed SaaS cannot — the operator can read every line of what's
 // intercepting their agent's calls, because it's this file.

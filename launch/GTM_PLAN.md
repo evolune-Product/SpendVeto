@@ -10,7 +10,7 @@
 
 ## Positioning
 
-**One line:** *A budget, a loop detector and a kill switch in front of every dollar your AI agents spend — model tokens first, then payments and cards. Free, open source, one environment variable.*
+**One line:** *A budget, a loop detector and a kill switch in front of every dollar your AI agents spend — model tokens first, then payments and cards. Free to self-host, one environment variable.*
 
 **Why us, not an LLM gateway (LiteLLM, Portkey) or an observability tool (Helicone, Langfuse):** gateways budget model spend per key or team; observability tools watch. SpendVeto is the agent's **one** budget across tokens, x402 payments and card swipes, with a loop detector that freezes the agent, delegated budgets that cascade across all three, human approval, and an audit-grade hash-chained ledger. Say this plainly; don't claim gateways have no budgets — they do — and don't claim what they lack unless you've checked.
 
@@ -63,7 +63,7 @@ Network metrics, added with v0.29.0 (all zero today): issuers with a persistent 
 
 | Metric | Where it comes from |
 |---|---|
-| GitHub stars, forks | `github.com/revanthrajeev/spendveto` |
+| npm weekly downloads | `npmjs.com/package/spendveto` |
 | Weekly installs | npm downloads for `spendveto` (after publishing) |
 | Design partners in observe mode | your CRM / a shared sheet |
 | Governed and blocked spend at partners | partners' own `spendveto status` / Console, shared with permission |
@@ -82,7 +82,7 @@ Never present the simulate-mode demo data in the Console as usage.
 >
 > SpendVeto sits between your agent and the model provider. Start it with `npx spendveto`, then run `ANTHROPIC_BASE_URL=http://127.0.0.1:8402 claude` (or set `OPENAI_BASE_URL` for Codex and the OpenAI SDKs). Every request is checked against a per-agent budget before it reaches the provider; if the same tool call keeps returning the same result, the agent is frozen until you look. The cost is booked from the provider's own usage numbers. Your key passes through and is never stored.
 >
-> It's open source (Apache-2.0), self-hosted, and the same engine also governs x402 payments and card authorizations (Stripe Issuing, Lithic), so one agent can have one budget across all three. 492 end-to-end tests run from a clean clone.
+> It's self-hosted, and the same engine also governs x402 payments and card authorizations (Stripe Issuing, Lithic), so one agent can have one budget across all three. 492 end-to-end tests run from a clean clone.
 >
 > Honest limits: the pre-check uses an estimate, so the last request under a budget can overshoot by one request; there's no hosted version yet. I'd love to hear where it breaks for your setup.
 
@@ -90,11 +90,11 @@ Never present the simulate-mode demo data in the Console as usage.
 1. Someone burned ~$6,000 of Claude usage overnight with one command. Agent loops are the new runaway cloud bill. I built a one-line fix. 🧵
 2. `npx spendveto` → `ANTHROPIC_BASE_URL=http://127.0.0.1:8402 claude`. Every model call is checked against a budget *before* it reaches the provider.
 3. If your agent repeats the same tool call and gets the same result again and again, SpendVeto freezes it until you look. Retries of failed calls don't count.
-4. Works with Claude Code, Codex, Cursor and any OpenAI/Anthropic SDK. Your key is never stored. Free, open source.
-5. Same engine governs agent payments (x402) and agent cards (Stripe Issuing, Lithic): one budget per agent, everywhere it spends. github.com/revanthrajeev/spendveto
+4. Works with Claude Code, Codex, Cursor and any OpenAI/Anthropic SDK. Your key is never stored. Free to self-host.
+5. Same engine governs agent payments (x402) and agent cards (Stripe Issuing, Lithic): one budget per agent, everywhere it spends. spendveto.com
 
 ### Design-partner message
-> Hi {name} — saw {their agent product / their post about agent costs}. I'm building SpendVeto, an open-source budget and kill switch for AI agents (works by changing one base-URL env var). Would you let me set it up in *observe* mode on your agents for two weeks? It blocks nothing; at the end you get a report of every request it would have stopped and why. 30 minutes of your time. — Revanth & Harshil
+> Hi {name} — saw {their agent product / their post about agent costs}. I'm building SpendVeto, a budget and kill switch for AI agents (works by changing one base-URL env var). Would you let me set it up in *observe* mode on your agents for two weeks? It blocks nothing; at the end you get a report of every request it would have stopped and why. 30 minutes of your time. — Revanth & Harshil
 
 ## What not to do
 - Don't build more rails, chains or regions before ten teams use it.

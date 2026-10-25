@@ -1,6 +1,6 @@
 # spendveto (Python)
 
-Dependency-free Python client for the [SpendVeto](https://github.com/revanthrajeev/spendveto) spend-governance proxy. Same surface as the npm `spendveto-sdk`: agents never hold a wallet; the proxy runs freeze -> policy -> delegation caps -> human approval before anything is signed.
+Dependency-free Python client for the [SpendVeto](https://spendveto.com) spend-governance proxy. Same surface as the npm `spendveto-sdk`: agents never hold a wallet; the proxy runs freeze -> policy -> delegation caps -> human approval before anything is signed.
 
 ```bash
 pip install ./sdk-python        # PyPI publish pending

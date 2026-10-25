@@ -2,7 +2,7 @@
 
 **Spend controls for AI agents — model tokens, crypto and fiat payments, and cards.** Model providers and payment rails move an agent's money; SpendVeto decides whether the agent should be allowed to move it — budgets, loop detection, human approval, delegated caps and a kill switch, enforced *before* anything is spent. And because no single rail sees all of an agent's spending, it is also the neutral trust layer between agents and the businesses they pay: signed spend attestations a seller can check, reputation feeds shared across companies, and an open policy standard.
 
-[**Live site + playground**](https://spendveto.com) · [**Docs**](https://spendveto.com/docs.html) · [**npm**](https://www.npmjs.com/package/spendveto) · Apache-2.0 · x402 + MCP native
+[**Live site + playground**](https://spendveto.com) · [**Docs**](https://spendveto.com/docs.html) · [**npm**](https://www.npmjs.com/package/spendveto) · Proprietary · x402 + MCP native
 
 **Every claim in this README is executed before it ships.** `npm run verify` runs **492 end-to-end assertions** from a clean clone — real secp256k1 keypairs, real ECDSA verification, a real MCP stdio JSON-RPC session, and a synthetic runaway agent frozen mid-burst. If a claim isn't a test, it doesn't ship; features that can't work locally yet are declared slots that refuse honestly, never stubs that pretend.
 
@@ -70,7 +70,6 @@ Three pieces that get more useful with every other organization running SpendVet
 - **An open policy standard.** The policy file is a published JSON Schema ([`spec/policy-v1.schema.json`](./spec/policy-v1.schema.json), served at `https://spendveto.com/schemas/policy-v1.json`). `spendveto validate policy.json` — or `POST /api/policy/validate`, or the GitHub Action — catches the typo that would otherwise fail open (`maxPerHourUsd` → *did you mean "maxPerHourUSD"?*), wrong types, unregistered chain ids and limits that contradict each other. The server also warns at boot when its own policy has a problem.
 
 ```yaml
-- uses: revanthrajeev/spendveto@main      # lint agent budgets in CI: no install, nothing sent anywhere
   with: { policy: config/agent-policy.json, strict: true }
 ```
 
@@ -542,7 +541,7 @@ RESEARCH_PROMPT.md        the deep-research prompt behind feature round 2
 ## Roadmap (what funding buys — see PITCH.md)
 
 - Hosted backend (Postgres) replacing JSON-file storage; orgs, SSO, audit exports
-- Hosted network services on top of the open formats: a directory of verified attestation issuers and curated reputation feeds (the protocol and the engine stay Apache-2.0)
+- Hosted network services on top of the open formats: a directory of verified attestation issuers and curated reputation feeds (the published formats stay free to implement)
 - Richer anomaly signals (price-drift, new-merchant, off-hours) + webhook/Slack alerts on freeze
 - Settlement adapters: Google AP2, MPP, Mastercard AP4M — the policy layer shouldn't care which rail settles (AP2, ACP and MPP are already governed)
 - Mainnet settlement via the CDP facilitator (x402 v2 migration: **done**) — needs a funded wallet + CDP API key
@@ -550,4 +549,4 @@ RESEARCH_PROMPT.md        the deep-research prompt behind feature round 2
 
 **Pricing:** self-host is free forever (this repo is the whole product). Hosted launch tiers — Desk $49/mo, Team $199/mo + 0.5% of governed API spend, Money Path at 10–25 bps on governed volume — are on the [pricing page](./site/pricing.html) behind the waitlist.
 
-Apache-2.0 licensed — see `LICENSE`.
+Proprietary — see `LICENSE`. Copyright © 2026 Evolune EdgeTech LLP. Versions released before 25 October 2026 were Apache-2.0.

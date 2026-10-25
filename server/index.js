@@ -2091,7 +2091,7 @@ app.get("/.well-known/spendveto-issuer.json", (req, res) => {
     attestations: { format: `${ATTESTATION_PREFIX}.<base64url claims>.<0x signature>`, header: ATTESTATION_HEADER, messagePrefix: ATTESTATION_MESSAGE_PREFIX, signature: "EIP-191 personal_sign, secp256k1", ttlSeconds: attestationSettings().ttlSeconds, mint: "/api/attestations", verify: "/api/attestations/verify" },
     reputation: { spec: FEED_SPEC, feed: "/api/reputation/feed", messagePrefix: FEED_MESSAGE_PREFIX },
     policySchema: POLICY_SCHEMA_ID,
-    docs: "https://github.com/revanthrajeev/spendveto/blob/main/docs/NETWORK.md",
+    docs: "https://spendveto.com/spec/NETWORK.md",
   });
 });
 

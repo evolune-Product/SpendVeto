@@ -156,7 +156,7 @@
      "name": "Do I need to run SpendVeto to verify attestations?",
      "acceptedAnswer": {
       "@type": "Answer",
-      "text": "No. Verification is a secp256k1 signature check (EIP-191) against the issuer address; the middleware uses only the open-source verifier, and any Ethereum library can do the same."
+      "text": "No. Verification is a secp256k1 signature check (EIP-191) against the issuer address; it is a standard EIP-191 signature recovery, so any Ethereum library can do the same."
      }
     },
     {
@@ -224,19 +224,19 @@ app.get("/api/report",
 <h2>Questions</h2>
 <div class="faq">
 <details><summary>How can a merchant verify an AI agent&#x27;s payment was authorized?</summary><p>Ask for a signed statement from the buyer's side and verify it against a key you trust. With SpendVeto, the buyer's policy engine signs a governed-spend attestation after it allows the payment, and the seller verifies it offline with one middleware.</p></details>
-<details><summary>Do I need to run SpendVeto to verify attestations?</summary><p>No. Verification is a secp256k1 signature check (EIP-191) against the issuer address; the middleware uses only the open-source verifier, and any Ethereum library can do the same.</p></details>
+<details><summary>Do I need to run SpendVeto to verify attestations?</summary><p>No. Verification is a secp256k1 signature check (EIP-191) against the issuer address; it is a standard EIP-191 signature recovery, so any Ethereum library can do the same.</p></details>
 <details><summary>Is this the same as AP2 or Verifiable Intent?</summary><p>No — those sign what a user authorized; a SpendVeto attestation signs what the paying organization's policy decided. They answer different questions and can travel together.</p></details>
 </div>
 <h2>Related guides</h2>
 <div class="related"><a href="./claude-code-spending-limit.html">Claude Code spending limit<span>Daily, hourly, per-request and per-session caps for interactive Claude Code, with one environment variable.</span></a><a href="./openai-api-spending-limit.html">OpenAI API spending limit<span>Per-agent daily, hourly and per-request caps for Codex and the OpenAI SDKs, enforced before each request.</span></a><a href="./stop-runaway-ai-agent-loop.html">Stop runaway agent loops<span>Freeze an agent that repeats the same tool call, plus a kill switch, rate limits and budgets as backstops.</span></a></div>
-<div class="row-btns"><a class="pill pill-primary" href="https://github.com/revanthrajeev/spendveto" target="_blank" rel="noopener">Get SpendVeto on GitHub →</a><a class="pill pill-ghost" href="../console/">Open the console demo</a></div>
-<p class="meta">Updated 2026-10-18 · SpendVeto v0.29.0 · Apache-2.0</p>
+<div class="row-btns"><a class="pill pill-primary" href="../docs.html">Get started →</a><a class="pill pill-ghost" href="../console/">Open the console demo</a></div>
+<p class="meta">Updated 2026-10-18 · SpendVeto v0.29.0</p>
 </article>
 
 <footer>
   <span class="wordmark">SPENDVETO<span class="tick">_</span></span>
-  <span>Open source, Apache-2.0. Every behavior described here is covered by <span class="mono">npm run verify</span>.</span>
-  <div class="links"><a href="https://github.com/revanthrajeev/spendveto" target="_blank" rel="noopener">GitHub</a>
+  <span>Every behavior described here is covered by SpendVeto&#x27;s automated test suite.</span>
+  <div class="links">
     <a href="../guides.html">Guides</a>
     <a href="../ai-spend.html">AI spend</a>
     <a href="../network.html">Network</a>

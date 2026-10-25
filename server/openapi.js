@@ -16,7 +16,7 @@ export function catalogOpenApiSpec({ baseUrl, tools }) {
       get: {
         operationId: tool.id,
         summary: tool.label,
-        description: `${tool.description} Priced at $${tool.price} USDC via x402 — every call is governed (policy caps, approvals, kill switch) before it settles; see https://github.com/revanthrajeev/spendveto.`,
+        description: `${tool.description} Priced at $${tool.price} USDC via x402 — every call is governed (policy caps, approvals, kill switch) before it settles; see https://spendveto.com.`,
         tags: [tool.category],
         responses: {
           "200": { description: "Tool output, after a governed x402 payment settles." },
@@ -31,7 +31,7 @@ export function catalogOpenApiSpec({ baseUrl, tools }) {
       title: "SpendVeto governed tool catalog",
       version: "1.0.0",
       description:
-        "Every call below is metered over x402/USDC and governed by SpendVeto before it settles — policy caps, human approvals above a threshold, and a kill switch, enforced server-side. Apache-2.0, open source: https://github.com/revanthrajeev/spendveto",
+        "Every call below is metered over x402/USDC and governed by SpendVeto before it settles — policy caps, human approvals above a threshold, and a kill switch, enforced server-side. https://spendveto.com",
     },
     servers: [{ url: baseUrl }],
     paths,

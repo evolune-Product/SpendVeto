@@ -133,14 +133,7 @@ The schema is `spec/policy-v1.schema.json` (JSON Schema 2020-12), served with CO
 - Keys starting with `$` or `x-` are reserved for comments and extensions and are never interpreted.
 - The reference validator implements exactly the keywords the schema uses and refuses to load a schema that uses others, so no rule in the schema can go silently unenforced. It adds checks the schema can't express: chain ids must be registered, and limits that contradict each other (an approval threshold above the per-call cap, an hourly budget above the daily one) are warnings.
 
-Validate with `spendveto validate policy.json [--strict]`, `POST /api/policy/validate`, or in CI:
-
-```yaml
-- uses: revanthrajeev/spendveto@main
-  with:
-    policy: config/agent-policy.json
-    strict: true
-```
+Validate with `spendveto validate policy.json [--strict]` or `POST /api/policy/validate`.
 
 ## Versioning
 

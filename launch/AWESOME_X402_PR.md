@@ -11,7 +11,7 @@ section if it doesn't exist; that in itself makes the buyer-side gap visible):
   x402 agents: policy engine (per-call / hourly / delegated budget caps), human-in-the-loop
   approvals that fail closed, runaway-loop auto-freeze + kill switch, and an MCP server
   that gates any paid tool call behind the full pipeline. Simulate mode (zero setup) or
-  Base Sepolia via the public facilitator. Apache-2.0.
+  Base Sepolia via the public facilitator.
 ```
 
 PR description: one paragraph, note that everything listed is covered by a
@@ -35,3 +35,5 @@ Targets (verify current submission process at launch time):
 
 > Payment rails move an agent's money. SpendVeto decides whether the agent should be
 > allowed to move it.
+
+> **On hold (25 Oct 2026):** SpendVeto is now proprietary and its repo private. awesome-x402 lists open-source projects with public repos — check the list's rules before submitting.

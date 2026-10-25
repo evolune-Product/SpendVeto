@@ -68,7 +68,7 @@ fail-closed, every time."
 
 **[3:15 – 3:35] Close**
 
-"All of this is open source, Apache-2.0, and every claim I just made is a
+"All of this runs on your own machine, and every claim I just made is a
 real assertion in `npm run verify` — no fabricated results, no staged
 demos. Agents can spend. SpendVeto decides."
 

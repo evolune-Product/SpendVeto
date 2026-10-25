@@ -108,7 +108,7 @@ const page = (sub, right) => `
   </div>
   <div class="right">${right}</div>
 </div>
-<div class="pill">x402 + MCP &nbsp;·&nbsp; open source &nbsp;·&nbsp; verified in public</div>`;
+<div class="pill">x402 + MCP &nbsp;·&nbsp; self-hosted &nbsp;·&nbsp; verified by tests</div>`;
 
 const CARDS = [
   { file: "og-default.png", sub: "The spend-governance layer for AI agents.", right: GATE_SVG },

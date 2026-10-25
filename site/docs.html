@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <meta name="color-scheme" content="dark" />
 <title>SpendVeto Docs — x402, MCP & API Reference for AI Agent Spend Governance</title>
-<meta name="description" content="Quickstart, CLI commands, full API reference, policy configuration, and MCP setup for SpendVeto — the open-source spend controls for AI agents: model tokens, x402, cards, payouts, and the network layer." />
+<meta name="description" content="Quickstart, CLI commands, full API reference, policy configuration, and MCP setup for SpendVeto — the self-hosted spend controls for AI agents: model tokens, x402, cards, payouts, and the network layer." />
 <meta name="keywords" content="x402 documentation, MCP server AI agent, AI agent spend governance API, x402 API reference, AI agent payment policy" />
 <link rel="canonical" href="https://spendveto.com/docs.html" />
 <meta name="robots" content="index, follow, max-image-preview:large, max-snippet:-1" />
@@ -14,13 +14,13 @@
 <meta property="og:locale" content="en_US" />
 <meta property="og:url" content="https://spendveto.com/docs.html" />
 <meta property="og:title" content="SpendVeto Docs — x402, MCP & API Reference for AI Agent Spend Governance" />
-<meta property="og:description" content="Quickstart, CLI commands, full API reference, policy configuration, and MCP setup for SpendVeto — the open-source spend controls for AI agents: model tokens, x402, cards, payouts, and the network layer." />
+<meta property="og:description" content="Quickstart, CLI commands, full API reference, policy configuration, and MCP setup for SpendVeto — the self-hosted spend controls for AI agents: model tokens, x402, cards, payouts, and the network layer." />
 <meta property="og:image" content="https://spendveto.com/assets/generated/og-default.png" />
 <meta property="og:image:width" content="1200" />
 <meta property="og:image:height" content="630" />
 <meta name="twitter:card" content="summary_large_image" />
 <meta name="twitter:title" content="SpendVeto Docs — x402, MCP & API Reference for AI Agent Spend Governance" />
-<meta name="twitter:description" content="Quickstart, CLI commands, full API reference, policy configuration, and MCP setup for SpendVeto — the open-source spend controls for AI agents: model tokens, x402, cards, payouts, and the network layer." />
+<meta name="twitter:description" content="Quickstart, CLI commands, full API reference, policy configuration, and MCP setup for SpendVeto — the self-hosted spend controls for AI agents: model tokens, x402, cards, payouts, and the network layer." />
 <meta name="twitter:image" content="https://spendveto.com/assets/generated/og-default.png" />
 <script type="application/ld+json">
 {
@@ -94,10 +94,9 @@
     <p class="lede">SpendVeto is a governance gate in front of a catalog of paid (x402/USDC) endpoints, reachable three ways — CLI, delegated child agents, and any MCP client. Everything on this page is exercised by the 492-assertion suite in <code>npm run verify</code>.</p>
 
     <h2 id="quickstart">Quickstart</h2>
-    <pre class="block"><span class="p">$</span> git clone https://github.com/revanthrajeev/spendveto.git &amp;&amp; cd spendveto &amp;&amp; npm install
-<span class="p">$</span> npm run server        <span class="c"># API + dashboard on http://localhost:8402</span>
-<span class="p">$</span> npm run call           <span class="c"># pays for "review" ($0.01), auto-approved</span>
-<span class="p">$</span> npm run call -- summarize  <span class="c"># $0.02 — pauses for approval on the dashboard</span></pre>
+    <pre class="block"><span class="p">$</span> npx spendveto              <span class="c"># API + console on http://127.0.0.1:8402</span>
+<span class="p">$</span> npx spendveto budget 10    <span class="c"># $10/day per agent</span>
+<span class="p">$</span> npx spendveto status       <span class="c"># what every agent spent today</span></pre>
     <p>No keys, no faucets: the default <b>simulate</b> mode uses real secp256k1 keypairs and real ECDSA verification, settling against a local ledger seeded with $5.00 of simulated USDC.</p>
 
     <h2 id="commands">Commands</h2>
@@ -237,11 +236,8 @@ const tools = await createSpendVetoTools({ agentToken: "tg_…" });
     </table></div>
 
     <h2 id="network">The network layer</h2>
-    <p>Three open formats, specified in <a href="https://github.com/revanthrajeev/spendveto/blob/main/docs/NETWORK.md">docs/NETWORK.md</a>: <b>governed-spend attestations</b> (<code>sva1</code> tokens a seller verifies offline), <b>reputation feeds</b> (signed lists of hashed counterparties, imported only from publishers you trust), and the <b>policy schema</b> (<code>https://spendveto.com/schemas/policy-v1.json</code>). Add <code>"$schema": "https://spendveto.com/schemas/policy-v1.json"</code> to a policy file for editor autocomplete, and lint it in CI:</p>
-    <pre class="block">- uses: revanthrajeev/spendveto@main
-  with:
-    policy: config/agent-policy.json
-    strict: true</pre>
+    <p>Three open formats, specified in <a href="./spec/NETWORK.md">the published specification</a>: <b>governed-spend attestations</b> (<code>sva1</code> tokens a seller verifies offline), <b>reputation feeds</b> (signed lists of hashed counterparties, imported only from publishers you trust), and the <b>policy schema</b> (<code>https://spendveto.com/schemas/policy-v1.json</code>). Add <code>"$schema": "https://spendveto.com/schemas/policy-v1.json"</code> to a policy file for editor autocomplete, and lint it in CI:</p>
+    <pre class="block">- run: npx spendveto validate config/agent-policy.json --strict</pre>
     <p>A seller that only sells to governed agents adds one middleware:</p>
     <pre class="block">import { requireGovernedAgent } from "spendveto/integrations/seller-express.js";
 app.get("/api/report", requireGovernedAgent({ trustedIssuers: ["0xBuyerIssuer…"], audience: "0xYourPayTo…", price: 0.25 }), handler);</pre>
@@ -256,8 +252,8 @@ app.get("/api/report", requireGovernedAgent({ trustedIssuers: ["0xBuyerIssuer…
 
 <footer>
   <span class="wordmark">SPENDVETO<span class="tick">_</span></span>
-  <span>Apache-2.0. Prototype in public — every claim covered by <span class="mono">npm run verify</span>.</span>
-  <div class="links"><a href="https://github.com/revanthrajeev/spendveto" target="_blank" rel="noopener">GitHub</a><a href="./use-cases.html">Use cases</a><a href="./playground.html">Playground</a><a href="./index.html">Home</a><a href="./pitch.html">Pitch</a><a href="./about.html">About</a><a href="./security.html">Security</a><a href="./contact.html">Contact</a><a href="./privacy.html">Privacy</a><a href="./terms.html">Terms</a></div>
+  <span>Prototype — every claim covered by SpendVeto&#x27;s automated test suite.</span>
+  <div class="links"><a href="./use-cases.html">Use cases</a><a href="./playground.html">Playground</a><a href="./index.html">Home</a><a href="./pitch.html">Pitch</a><a href="./about.html">About</a><a href="./security.html">Security</a><a href="./contact.html">Contact</a><a href="./privacy.html">Privacy</a><a href="./terms.html">Terms</a></div>
 </footer>
 
 </div>

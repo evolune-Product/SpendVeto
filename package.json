@@ -1,16 +1,13 @@
 {
   "name": "spendveto",
   "version": "0.32.0",
-  "description": "Spend controls for AI agents: a budget, loop detection and a kill switch in front of every model call (Claude Code, Codex, OpenAI/Anthropic SDKs), x402 payment and card authorization — open source, self-hosted.",
-  "license": "Apache-2.0",
+  "private": true,
+  "description": "Spend controls for AI agents: a budget, loop detection and a kill switch in front of every model call (Claude Code, Codex, OpenAI/Anthropic SDKs), x402 payment and card authorization \u2014 self-hosted.",
+  "license": "SEE LICENSE IN LICENSE",
   "author": "Revanth Rajeev",
   "homepage": "https://spendveto.com",
-  "repository": {
-    "type": "git",
-    "url": "git+https://github.com/revanthrajeev/spendveto.git"
-  },
   "bugs": {
-    "url": "https://github.com/revanthrajeev/spendveto/issues"
+    "email": "hello@spendveto.com"
   },
   "keywords": [
     "ai-agents",

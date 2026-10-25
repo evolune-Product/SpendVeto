@@ -96,7 +96,7 @@
   <p>SpendVeto can run in two modes. In the default mode, the agent's own keypair signs payments locally after the policy pipeline approves — SpendVeto never holds funds. In the <b>keyless / proxy</b> mode, an enforcement proxy holds custody and signs on the agent's behalf only after governance passes, so an agent can operate without ever touching a private key. In both modes, no payment is possible without a policy decision.</p>
 
   <h2>What's not yet true</h2>
-  <p>SpendVeto is a prototype in public. <b>Simulate mode</b> (the default) is real ECDSA against a local ledger — no real funds move. <b>Testnet mode</b> settles real x402 transactions on Base Sepolia, Solana devnet, Aptos testnet, Stellar testnet, and Hedera testnet. <b>XRPL mainnet settlement is wired but disabled by default</b> — real money, in RLUSD (XRPL has no canonical USDC) — an operator has to explicitly configure a payout address to turn it on, and doing so is entirely their own decision and their own risk; we don't run, monitor, or control anyone's deployment. None of this has been through an external security audit yet. Treat this as pre-audit software: don't point it at funds you can't afford to lose until an audit has happened.</p>
+  <p>SpendVeto is a prototype. <b>Simulate mode</b> (the default) is real ECDSA against a local ledger — no real funds move. <b>Testnet mode</b> settles real x402 transactions on Base Sepolia, Solana devnet, Aptos testnet, Stellar testnet, and Hedera testnet. <b>XRPL mainnet settlement is wired but disabled by default</b> — real money, in RLUSD (XRPL has no canonical USDC) — an operator has to explicitly configure a payout address to turn it on, and doing so is entirely their own decision and their own risk; we don't run, monitor, or control anyone's deployment. None of this has been through an external security audit yet. Treat this as pre-audit software: don't point it at funds you can't afford to lose until an audit has happened.</p>
   <div class="callout"><b>Verification, not marketing:</b> every control above is exercised by an assertion in the 492-check suite (<span class="mono">npm run verify</span>) on every change to the codebase — see <a href="./docs.html#verify" style="color:var(--ink)">the verification docs</a>.</div>
 
   <h2>Reporting a vulnerability</h2>
@@ -105,8 +105,8 @@
 
 <footer>
   <span class="wordmark">SPENDVETO<span class="tick">_</span></span>
-  <span>Prototype in public — simulate mode by default, x402 testnet on Base Sepolia. Every claim on this page is covered by <span class="mono">npm run verify</span>.</span>
-  <div class="links"><a href="https://github.com/revanthrajeev/spendveto" target="_blank" rel="noopener">GitHub</a><a href="./use-cases.html">Use cases</a><a href="./playground.html">Playground</a>
+  <span>Prototype — simulate mode by default, x402 testnet on Base Sepolia. Every claim on this page is covered by SpendVeto&#x27;s automated test suite.</span>
+  <div class="links"><a href="./use-cases.html">Use cases</a><a href="./playground.html">Playground</a>
     <a href="./about.html">About</a>
     <a href="./security.html">Security</a>
     <a href="./contact.html">Contact</a>
