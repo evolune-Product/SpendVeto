@@ -90,6 +90,16 @@ Give the agent runtime a `spend` key and keep approval for the human-facing path
 - An approval re-checks the budget tree before releasing anything. A budget frozen or
   archived while the request waited stays refused.
 
+### Self-serve signup
+
+`POST /v1/signup` `{ email, org_name, turnstile_token? }` emails a one-time link (24 hours) and always answers `202` with the same message, whether or not the address already has an account; an address that does gets a "you already have an account" email instead of a second tenant. `POST /v1/signup/verify` `{ token }` consumes the link and, in the same transaction, creates the tenant and its first `admin` key (`201`, shown once). The link's token is stored only as its SHA-256.
+
+**Wallet-first (optional).** `POST /v1/signup/wallet` `{ address }` returns a Sign-In with Ethereum (EIP-4361) message naming the calling page's domain — only for the site's origins, never for a request without one — with a single-use nonce and a ten-minute expiry. The wallet signs it, and `POST /v1/signup` takes `wallet: { message, signature }` alongside the email. The service accepts only a message it issued, signed by the address it named; redeeming it is part of the signup transaction. The tenant the link creates records that wallet as `owner_wallet` (`GET /v1/tenant`, and the `tenant.created` audit event). One tenant per wallet: a wallet that already owns one answers `409 wallet_taken`, and of two pending signups signed by one wallet the first link opened wins. Personal-account (EOA) signatures only. Errors: `wallet_origin_required`, `wallet_proof_invalid`, `wallet_proof_expired`, `wallet_taken`.
+
+Limits: 3 links per address per hour, 10 signup requests per client per hour (`req.ip` — X-Forwarded-For is believed only from a loopback proxy, `GOVERN_TRUST_PROXY` for other hops), and a Cloudflare Turnstile check when `GOVERN_TURNSTILE_SECRET` is set. These routes (`/v1/signup*`), and only these, answer CORS — for spendveto.com and `GOVERN_SIGNUP_ORIGINS`.
+
+Email goes through `SPENDVETO_MAIL_PROVIDER` (`resend` or `postmark`) from `SPENDVETO_MAIL_FROM`. With no provider configured, signup answers `503 signup_unavailable` rather than creating accounts nobody verified; a provider failure answers `502 mail_failed`.
+
 ## Guarantees, and how they are tested
 
 `npm run test:govern` (needs `GOVERN_TEST_DATABASE_URL` pointing at a disposable

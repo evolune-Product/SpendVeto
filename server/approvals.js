@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { createHmac, randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
 
 // In-memory by design: an approval only needs to survive one client's poll
 // loop within a single server run, unlike the ledger (which is the durable
@@ -10,6 +10,21 @@ export function createApproval({ address, resource, price }) {
   const record = { id, address, resource, price, status: "pending", approvals: 0, ts: new Date().toISOString(), decidedAt: null };
   approvals.set(id, record);
   return record;
+}
+
+// One-click decide links (the approval alert's approveUrl/denyUrl) carry a
+// token bound to the approval id AND the decision, so knowing an id is not
+// enough to approve it — the id is visible to anything that can list
+// approvals. The secret lives only in this process: approvals are in-memory
+// too, so a restart retires links and approvals together.
+const LINK_SECRET = randomBytes(32);
+export function decideLinkToken(id, decision) {
+  return createHmac("sha256", LINK_SECRET).update(`spendveto-decide:${id}:${decision}`).digest("base64url");
+}
+export function verifyDecideLinkToken(id, decision, token) {
+  const want = Buffer.from(decideLinkToken(id, decision));
+  const got = Buffer.from(String(token || ""));
+  return got.length === want.length && timingSafeEqual(got, want);
 }
 
 export function getApproval(id) {

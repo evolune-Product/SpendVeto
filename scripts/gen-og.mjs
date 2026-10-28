@@ -1,4 +1,4 @@
-// Regenerates the social cards in site/assets/generated/.
+// Regenerates the social cards in web/public/assets/generated/.
 //
 // These existed as loose PNGs with no source, which is exactly why they still
 // said "TOLLGATE" long after everything else had been renamed: an image nobody
@@ -16,8 +16,8 @@ import { fileURLToPath } from "node:url";
 import { mkdirSync } from "node:fs";
 
 const ROOT = fileURLToPath(new URL("..", import.meta.url));
-const OUT = `${ROOT}site/assets/generated`;
-const FONT = `file://${ROOT}site/fonts/space-grotesk.woff2`;
+const OUT = `${ROOT}web/public/assets/generated`;
+const FONT = `file://${ROOT}web/public/fonts/space-grotesk.woff2`;
 
 const WORDMARK = "SPENDVETO";
 

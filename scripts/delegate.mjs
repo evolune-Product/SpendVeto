@@ -5,10 +5,11 @@
 // ancestor's — enforced in the caller's policy check (client/policy.js).
 // Requires the server to be running (it stores the grant).
 import { generatePrivateKey, privateKeyToAccount } from "viem/accounts";
-import { readFileSync, writeFileSync, existsSync } from "node:fs";
+import { readFileSync, writeFileSync, existsSync } from "../server/store.js";
 import { fileURLToPath } from "node:url";
 import { account as mainAccount } from "../client/wallet.js";
 import { PORT } from "../shared-config.js";
+import { closeStore } from "../server/store.js";
 
 const args = process.argv.slice(2);
 const flagValue = (name) => {
@@ -104,3 +105,6 @@ console.log(`  Parent: ${grantorAddress}`);
 console.log(`  Child:  ${childAccount.address}`);
 console.log(`\nThe child spends it with:  npm run call -- <tool> --child${label ? `="${label}"` : ""}`);
 console.log(`Watch the budget tree on the dashboard: http://localhost:${PORT}/`);
+
+// With Postgres storage, the writes above are committed before the process exits.
+await closeStore();

@@ -1,4 +1,4 @@
-import { readFileSync, writeFileSync, existsSync, mkdirSync } from "node:fs";
+import { readFileSync, writeFileSync, existsSync, mkdirSync, statSync, isPostgres, ledgerRows as storedLedgerRows, appendLedgerRow } from "./store.js";
 import { createHash } from "node:crypto";
 import { dirname } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -46,18 +46,48 @@ function writeJson(path, value) {
   writeFileSync(path, JSON.stringify(value, null, 2));
 }
 
+// The ledger stays in memory between reads; the file is re-parsed only when it
+// changes on disk (the test suite and the CLI write it directly). Before, every
+// read parsed the whole file — what made a 10,000-entry ledger slow. Callers
+// get a copy of the array, never the cache itself.
+let cachedRows = null;
+let cachedStamp = null;
+function fileStamp() {
+  try {
+    const st = statSync(LEDGER_PATH);
+    return `${st.mtimeMs}:${st.size}`;
+  } catch {
+    return "absent";
+  }
+}
+function ledgerRows() {
+  // With Postgres storage the ledger is the store's append-only table (server/store.js).
+  if (isPostgres()) return storedLedgerRows();
+  const stamp = fileStamp();
+  if (!cachedRows || stamp !== cachedStamp) {
+    cachedRows = readJson(LEDGER_PATH, []);
+    cachedStamp = stamp;
+  }
+  return cachedRows;
+}
+
 export function getLedger() {
-  return readJson(LEDGER_PATH, []);
+  return ledgerRows().slice();
 }
 
 export function appendLedgerEntry(entry) {
-  const ledger = getLedger();
+  const ledger = ledgerRows();
   const prevHash = ledger.length ? ledger[ledger.length - 1].entryHash || GENESIS_HASH : GENESIS_HASH;
   const record = { ts: new Date().toISOString(), ...entry, prevHash };
   record.entryHash = entryDigest(record, prevHash);
+  if (isPostgres()) {
+    appendLedgerRow(record); // one INSERT, not a rewrite of the whole history
+    return ledger.slice();
+  }
   ledger.push(record);
   writeJson(LEDGER_PATH, ledger);
-  return ledger;
+  cachedStamp = fileStamp();
+  return ledger.slice();
 }
 
 // Walk the chain and confirm every entry's hash still matches its content and

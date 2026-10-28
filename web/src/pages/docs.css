@@ -1,0 +1,16 @@
+.docs-wrap { display: grid; grid-template-columns: 220px 1fr; gap: 3rem; max-width: 1150px; margin: 0 auto; padding: 8.5rem clamp(1.2rem, 4vw, 3rem) 5rem; }
+@media (max-width: 860px) { .docs-wrap { grid-template-columns: 1fr; } aside { display: none; } }
+aside { position: sticky; top: 7.5rem; align-self: start; }
+aside a { display: block; padding: 0.4rem 0; color: var(--dim); font-size: 0.86rem; border-left: 2px solid var(--line); padding-left: 0.9rem; }
+aside a:hover { color: var(--ink); border-color: var(--green); }
+article h1 { font-size: clamp(2.2rem, 5vw, 3.4rem); letter-spacing: -0.025em; margin-bottom: 0.8rem; }
+article .lede { color: var(--dim); line-height: 1.7; max-width: 62ch; }
+article h2 { font-size: 1.5rem; letter-spacing: -0.015em; margin: 3.2rem 0 1rem; padding-top: 1.5rem; border-top: 1px solid var(--line); }
+article h3 { font-size: 1.05rem; margin: 1.8rem 0 0.6rem; }
+article p { color: var(--dim); line-height: 1.7; margin: 0.7rem 0; max-width: 68ch; }
+article p b, article li b { color: var(--ink); }
+article ul { margin: 0.8rem 0 0.8rem 1.2rem; color: var(--dim); line-height: 1.8; }
+.table-wrap { overflow-x: auto; border: 1px solid var(--line); border-radius: 12px; margin: 1.2rem 0; }
+pre.block { margin: 1.2rem 0; }
+.callout { border: 1px solid rgba(224, 160, 92, 0.35); background: rgba(224, 160, 92, 0.05); border-radius: 10px; padding: 0.9rem 1.1rem; font-size: 0.88rem; color: var(--dim); margin: 1.2rem 0; }
+.callout b { color: var(--copper); }

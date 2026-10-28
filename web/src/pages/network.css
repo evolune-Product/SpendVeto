@@ -1,0 +1,20 @@
+.pg { max-width: 980px; margin: 0 auto; padding: 8.5rem clamp(1.2rem, 4vw, 3rem) 6rem; }
+.pg h1 { font-size: clamp(2.1rem, 5vw, 3.2rem); letter-spacing: -0.025em; margin-bottom: 0.8rem; }
+.pg .lede { color: var(--dim); line-height: 1.7; font-size: 1.05rem; max-width: 66ch; }
+.pg h2 { font-size: 1.5rem; letter-spacing: -0.02em; margin: 3rem 0 0.9rem; }
+.pg h3 { font-size: 1.05rem; margin: 1.6rem 0 0.5rem; color: #eef3ed; }
+.pg p, .pg li { color: var(--dim); line-height: 1.7; }
+.pg ul, .pg ol { padding-left: 1.2rem; }
+.pg li { margin: 0.35rem 0; }
+.card { border: 1px solid var(--line); border-radius: 16px; padding: 1.4rem 1.6rem; background: var(--panel); margin-top: 1rem; }
+.card.warn { border-color: rgba(214,150,70,0.4); }
+.card b { color: #eef3ed; }
+.grid3 { display: grid; grid-template-columns: repeat(3, 1fr); gap: 1rem; margin-top: 1.2rem; }
+@media (max-width: 820px) { .grid3 { grid-template-columns: 1fr; } }
+pre.term { background: #070a08; border: 1px solid var(--line); border-radius: 12px; padding: 1.1rem 1.2rem; overflow-x: auto; font-size: 0.8rem; line-height: 1.6; color: #cfe8d8; }
+code { font-family: ui-monospace, monospace; }
+.faq details { border-top: 1px solid var(--line); padding: 1rem 0; }
+.faq summary { cursor: pointer; color: #eef3ed; font-weight: 600; }
+.faq p { margin-top: 0.6rem; }
+.row-btns { display: flex; gap: 0.8rem; flex-wrap: wrap; margin-top: 1.4rem; }
+.pg a.inline { color: var(--green); }

@@ -1,14 +1,17 @@
 [build]
+  # site/ is build output: web/ (React + Vite) prerendered to static HTML.
+  command = "node scripts/build-site.mjs"
   publish = "site"
 
 # The site loads nothing from anywhere else — no CDN scripts, no external
-# stylesheets, no third-party fonts — so the policy can be tight. 'unsafe-inline'
-# is required because the pages carry their CSS and JS inline by design (that is
-# what makes site/ droppable on any host); everything else is locked to 'self'.
+# stylesheets, no third-party fonts — so the policy can be tight. Every script
+# is a built file under /static/ (the only inline <script>s are JSON-LD data,
+# which never executes), so script-src is 'self' alone. style-src keeps
+# 'unsafe-inline' for the style attributes the markup uses.
 [[headers]]
   for = "/*"
   [headers.values]
-    Content-Security-Policy = "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; media-src 'self'; connect-src 'self'; object-src 'none'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'; upgrade-insecure-requests"
+    Content-Security-Policy = "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; media-src 'self'; connect-src 'self' https://govern.spendveto.com; object-src 'none'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'; upgrade-insecure-requests"
     X-Frame-Options = "DENY"
     X-Content-Type-Options = "nosniff"
     Referrer-Policy = "strict-origin-when-cross-origin"
@@ -16,6 +19,11 @@
     Cross-Origin-Opener-Policy = "same-origin"
 
 # Hashed/immutable assets can be cached hard; HTML must not be.
+[[headers]]
+  for = "/static/*"
+  [headers.values]
+    Cache-Control = "public, max-age=31536000, immutable"
+
 [[headers]]
   for = "/assets/*"
   [headers.values]

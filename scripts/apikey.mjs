@@ -8,6 +8,7 @@
 //
 // The key is printed ONCE — store it now; it can't be recovered later.
 import { createKey, ROLES, readKeys } from "../server/auth.js";
+import { closeStore } from "../server/store.js";
 
 const args = process.argv.slice(2);
 const role = args[0] && ROLES.includes(args[0]) ? args[0] : "admin";
@@ -32,3 +33,6 @@ try {
   console.error(err.message);
   process.exit(1);
 }
+
+// With Postgres storage, the writes above are committed before the process exits.
+await closeStore();

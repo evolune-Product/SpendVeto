@@ -1,4 +1,4 @@
-// Regenerates site/assets/demo-poster.jpg — the still behind the demo video's
+// Regenerates web/public/assets/demo-poster.jpg — the still behind the demo video's
 // play button — by screenshotting the real playground page.
 //
 // Same reasoning as scripts/gen-og.mjs: the previous poster was a loose JPEG
@@ -14,7 +14,7 @@ import { chromium } from "playwright";
 import { fileURLToPath } from "node:url";
 
 const ROOT = fileURLToPath(new URL("..", import.meta.url));
-const OUT = `${ROOT}site/assets/demo-poster.jpg`;
+const OUT = `${ROOT}web/public/assets/demo-poster.jpg`;
 const SITE = process.env.SITE_URL || "http://localhost:8403";
 
 const browser = await chromium.launch();

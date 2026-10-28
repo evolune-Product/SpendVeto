@@ -1,0 +1,32 @@
+.pg { max-width: 900px; margin: 0 auto; padding: 8.5rem clamp(1.2rem, 4vw, 3rem) 6rem; }
+.pg h1 { font-size: clamp(2rem, 4.6vw, 3rem); letter-spacing: -0.025em; margin-bottom: 0.8rem; }
+.pg .answer { color: #eef3ed; line-height: 1.7; font-size: 1.08rem; max-width: 70ch; border-left: 2px solid var(--green); padding-left: 1rem; }
+.pg h2 { font-size: 1.45rem; letter-spacing: -0.02em; margin: 2.6rem 0 0.8rem; }
+.pg h3 { font-size: 1.05rem; margin: 1.4rem 0 0.4rem; color: #eef3ed; }
+.pg p, .pg li { color: var(--dim); line-height: 1.7; }
+.pg ul, .pg ol { padding-left: 1.2rem; }
+.pg li { margin: 0.35rem 0; }
+.pg a.inline { color: var(--green); }
+.crumbs { font-size: 0.8rem; color: var(--faint); margin-bottom: 1.2rem; font-family: ui-monospace, monospace; }
+.crumbs a { color: var(--dim); }
+.card { border: 1px solid var(--line); border-radius: 16px; padding: 1.3rem 1.5rem; background: var(--panel); margin-top: 1rem; }
+.card.warn { border-color: rgba(214,150,70,0.4); }
+.card b { color: #eef3ed; }
+pre.term { background: #070a08; border: 1px solid var(--line); border-radius: 12px; padding: 1.1rem 1.2rem; overflow-x: auto; font-size: 0.8rem; line-height: 1.6; color: #cfe8d8; margin: 0.8rem 0; }
+code { font-family: ui-monospace, monospace; }
+table.t { width: 100%; border-collapse: collapse; margin-top: 0.8rem; font-size: 0.9rem; }
+table.t th, table.t td { text-align: left; padding: 0.55rem 0.6rem; border-bottom: 1px solid var(--line); color: var(--dim); vertical-align: top; }
+table.t th { color: #eef3ed; font-weight: 600; }
+.faq details { border-top: 1px solid var(--line); padding: 0.9rem 0; }
+.faq summary { cursor: pointer; color: #eef3ed; font-weight: 600; }
+.faq p { margin-top: 0.5rem; }
+.related { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 0.8rem; margin-top: 1rem; }
+.related a { display: block; border: 1px solid var(--line); border-radius: 12px; padding: 0.9rem 1rem; color: #eef3ed; background: var(--panel); }
+.related a span { display: block; color: var(--dim); font-size: 0.85rem; margin-top: 0.3rem; }
+.row-btns { display: flex; gap: 0.8rem; flex-wrap: wrap; margin-top: 1.6rem; }
+.meta { font-size: 0.78rem; color: var(--faint); margin-top: 2.4rem; }
+
+.glist { display: grid; gap: 0.9rem; margin-top: 1.6rem; }
+.glist a { display: block; border: 1px solid var(--line); border-radius: 14px; padding: 1.1rem 1.3rem; background: var(--panel); }
+.glist b { color: #eef3ed; font-size: 1.05rem; }
+.glist span { display: block; color: var(--dim); margin-top: 0.35rem; line-height: 1.6; }

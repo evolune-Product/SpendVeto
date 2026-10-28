@@ -1,5 +1,5 @@
 import dotenv from "dotenv";
-import { readFileSync, existsSync } from "node:fs";
+import { readFileSync, existsSync } from "../server/store.js";
 import { fileURLToPath } from "node:url";
 import { generatePrivateKey, privateKeyToAccount } from "viem/accounts";
 import { dataPath } from "../shared-config.js";

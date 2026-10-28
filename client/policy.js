@@ -1,9 +1,10 @@
-import { readFileSync, writeFileSync, existsSync } from "node:fs";
+import { readFileSync, writeFileSync, existsSync } from "../server/store.js";
 import { createHash } from "node:crypto";
 import { fileURLToPath } from "node:url";
 import { PORT, dataPath } from "../shared-config.js";
 import { resolvePayeeList } from "./ens.js";
 import { screenAddress } from "../server/sanctions.js";
+import { apiAuthHeaders } from "./api-auth.js";
 
 const POLICY_PATH = dataPath("policy.json");
 
@@ -58,6 +59,28 @@ function deny(code, reason, suggestion, extra = {}) {
 // hold delegations, freezes, and spend history constant, swap only the policy
 // object, and see what a candidate policy WOULD have decided. Normal callers
 // omit it and get the live policy.
+// Where checkPolicy reads live state. In an agent's own process that's this
+// server's HTTP API (a failure throws, and each caller below decides what a
+// failure means). Inside the server, usePolicySources() swaps in the same
+// state read in-process: the gate and the LLM guard decide without five HTTP
+// round trips, and without serializing the ledger for every decision.
+const httpJson = (path) =>
+  fetch(`http://localhost:${PORT}${path}`, { headers: apiAuthHeaders() }).then((r) => {
+    if (!r.ok) throw new Error(`${path} answered ${r.status}`);
+    return r.json();
+  });
+let sources = {
+  freezes: () => httpJson("/api/freezes").then((b) => b.freezes),
+  reputation: (payee) => httpJson(`/api/reputation/check?subject=${encodeURIComponent(payee)}`),
+  // Only paid/unmanaged rows, trimmed to what the caps read (?view=spend).
+  spendEntries: () => httpJson("/api/ledger?view=spend").then((b) => b.entries),
+  heldUSD: (address) => httpJson(`/api/upto/holds/${address}`).then((b) => Number(b.heldUSD) || 0),
+  delegations: () => httpJson("/api/delegations").then((b) => b.delegations),
+};
+export function usePolicySources(local) {
+  sources = { ...sources, ...local };
+}
+
 export async function checkPolicy(address, proposedPriceUSD, toolId, chain, category, payee, policyOverride) {
   const policy = policyOverride || loadPolicy();
   const price = Number(proposedPriceUSD);
@@ -66,7 +89,7 @@ export async function checkPolicy(address, proposedPriceUSD, toolId, chain, cate
   // Kill switch first: a frozen wallet (manual or anomaly-detected) spends
   // nothing, regardless of what the other rules would say.
   try {
-    const { freezes } = await fetch(`http://localhost:${PORT}/api/freezes`).then((r) => r.json());
+    const freezes = await sources.freezes();
     const frozen = freezes.find((f) => !f.unfrozen && f.address.toLowerCase() === address.toLowerCase());
     if (frozen) {
       return deny("frozen", `wallet frozen (${frozen.source}): ${frozen.reason} — unfreeze from the dashboard`,
@@ -107,7 +130,7 @@ export async function checkPolicy(address, proposedPriceUSD, toolId, chain, cate
   let reputationReview = null;
   if (payee) {
     try {
-      const rep = await fetch(`http://localhost:${PORT}/api/reputation/check?subject=${encodeURIComponent(payee)}`).then((r) => r.json());
+      const rep = await sources.reputation(payee);
       if (rep.verdict === "block") {
         return deny("payee_reputation_block", `payee ${payee} is on a reputation block list (${rep.summary})`,
           "do not retry against this payee; it was reported for fraud or abuse — a human can review the report in the Console", { policy, reputation: rep });
@@ -164,8 +187,7 @@ export async function checkPolicy(address, proposedPriceUSD, toolId, chain, cate
   let recent;
   let entries;
   try {
-    const res = await fetch(`http://localhost:${PORT}/api/ledger`);
-    ({ entries } = await res.json());
+    entries = await sources.spendEntries();
     const cutoff = Date.now() - 60 * 60 * 1000;
     // Unmanaged spend — paid around the gate, found on-chain by
     // server/outofband.js — counts the same as governed spend: a budget that
@@ -190,8 +212,7 @@ export async function checkPolicy(address, proposedPriceUSD, toolId, chain, cate
   // hold the same way until captured, voided or past their capture deadline.
   let heldUSD = 0;
   try {
-    const held = await fetch(`http://localhost:${PORT}/api/upto/holds/${address}`).then((r) => r.json());
-    heldUSD = Number(held.heldUSD) || 0;
+    heldUSD = await sources.heldUSD(address);
   } catch {
     // Older server without the endpoint, or a transient failure: fall back to
     // settled-spend-only accounting rather than blocking every call. The gate
@@ -205,7 +226,7 @@ export async function checkPolicy(address, proposedPriceUSD, toolId, chain, cate
   // on the chain kills the branch.
   let delegations = [];
   try {
-    ({ delegations } = await fetch(`http://localhost:${PORT}/api/delegations`).then((r) => r.json()));
+    delegations = await sources.delegations();
   } catch {
     // Server reachable above but delegations fetch failed — treat as no delegation.
   }

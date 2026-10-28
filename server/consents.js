@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { readFileSync, writeFileSync, existsSync, mkdirSync } from "node:fs";
+import { readFileSync, writeFileSync, existsSync, mkdirSync } from "./store.js";
 import { fileURLToPath } from "node:url";
 import { dirname } from "node:path";
 import { signConsent } from "./simulate.js";

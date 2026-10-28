@@ -1,0 +1,21 @@
+# Same security headers as netlify.toml, for hosts that read _headers
+# (Cloudflare static assets, Netlify). Keep the two in step.
+/*
+  Content-Security-Policy: default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; media-src 'self'; connect-src 'self' https://govern.spendveto.com; object-src 'none'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'; upgrade-insecure-requests
+  X-Frame-Options: DENY
+  X-Content-Type-Options: nosniff
+  Referrer-Policy: strict-origin-when-cross-origin
+  Permissions-Policy: geolocation=(), microphone=(), camera=(), payment=(), usb=(), interest-cohort=()
+  Cross-Origin-Opener-Policy: same-origin
+
+/static/*
+  Cache-Control: public, max-age=31536000, immutable
+
+/schemas/*
+  Content-Type: application/schema+json
+  Access-Control-Allow-Origin: *
+  Cache-Control: public, max-age=3600
+
+/spec/*
+  Content-Type: text/plain; charset=utf-8
+  Access-Control-Allow-Origin: *

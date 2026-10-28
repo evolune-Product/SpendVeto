@@ -39,7 +39,7 @@
 // POST /api/payouts/:id/status records a later status from your own webhook
 // glue.
 import { randomUUID } from "node:crypto";
-import { readFileSync, writeFileSync, existsSync } from "node:fs";
+import { readFileSync, writeFileSync, existsSync } from "./store.js";
 
 export const PAYOUT_DEFAULTS = {
   maxPerPayoutUSD: 1000,

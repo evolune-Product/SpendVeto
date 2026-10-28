@@ -1,4 +1,4 @@
-import { readFileSync, existsSync } from "node:fs";
+import { readFileSync, existsSync } from "./store.js";
 import { fileURLToPath } from "node:url";
 import { getLedger } from "./ledger.js";
 import { createFreeze, findActiveFreeze } from "./freezes.js";

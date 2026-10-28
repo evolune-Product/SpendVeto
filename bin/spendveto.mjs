@@ -16,6 +16,7 @@ import { existsSync, readFileSync, writeFileSync, mkdirSync, openSync } from "no
 import { homedir } from "node:os";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
+import { apiAuthHeaders } from "../client/api-auth.js";
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 const PORT = process.env.PORT || "8402";
@@ -31,7 +32,7 @@ const POLICY = join(DATA_DIR, "policy.json");
 
 const [cmd = "start", ...args] = process.argv.slice(2);
 const json = (r) => r.json();
-const up = () => fetch(`${BASE}/api/llm/summary`, { signal: AbortSignal.timeout(1500) }).then((r) => r.ok).catch(() => false);
+const up = () => fetch(`${BASE}/api/llm/summary`, { signal: AbortSignal.timeout(1500), headers: apiAuthHeaders() }).then((r) => r.status < 500).catch(() => false);
 const money = (n) => `$${Number(n || 0).toFixed(Number(n) < 1 ? 4 : 2)}`;
 
 function readPolicy() {
@@ -54,7 +55,7 @@ async function connectLines() {
 }
 
 async function banner() {
-  const s = await fetch(`${BASE}/api/llm/settings`).then(json).catch(() => null);
+  const s = await fetch(`${BASE}/api/llm/settings`, { headers: apiAuthHeaders() }).then(json).catch(() => null);
   const st = s?.settings || {};
   console.log(`
   SpendVeto is running — every model call is checked before it reaches the provider.
@@ -103,7 +104,7 @@ async function start() {
 
 async function setSettings(patch) {
   if (await up()) {
-    const r = await fetch(`${BASE}/api/llm/settings`, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(patch) });
+    const r = await fetch(`${BASE}/api/llm/settings`, { method: "PUT", headers: { "Content-Type": "application/json", ...apiAuthHeaders() }, body: JSON.stringify(patch) });
     const body = await r.json();
     if (!r.ok) throw new Error(body.error || `HTTP ${r.status}`);
     return body.settings;
@@ -118,7 +119,7 @@ async function setSettings(patch) {
 
 async function status() {
   if (!(await up())) return console.log(`  SpendVeto isn't running at ${BASE}. Start it with: spendveto`);
-  const s = await fetch(`${BASE}/api/llm/summary`).then(json);
+  const s = await fetch(`${BASE}/api/llm/summary`, { headers: apiAuthHeaders() }).then(json);
   console.log(`\n  Last 24h: ${money(s.totals.spentDayUSD)} across ${s.totals.requestsDay} requests · ${s.totals.blockedDay} blocked · ${s.totals.loopFreezesDay} loop freezes · mode ${s.mode}\n`);
   if (!s.identities.length) return console.log("  No agent traffic yet. Point an agent at the guard:\n" + (await connectLines()) + "\n");
   for (const i of s.identities) {
@@ -131,21 +132,21 @@ async function status() {
 async function freeze(target, on) {
   if (!target) throw new Error(`usage: spendveto ${on ? "freeze" : "unfreeze"} <agent label or address>`);
   if (!(await up())) throw new Error(`SpendVeto isn't running at ${BASE}`);
-  const s = await fetch(`${BASE}/api/llm/summary`).then(json);
+  const s = await fetch(`${BASE}/api/llm/summary`, { headers: apiAuthHeaders() }).then(json);
   const match = s.identities.find((i) => i.label === target || i.address === target.toLowerCase());
   // An agent that hasn't sent a request yet has no row — derive its
   // identifier the same way the guard does, so a freeze set in advance holds.
   const { pseudoAddress } = await import("../server/llmguard.js");
   const address = match?.address || (/^0x[0-9a-fA-F]{40}$/.test(target) ? target.toLowerCase() : target === "local" ? pseudoAddress("local") : pseudoAddress(`label:${target}`));
   if (on) {
-    const r = await fetch(`${BASE}/api/freezes`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ address, reason: "frozen from the spendveto CLI" }) });
+    const r = await fetch(`${BASE}/api/freezes`, { method: "POST", headers: { "Content-Type": "application/json", ...apiAuthHeaders() }, body: JSON.stringify({ address, reason: "frozen from the spendveto CLI" }) });
     if (!r.ok && r.status !== 409) throw new Error((await r.json()).error);
     console.log(`  Frozen: ${target}. Every request it makes is refused until you run: spendveto unfreeze ${target}`);
   } else {
-    const { freezes } = await fetch(`${BASE}/api/freezes`).then(json);
+    const { freezes } = await fetch(`${BASE}/api/freezes`, { headers: apiAuthHeaders() }).then(json);
     const f = freezes.find((x) => !x.unfrozen && x.address.toLowerCase() === address.toLowerCase());
     if (!f) return console.log(`  ${target} isn't frozen.`);
-    const r = await fetch(`${BASE}/api/freezes/${f.id}/unfreeze`, { method: "POST" });
+    const r = await fetch(`${BASE}/api/freezes/${f.id}/unfreeze`, { method: "POST", headers: apiAuthHeaders() });
     if (!r.ok) throw new Error((await r.json()).error);
     console.log(`  Unfrozen: ${target}.`);
   }

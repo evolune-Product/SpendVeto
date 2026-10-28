@@ -3,8 +3,9 @@
 //   npm run policy -- apply cautious|standard|production
 // Applying a pack overwrites data/policy.json (the previous file is kept at
 // data/policy.json.bak). Packs are plain JSON — teams can commit their own.
-import { readFileSync, writeFileSync, readdirSync, existsSync, copyFileSync } from "node:fs";
+import { readFileSync, writeFileSync, readdirSync, existsSync, copyFileSync } from "../server/store.js";
 import { fileURLToPath } from "node:url";
+import { closeStore } from "../server/store.js";
 
 const PACKS_DIR = fileURLToPath(new URL("../data/policy-packs", import.meta.url));
 const POLICY_PATH = fileURLToPath(new URL("../data/policy.json", import.meta.url));
@@ -38,3 +39,6 @@ if (cmd === "apply") {
   }
   console.log('Apply one:  npm run policy -- apply <name>');
 }
+
+// With Postgres storage, the writes above are committed before the process exits.
+await closeStore();

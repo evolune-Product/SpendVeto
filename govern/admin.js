@@ -408,7 +408,7 @@ export function createAdmin({ pool, now = () => new Date() }) {
 
   // ------------------------------------------------------------ tenant + keys
   async function getTenant(auth) {
-    const { rows } = await pool.query("SELECT id, name, webhook_url, created_at FROM sv_tenants WHERE id = $1", [auth.tenantId]);
+    const { rows } = await pool.query("SELECT id, name, owner_wallet, webhook_url, created_at FROM sv_tenants WHERE id = $1", [auth.tenantId]);
     const t = rows[0];
     // The URL can embed a token (Slack-style incoming webhooks do), so only
     // its host is ever read back.
@@ -416,7 +416,7 @@ export function createAdmin({ pool, now = () => new Date() }) {
     try {
       host = t.webhook_url ? new URL(t.webhook_url).host : null;
     } catch {}
-    return { status: 200, body: { ok: true, tenant: { id: t.id, name: t.name, webhook_configured: Boolean(t.webhook_url), webhook_host: host, created_at: iso(t.created_at) } } };
+    return { status: 200, body: { ok: true, tenant: { id: t.id, name: t.name, owner_wallet: t.owner_wallet, webhook_configured: Boolean(t.webhook_url), webhook_host: host, created_at: iso(t.created_at) } } };
   }
 
   async function setWebhook(auth, { url, rotate_secret = false }) {
@@ -486,13 +486,18 @@ export function createAdmin({ pool, now = () => new Date() }) {
 // Used by the operator endpoint and the CLI. Returns the tenant and its first
 // admin key (shown once).
 export async function createTenant(pool, { name }) {
-  return withTx(pool, async (client) => {
-    const { rows } = await client.query("INSERT INTO sv_tenants (name) VALUES ($1) RETURNING id, name, created_at", [String(name).slice(0, 200)]);
-    const tenant = rows[0];
-    const key = await insertKey(client, tenant.id, { scopes: ["admin"], label: "initial admin key" });
-    await appendEvent(client, tenant.id, { type: "tenant.created", actor: "operator", data: { name: tenant.name, admin_key_id: key.id }, at: new Date() });
-    return { tenant: { ...tenant, created_at: iso(tenant.created_at) }, admin_key: key.key, admin_key_id: key.id };
-  });
+  return withTx(pool, (client) => insertTenant(client, { name }));
+}
+
+// Inside the caller's transaction: signup verification (signup.js) consumes
+// its one-time link in the same transaction that creates the tenant.
+// `ownerWallet` is the wallet that signed a wallet-first signup (signup.js).
+export async function insertTenant(client, { name, actor = "operator", at = new Date(), ownerWallet = null }) {
+  const { rows } = await client.query("INSERT INTO sv_tenants (name, owner_wallet) VALUES ($1, $2) RETURNING id, name, owner_wallet, created_at", [String(name).slice(0, 200), ownerWallet]);
+  const tenant = rows[0];
+  const key = await insertKey(client, tenant.id, { scopes: ["admin"], label: "initial admin key" });
+  await appendEvent(client, tenant.id, { type: "tenant.created", actor, data: { name: tenant.name, admin_key_id: key.id, ...(ownerWallet ? { owner_wallet: ownerWallet } : {}) }, at });
+  return { tenant: { ...tenant, created_at: iso(tenant.created_at) }, admin_key: key.key, admin_key_id: key.id };
 }
 
 export async function mintKeyForTenant(pool, tenantId, { scopes, label }) {

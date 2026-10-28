@@ -6,6 +6,9 @@ data/delegations.json
 data/children.json
 data/freezes.json
 data/waitlist.json
+data/users.json
+data/sessions.json
+data/api-keys.json
 data/tools.json
 data/agents.json
 data/consents.json
@@ -24,3 +27,8 @@ data/sanctions/
 *.log
 .DS_Store
 __pycache__/
+# Build output — `npm run build` regenerates both (web/ → site/, dashboard/src → dashboard/dist).
+site/
+dashboard/dist/
+dashboard/.ssr/
+web/.build/

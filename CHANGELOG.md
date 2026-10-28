@@ -2,6 +2,60 @@
 
 Every feature listed here is exercised by the end-to-end suite (`npm run verify`) — the suite grew from 33 assertions at the first public cut to **114** at v0.7.0. If a claim isn't an assertion, it doesn't ship.
 
+## Wallet sign-in and wallet-first signup — 2026-10-28
+
+Sign-In with Ethereum (EIP-4361) on both sides. The server writes every message itself — its own domain, a single-use nonce, a short expiry, a statement saying what the signature is for — and accepts back only that exact message, signed by the address it was issued to. A signature, never a transaction or gas. Browser wallets are found the EIP-6963 way (`client/browser-wallet.js`), so several installed wallets can be told apart; no WalletConnect SDK.
+
+- **Console:** a signed-in user links a wallet on the Users page; from then on the wallet signs them in instead of the password (`POST /api/auth/wallet/challenge|login|link`, `DELETE /api/auth/wallet/:address`). A link signature can't sign in, a replayed or altered one is refused, and a wallet links to one account. On a public deployment set `SPENDVETO_PUBLIC_URL` so the message's domain is fixed, not taken from the request's Host header.
+- **Governance API signup:** an optional first step on spendveto.com/signup — the wallet signs a challenge from `POST /v1/signup/wallet` (only for the site's own origins), the proof rides along with the email, and the tenant the link creates records it as `owner_wallet` (`GET /v1/tenant`). The email link still creates the account: a wallet costs nothing to make, so it can't be the abuse limit. One tenant per wallet (enforced by a unique index; the first link opened wins). Migration `003_wallet_signup`.
+- Personal-account (EOA) wallets only — MetaMask, Rabby, Coinbase Wallet's extension and the like. Smart-contract wallets sign via EIP-1271, which needs a chain read; not supported yet.
+- **Verify: 510** (+2). Governance API suite: 89 (+4).
+
+## Postgres storage for the core server — 2026-10-28
+
+Set `SPENDVETO_CORE_DATABASE_URL` and the core server keeps its state in Postgres instead of `data/*.json` (`server/store.js`). Unset, nothing changes — `npx spendveto` still needs no database. It's its own variable so that pointing the Governance API at a database never moves the core.
+
+- Every document under the data directory becomes a row in `sv_core_docs`; the ledger is `sv_core_ledger`, one row per entry, append-only in the database itself (a trigger refuses UPDATE and DELETE). Both are held in memory and written through in order, with ledger appends group-committed.
+- **Durable before acknowledged:** a response leaves only once the writes it caused are committed; if storage fails, it answers `503 storage_unavailable` instead of a success.
+- One server per database (an advisory lock — a second refuses to start). The proxy and the CLI share documents with it through `LISTEN/NOTIFY`. On first start against an empty database, the existing data files are imported, hash chain intact.
+- Faster in both modes: the ledger is cached in memory instead of re-parsed on every read, and the policy engine reads state in-process inside the server (no HTTP round trips, no full-ledger download per decision; agents' processes fetch only paid/unmanaged rows via `/api/ledger?view=spend`). At 10,000 ledger entries, file mode: `/api/stats` p50 259 → 22 ms; Postgres: LLM-guard decisions ~700/s at p50 14 ms (file mode: ~40/s at 248 ms), and appends no longer slow down as history grows.
+- `npm run test:pg-storage`: import, durability, cross-process writes, single writer, append-only, restart, scale — against a real database (like the Governance API suite, not in the published verify count). `GET /api/health` reports which storage is in use.
+
+## Self-serve signup for the Governance API — 2026-10-27
+
+spendveto.com/signup now creates accounts. Enter an email and a company name; a one-time link (24 hours) arrives by email; opening it creates an isolated Governance API tenant and shows its first admin key, once — the key is stored only as its fingerprint. `govern/signup.js`, migration `002_signups`, `govern/mailer.js` (Resend or Postmark over plain HTTPS; unconfigured, signup refuses with `503 signup_unavailable` rather than creating unverified accounts).
+
+- The request answers identically whether or not the address already has an account; an existing address gets a "you already have an account" email, never a second tenant. Verifying consumes the link in the same transaction that creates the tenant — six concurrent verifications of one link create exactly one.
+- Abuse limits: 3 links per address per hour, 10 requests per client per hour, and a Cloudflare Turnstile check when `GOVERN_TURNSTILE_SECRET` is set. CORS is open on the two signup routes only, for the site's origins.
+- The verify page removes the token from the address bar as soon as it reads it.
+- Governance API suite: 85 tests (+10) against real Postgres — not in the published verify count.
+
+## Console sign-in — 2026-10-27
+
+The Console has accounts. Email + password, a role each (viewer reads, approver also decides approvals, admin changes everything — the API-key ranks), and a session in an HttpOnly, SameSite=Strict, Secure-over-HTTPS cookie that lasts 12 hours. Users are invited, never self-registered: the first admin with `npm run user -- invite you@company.com admin` on the host (a one-time, 48-hour link; the invitee sets their own password, so none passes through a shell), the rest from the Console's new Users page. Any user record turns sign-in on; until one exists the Console stays open, as before.
+
+- A Console session can only make changes from the Console: writes on the cookie must carry the Console's header and, when the browser names one, this server's origin.
+- Five wrong passwords lock an account for 15 minutes; an unknown email gets exactly the answer a wrong password does, in the same time. Login and invite acceptance are also rate-limited per client.
+- Nothing secret is stored as itself: passwords are scrypt hashes (N=2^15), session ids and invite tokens SHA-256 digests. Changing a password, disabling an account or changing its role signs it out everywhere; no change can leave the instance without an active admin.
+- **Verify: 508** (+4).
+
+## Security — 2026-10-27
+
+Found by a security test pass against a live server — two high-severity holes and the medium findings, all closed.
+
+- **Approvals could be granted without a key.** The one-click decide link was the approval id and nothing else, and `GET /api/approvals` listed every pending id — with auth required, anyone who could reach the server (or any website, through the open CORS header) could approve a pending spend. Each link now carries a token bound to its approval and its decision (HMAC, per-process secret, compared in constant time); a link without it, with a forged one, or with the other decision's token is refused with 403. Listing approvals needs a viewer key once auth is on.
+- **Anyone could write ledger rows about any wallet.** `POST /api/ledger/event` was unauthenticated: 12 spoofed rows froze a stranger's wallet, and spoofed "paid" rows would burn its budget. Events are now signed by the wallet they name (`client/ledger-event.js` — EIP-191 over every recorded field, a timestamp and a nonce); unsigned, wrongly signed, edited, stale or replayed events are refused with 401. `client/pay.js` and the proxy sign every event they report.
+- Production dependencies audited clean (`npm audit fix`, non-breaking: proxy-addr, body-parser, qs, fast-uri, ip-address, @modelcontextprotocol/sdk, hono).
+- **Reads are locked too once auth is on.** Every read except the public ones (catalog and open standards, the aggregate counters, an agent paying for a tool or polling its own approval) needs a viewer key; the server's own in-process policy checks use a per-boot internal credential, and local tools send `SPENDVETO_API_KEY`. API keys are compared in constant time.
+- **Cross-origin reads only for what is public.** The blanket `Access-Control-Allow-Origin: *` let any website read a running server's ledger, policy and approvals; now the open standards and catalog answer any origin, the live counters only the marketing site's (`SPENDVETO_CORS_ORIGINS` adds more), and nothing else answers one.
+- **Response hardening.** No `X-Powered-By`; `nosniff`, `X-Frame-Options: DENY` and a CSP with `frame-ancestors 'none'` on every response, so the Console can't be clickjacked.
+- **CSV exports can't carry formulas.** The ledger and FOCUS exports prefix an agent-written `=`, `+`, `-` or `@` cell with an apostrophe (`server/csv.js`).
+- **LLM budgets hold under concurrency.** The guard decides on its estimate, and a provider can bill above it; one request at a time that gap is one request's, but 100 parallel calls overshot a $0.10 budget by 14%. While an agent's requests are in flight, another now joins only with room for every in-flight request to bill 50% over its estimate — otherwise a retryable 429 (`llm_budget_in_flight`). The same burst now books $0.078 of $0.10; a lone request is decided exactly as before.
+- **`trust proxy` is `loopback`, not `true`.** X-Forwarded-For was believed from anyone, so a client could claim any IP; it's now believed only from a proxy on the same machine (`SPENDVETO_TRUST_PROXY` names another hop).
+- **Per-client rate limit on `/api/*`** (`server/ratelimit.js`, `SPENDVETO_RATE_LIMIT_PER_MIN`, default 600; 0 turns it off). Loopback callers and the signature-verified card webhooks are exempt.
+- **API keys are stored as SHA-256 digests**, never the key; a plaintext keys file is rewritten on first read.
+- **Verify: 504** (+12).
+
 ## Licensing — 2026-10-25
 
 SpendVeto is now proprietary software of Evolune EdgeTech LLP (`LICENSE`, `NOTICE`), and the source repository is private. Versions released before this change (npm `spendveto` ≤ 0.31.0, `spendveto-sdk` 0.1.0) were licensed under Apache-2.0 and stay under it for whoever received them; every later version is covered by the SpendVeto Proprietary License. `package.json` is marked `"private": true`. The site, README, OpenAPI document and llms.txt no longer link to the repository, and the network specification moved to https://spendveto.com/spec/NETWORK.md.

@@ -1,0 +1,12 @@
+.doc-wrap { max-width: 780px; margin: 0 auto; padding: 8.5rem clamp(1.2rem, 4vw, 3rem) 6rem; }
+.doc-wrap h1 { font-size: clamp(2.2rem, 5vw, 3.4rem); letter-spacing: -0.025em; margin-bottom: 0.8rem; }
+.doc-wrap .lede { color: var(--dim); line-height: 1.7; max-width: 62ch; font-size: 1.02rem; }
+.contact-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 1.1rem; margin-top: 2.6rem; }
+@media (max-width: 700px) { .contact-grid { grid-template-columns: 1fr; } }
+.ccard { border: 1px solid var(--line); border-radius: 14px; padding: 1.4rem 1.5rem; background: var(--panel); transition: border-color 0.2s, transform 0.2s; }
+.ccard:hover { border-color: rgba(70, 214, 140, 0.35); transform: translateY(-2px); }
+.ccard .tag { font-family: ui-monospace, monospace; font-size: 0.68rem; letter-spacing: 0.14em; text-transform: uppercase; color: var(--green); }
+.ccard h3 { font-size: 1.05rem; margin: 0.6rem 0 0.4rem; }
+.ccard p { color: var(--dim); font-size: 0.88rem; line-height: 1.6; margin-bottom: 0.8rem; }
+.ccard a.mail { color: var(--ink); font-family: ui-monospace, monospace; font-size: 0.88rem; border-bottom: 1px dashed var(--faint); }
+.ccard a.mail:hover { border-color: var(--green); color: var(--green); }

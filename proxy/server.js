@@ -13,7 +13,7 @@
 //        -d '{"tool":"review","child":"intern"}'   # delegated child, by label
 import express from "express";
 import { createHash, randomUUID } from "node:crypto";
-import { readFileSync, writeFileSync } from "node:fs";
+import { readFileSync, writeFileSync } from "../server/store.js";
 import { fileURLToPath } from "node:url";
 import { MODE, PORT, TOOLS, CHAINS, DEFAULT_CHAIN, findChain, findTool, dataPath } from "../shared-config.js";
 
@@ -368,14 +368,14 @@ app.post("/proxy/llm", async (req, res) => {
   const outcome = await withWalletLock(payer.address, async () => {
     const verdict = await checkPolicy(payer.address, estimateUSD, "llm.chat", undefined, "api");
     if (!verdict.allowed) {
-      await logEvent({ address: payer.address, resource: "llm.chat", price: estimateUSD, chain: "api", category: "api", status: "blocked", reason: verdict.reason });
+      await logEvent(payer, { resource: "llm.chat", price: estimateUSD, chain: "api", category: "api", status: "blocked", reason: verdict.reason });
       return { status: 403, body: { ok: false, stage: "policy", reason: verdict.reason, denial: verdict.code ? { code: verdict.code, suggestion: verdict.suggestion } : null, estimateUSD } };
     }
     if (verdict.requiresApproval) {
       const { outcome: decision } = await waitForApproval({ path: "llm.chat", price: String(estimateUSD) }, payer, Number(approvalTimeoutMs) || Number(process.env.APPROVAL_TIMEOUT_MS) || 30000);
       if (decision !== "approved") {
         const reason = decision === "denied" ? "denied by human approver" : "approval timed out";
-        await logEvent({ address: payer.address, resource: "llm.chat", price: estimateUSD, chain: "api", status: "blocked", reason });
+        await logEvent(payer, { resource: "llm.chat", price: estimateUSD, chain: "api", status: "blocked", reason });
         return { status: 403, body: { ok: false, stage: "approval", reason: `${reason} — failed closed, upstream was never called`, estimateUSD } };
       }
     }
@@ -395,7 +395,7 @@ app.post("/proxy/llm", async (req, res) => {
         text = body.content?.[0]?.text ?? "";
         usage = { inputTokens: body.usage?.input_tokens ?? promptTokensEst, outputTokens: body.usage?.output_tokens ?? 0, real: true };
       } catch (err) {
-        await logEvent({ address: payer.address, resource: "llm.chat", price: estimateUSD, chain: "api", status: "failed", reason: err.message });
+        await logEvent(payer, { resource: "llm.chat", price: estimateUSD, chain: "api", status: "failed", reason: err.message });
         return { status: 502, body: { ok: false, stage: "upstream", reason: err.message } };
       }
     } else {
@@ -405,7 +405,7 @@ app.post("/proxy/llm", async (req, res) => {
     }
 
     const actualUSD = Number((perTokenUSD(usage.inputTokens, RATE_IN) + perTokenUSD(usage.outputTokens, RATE_OUT)).toFixed(6));
-    await logEvent({ address: payer.address, resource: "llm.chat", price: actualUSD, chain: "api", category: "api", status: "paid" });
+    await logEvent(payer, { resource: "llm.chat", price: actualUSD, chain: "api", category: "api", status: "paid" });
     return { status: 200, body: { ok: true, payer: payer.address, text, usage, estimateUSD, actualUSD, rail: usage.real ? "anthropic-api" : "llm-simulate" } };
   });
   res.status(outcome.status).json(outcome.body);

@@ -33,7 +33,7 @@
 // holds no keys. It reads what the server offered, prices it, and decides —
 // before mppx creates a credential. Settlement stays between mppx and the
 // server; recording a session's actual spend is the caller's report.
-import { readFileSync, writeFileSync, existsSync, mkdirSync } from "node:fs";
+import { readFileSync, writeFileSync, existsSync, mkdirSync } from "./store.js";
 import { randomUUID } from "node:crypto";
 import { CHAINS, DATA_DIR } from "../shared-config.js";
 

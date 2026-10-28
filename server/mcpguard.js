@@ -25,7 +25,7 @@
 // count against the USD budgets only at the operator's declared rate
 // (policy.payouts.fxRates, shared with payouts) — no rate, no spend.
 import { randomUUID } from "node:crypto";
-import { readFileSync, writeFileSync, existsSync } from "node:fs";
+import { readFileSync, writeFileSync, existsSync } from "./store.js";
 import { toMinor, payoutSettings } from "./payouts.js";
 
 export const MCP_GUARD_DEFAULTS = {

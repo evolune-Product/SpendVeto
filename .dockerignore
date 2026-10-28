@@ -6,6 +6,7 @@ data
 .gitignore
 launch
 site
-dashboard
+web
+dashboard/dist
 docs
 *.md

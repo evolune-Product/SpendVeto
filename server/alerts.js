@@ -1,4 +1,4 @@
-import { readFileSync, existsSync } from "node:fs";
+import { readFileSync, existsSync } from "./store.js";
 import { createHmac } from "node:crypto";
 import { fileURLToPath } from "node:url";
 import { dataPath } from "../shared-config.js";

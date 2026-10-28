@@ -9,6 +9,8 @@ import { spawn, spawnSync } from "node:child_process";
 import { createServer, request as httpRequest } from "node:http";
 import { verifyMessage } from "viem";
 import { generatePrivateKey, privateKeyToAccount } from "viem/accounts";
+import { signLedgerEvent, ledgerEventMessage } from "../client/ledger-event.js";
+import { csvCell, neutralizeFormula } from "../server/csv.js";
 import { setTimeout as sleep } from "node:timers/promises";
 import { writeFileSync, readFileSync, readdirSync, existsSync, unlinkSync, mkdirSync, symlinkSync, rmSync } from "node:fs";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -120,7 +122,7 @@ class McpStdio {
 }
 
 // Fresh state for a deterministic run.
-for (const f of ["data/ledger.json", "data/balances.json", "data/delegations.json", "data/children.json", "data/freezes.json", "data/waitlist.json", "data/tools.json", "data/agents.json", "data/shadow-policy.json", "data/shadow-log.json", "data/api-keys.json", "data/consents.json", "data/upto.json", "data/authcapture.json", "data/cards.json", "data/payouts.json", "data/rebilling.json", "data/attestations.json", "data/reputation.json", "data/mpp.json", "data/outofband.json"]) {
+for (const f of ["data/ledger.json", "data/balances.json", "data/delegations.json", "data/children.json", "data/freezes.json", "data/waitlist.json", "data/tools.json", "data/agents.json", "data/shadow-policy.json", "data/shadow-log.json", "data/api-keys.json", "data/users.json", "data/sessions.json", "data/consents.json", "data/upto.json", "data/authcapture.json", "data/cards.json", "data/payouts.json", "data/rebilling.json", "data/attestations.json", "data/reputation.json", "data/mpp.json", "data/outofband.json"]) {
   const p = `${ROOT}${f}`;
   if (existsSync(p)) unlinkSync(p);
 }
@@ -172,6 +174,9 @@ const server = spawn("node", ["server/index.js"], {
     SPENDVETO_ANTHROPIC_UPSTREAM: "http://localhost:8497",
     SPENDVETO_OPENAI_UPSTREAM: "http://localhost:8497",
     SPENDVETO_ANTHROPIC_KEY: "sk-ant-verify-server-only-key",
+    // Per-client API rate limit, low enough to test; loopback callers (this
+    // suite) are never limited, so only the X-Forwarded-For probe meets it.
+    SPENDVETO_RATE_LIMIT_PER_MIN: "30",
     // Out-of-band detection reads Base Sepolia through a local JSON-RPC node
     // (port 8384) that speaks the real wire format — never a public RPC.
     SPENDVETO_RPC_BASE_SEPOLIA: "http://localhost:8384",
@@ -363,17 +368,44 @@ try {
   // A synthetic wallet fires 25 payment attempts back-to-back — far faster
   // than any legitimate agent workflow — and must come out frozen.
   const runawayAccount = privateKeyToAccount(generatePrivateKey());
+  const postEvent = (body) => fetch(`${BASE}/api/ledger/event`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+  let lastRunawayEvent;
   for (let i = 0; i < 25; i++) {
-    await fetch(`${BASE}/api/ledger/event`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ address: runawayAccount.address, resource: "/api/agent/review", price: "0.01", status: "failed", reason: "verify: synthetic runaway burst" }),
-    });
+    lastRunawayEvent = await signLedgerEvent(runawayAccount, { resource: "/api/agent/review", price: "0.01", status: "failed", reason: "verify: synthetic runaway burst" });
+    await postEvent(lastRunawayEvent);
   }
   const { freezes: afterBurst } = await fetch(`${BASE}/api/freezes`).then((r) => r.json());
   const burstFreeze = afterBurst.find((f) => !f.unfrozen && f.address.toLowerCase() === runawayAccount.address.toLowerCase());
   check("burst of 25 attempts auto-froze the runaway wallet", !!burstFreeze, burstFreeze?.reason || "no freeze appeared");
   check("auto-freeze is attributed to the anomaly detector", burstFreeze?.source === "anomaly" && burstFreeze?.reason?.includes("runaway"), burstFreeze?.reason);
+
+  // --- Ledger events are signed by the wallet they name (client/ledger-event.js) ---
+  // Unsigned, the endpoint let anyone write rows about any wallet: 12 spoofed
+  // "failed" rows froze a stranger's wallet, spoofed "paid" rows would burn its
+  // budget. Here a victim wallet takes 12 unsigned events, 12 signed by an
+  // attacker's key, and 12 the victim signed but the attacker edited — none is
+  // recorded, and the victim is not frozen.
+  const victimAccount = privateKeyToAccount(generatePrivateKey());
+  const attackerAccount = privateKeyToAccount(generatePrivateKey());
+  const spoofStatuses = [];
+  for (let i = 0; i < 12; i++) {
+    const ev = { address: victimAccount.address, resource: "/api/agent/review", price: "0.01", status: "failed", reason: "spoofed" };
+    spoofStatuses.push((await postEvent(ev)).status);
+    const ts = Date.now(), nonce = `spoof-${i}-${ts}`;
+    spoofStatuses.push((await postEvent({ ...ev, auth: { ts, nonce, signature: await attackerAccount.signMessage({ message: ledgerEventMessage(ev, ts, nonce) }) } })).status);
+    const signedByVictim = await signLedgerEvent(victimAccount, { resource: "/api/agent/review", price: "0.01", status: "failed", reason: "real" });
+    spoofStatuses.push((await postEvent({ ...signedByVictim, status: "paid" })).status);
+  }
+  const victimRows = (await fetch(`${BASE}/api/ledger`).then((r) => r.json())).entries.filter((e) => e.address?.toLowerCase() === victimAccount.address.toLowerCase());
+  const { freezes: afterSpoof } = await fetch(`${BASE}/api/freezes`).then((r) => r.json());
+  const victimFrozen = afterSpoof.some((f) => !f.unfrozen && f.address.toLowerCase() === victimAccount.address.toLowerCase());
+  check(
+    "a ledger event is recorded only when the wallet it names signed it — unsigned, signed by another key, or edited after signing: 401, nothing written, and 36 spoofed events can't freeze someone else's wallet",
+    spoofStatuses.length === 36 && spoofStatuses.every((st) => st === 401) && victimRows.length === 0 && !victimFrozen,
+    `statuses=${[...new Set(spoofStatuses)]} rows=${victimRows.length} frozen=${victimFrozen}`
+  );
+  const replayed = await postEvent(lastRunawayEvent);
+  check("a signed ledger event is accepted once — replaying it is refused (401)", replayed.status === 401, `got ${replayed.status}`);
 
   // Defense in depth: even a correctly signed payment from the frozen wallet
   // is refused at the gate itself (403, not a fresh 402 challenge).
@@ -745,7 +777,7 @@ try {
     chains.map((c) => `${c.id}:${(c.usdc || "").slice(0, 10)}`).join(" ")
   );
   // The deployed static site (spendveto.com) has no live /api/chains to call,
-  // so site/wallet-connect.js keeps a hand-written FALLBACK_CHAINS list for
+  // so web/public/wallet-connect.js keeps a hand-written FALLBACK_CHAINS list for
   // the waitlist chain picker — the exact drift that shipped a stale
   // 7-chain list to production after this registry grew to 12. Import the
   // real module rather than re-parsing the file, so this catches drift the
@@ -754,7 +786,7 @@ try {
   // written for a browser); stub just enough for the import to resolve — we
   // only need the exported constant, never loadChains() itself, here.
   globalThis.location ??= { hostname: "verify" };
-  const { FALLBACK_CHAINS } = await import("../site/wallet-connect.js");
+  const { FALLBACK_CHAINS } = await import("../web/public/wallet-connect.js");
   check(
     "the deployed site's static chain-picker fallback stays mirrored to the live registry — it has no /api/chains to call",
     JSON.stringify(FALLBACK_CHAINS.map((c) => c.id).sort()) === JSON.stringify(chains.map((c) => c.id).sort()),
@@ -943,7 +975,22 @@ try {
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ address: runawayAccount.address, resource: "/api/agent/summarize", price: "0.02" }),
   }).then((r) => r.json());
-  const clickRes = await fetch(`${BASE}/api/approvals/${clickApproval.id}/decide?decision=denied`);
+  // An id alone is not a decision: the list of pending approvals shows every
+  // id, so a link has to carry its own token, bound to the id and the decision.
+  const forgedLinks = [
+    await fetch(`${BASE}/api/approvals/${clickApproval.id}/decide?decision=approved`),
+    await fetch(`${BASE}/api/approvals/${clickApproval.id}/decide?decision=approved&token=forged`),
+  ];
+  for (let i = 0; i < 20 && !alertsReceived.some((a) => a.type === "approval_pending" && a.id === clickApproval.id); i++) await sleep(50);
+  const clickAlert = alertsReceived.find((a) => a.type === "approval_pending" && a.id === clickApproval.id);
+  const swappedLink = await fetch(clickAlert.denyUrl.replace("decision=denied", "decision=approved"));
+  const stillPending = await fetch(`${BASE}/api/approvals/${clickApproval.id}`).then((r) => r.json());
+  check(
+    "a one-click link without its token, with a forged one, or with the token of the other decision is refused (403) — the approval stays pending",
+    forgedLinks.every((r) => r.status === 403) && swappedLink.status === 403 && stillPending.status === "pending",
+    `no token=${forgedLinks[0].status} forged=${forgedLinks[1].status} swapped=${swappedLink.status} status=${stillPending.status}`
+  );
+  const clickRes = await fetch(clickAlert.denyUrl);
   const clickAfter = await fetch(`${BASE}/api/approvals/${clickApproval.id}`).then((r) => r.json());
   check("GET decide link denies the approval in one click", clickRes.ok && clickAfter.status === "denied", `status=${clickAfter.status}`);
 
@@ -1633,8 +1680,8 @@ try {
     "payee/category/txn/day"
   );
   check(
-    "UPI: the in-browser playground runs the SAME evaluator the server uses — site/assets/upi.js is byte-identical to server/upi.js",
-    readFileSync(fileURLToPath(new URL("../site/assets/upi.js", import.meta.url)), "utf8") === readFileSync(fileURLToPath(new URL("../server/upi.js", import.meta.url)), "utf8"),
+    "UPI: the in-browser playground runs the SAME evaluator the server uses — web/public/assets/upi.js is byte-identical to server/upi.js",
+    readFileSync(fileURLToPath(new URL("../web/public/assets/upi.js", import.meta.url)), "utf8") === readFileSync(fileURLToPath(new URL("../server/upi.js", import.meta.url)), "utf8"),
     "no drift between the demo and the product"
   );
   check(
@@ -1696,8 +1743,8 @@ try {
     "Art.18 TRA"
   );
   check(
-    "EU: the in-browser playground runs the SAME evaluator the server uses — site/assets/eu-sepa.js is byte-identical to server/eu-sepa.js",
-    readFileSync(fileURLToPath(new URL("../site/assets/eu-sepa.js", import.meta.url)), "utf8") === readFileSync(fileURLToPath(new URL("../server/eu-sepa.js", import.meta.url)), "utf8"),
+    "EU: the in-browser playground runs the SAME evaluator the server uses — web/public/assets/eu-sepa.js is byte-identical to server/eu-sepa.js",
+    readFileSync(fileURLToPath(new URL("../web/public/assets/eu-sepa.js", import.meta.url)), "utf8") === readFileSync(fileURLToPath(new URL("../server/eu-sepa.js", import.meta.url)), "utf8"),
     "no drift between the demo and the product"
   );
   check("EU: the evaluator is pure — the same mandate and clock give the same verdict every time", JSON.stringify(euP({})) === JSON.stringify(euP({})), "deterministic");
@@ -1749,8 +1796,8 @@ try {
     "payee/category/txn/day"
   );
   check(
-    "UK: the in-browser playground runs the SAME evaluator the server uses — site/assets/uk-fps.js is byte-identical to server/uk-fps.js",
-    readFileSync(fileURLToPath(new URL("../site/assets/uk-fps.js", import.meta.url)), "utf8") === readFileSync(fileURLToPath(new URL("../server/uk-fps.js", import.meta.url)), "utf8"),
+    "UK: the in-browser playground runs the SAME evaluator the server uses — web/public/assets/uk-fps.js is byte-identical to server/uk-fps.js",
+    readFileSync(fileURLToPath(new URL("../web/public/assets/uk-fps.js", import.meta.url)), "utf8") === readFileSync(fileURLToPath(new URL("../server/uk-fps.js", import.meta.url)), "utf8"),
     "no drift between the demo and the product"
   );
   check("UK: the evaluator is pure — the same payment and clock give the same verdict every time", JSON.stringify(ukP({})) === JSON.stringify(ukP({})), "deterministic");
@@ -1812,8 +1859,8 @@ try {
     "payee/category/txn/day"
   );
   check(
-    "BR: the in-browser playground runs the SAME evaluator the server uses — site/assets/br-pix.js is byte-identical to server/br-pix.js",
-    readFileSync(fileURLToPath(new URL("../site/assets/br-pix.js", import.meta.url)), "utf8") === readFileSync(fileURLToPath(new URL("../server/br-pix.js", import.meta.url)), "utf8"),
+    "BR: the in-browser playground runs the SAME evaluator the server uses — web/public/assets/br-pix.js is byte-identical to server/br-pix.js",
+    readFileSync(fileURLToPath(new URL("../web/public/assets/br-pix.js", import.meta.url)), "utf8") === readFileSync(fileURLToPath(new URL("../server/br-pix.js", import.meta.url)), "utf8"),
     "no drift between the demo and the product"
   );
   check("BR: the evaluator is pure — the same mandate and clock give the same verdict every time", JSON.stringify(brP({})) === JSON.stringify(brP({})), "deterministic");
@@ -1866,8 +1913,8 @@ try {
     "payee/category/txn/day"
   );
   check(
-    "US: the in-browser playground runs the SAME evaluator the server uses — site/assets/us-ach.js is byte-identical to server/us-ach.js",
-    readFileSync(fileURLToPath(new URL("../site/assets/us-ach.js", import.meta.url)), "utf8") === readFileSync(fileURLToPath(new URL("../server/us-ach.js", import.meta.url)), "utf8"),
+    "US: the in-browser playground runs the SAME evaluator the server uses — web/public/assets/us-ach.js is byte-identical to server/us-ach.js",
+    readFileSync(fileURLToPath(new URL("../web/public/assets/us-ach.js", import.meta.url)), "utf8") === readFileSync(fileURLToPath(new URL("../server/us-ach.js", import.meta.url)), "utf8"),
     "no drift between the demo and the product"
   );
   check("US: the evaluator is pure — the same mandate and clock give the same verdict every time", JSON.stringify(usP({})) === JSON.stringify(usP({})), "deterministic");
@@ -2059,6 +2106,48 @@ try {
   const dashboardRes = await fetch(`${BASE}/`);
   const dashboardHtml = await dashboardRes.text();
   check("dashboard served at /", dashboardRes.ok && dashboardHtml.includes("SpendVeto"), `status ${dashboardRes.status}`);
+  // --- Response hardening, cross-origin reads, formula-safe exports ---
+  const ledgerRes = await fetch(`${BASE}/api/ledger`, { headers: { Origin: "https://evil.example" } });
+  const hardened = (r) => r.headers.get("x-frame-options") === "DENY" && (r.headers.get("content-security-policy") || "").includes("frame-ancestors 'none'") && r.headers.get("x-content-type-options") === "nosniff" && !r.headers.get("x-powered-by");
+  check(
+    "every response refuses framing (the Console's Approve button can't be clickjacked) and MIME sniffing, and names no framework",
+    hardened(dashboardRes) && hardened(ledgerRes),
+    `xfo=${dashboardRes.headers.get("x-frame-options")} nosniff=${ledgerRes.headers.get("x-content-type-options")} powered=${ledgerRes.headers.get("x-powered-by")}`
+  );
+  const acao = async (path, origin) => (await fetch(`${BASE}${path}`, { headers: { Origin: origin } })).headers.get("access-control-allow-origin");
+  const corsSeen = {
+    ledger: ledgerRes.headers.get("access-control-allow-origin"),
+    policy: await acao("/api/policy", "https://evil.example"),
+    approvals: await acao("/api/approvals", "https://evil.example"),
+    catalog: await acao("/api/catalog", "https://evil.example"),
+    statsSite: await acao("/api/stats", "http://localhost:8403"),
+    statsEvil: await acao("/api/stats", "https://evil.example"),
+  };
+  check(
+    "cross-origin reads only for what is public: the catalog answers any origin, the live counters only the marketing site's, and the ledger, policy and approvals no origin at all",
+    !corsSeen.ledger && !corsSeen.policy && !corsSeen.approvals && corsSeen.catalog === "*" && corsSeen.statsSite === "http://localhost:8403" && !corsSeen.statsEvil,
+    JSON.stringify(corsSeen)
+  );
+  check(
+    "CSV exports can't carry a spreadsheet formula: an agent-written =HYPERLINK(…), +cmd or @SUM comes out as text, numbers are untouched",
+    csvCell('=HYPERLINK("https://evil.example","x")') === `"'=HYPERLINK(""https://evil.example"",""x"")"` && neutralizeFormula("+cmd") === "'+cmd" && neutralizeFormula("@SUM(A1)") === "'@SUM(A1)" &&
+      neutralizeFormula("-0.01") === "-0.01" && neutralizeFormula("/api/agent/review") === "/api/agent/review",
+    csvCell('=HYPERLINK("x")')
+  );
+  // Per-client rate limit on /api/*: a client (here, one a local proxy names in
+  // X-Forwarded-For — trusted only because the hop is loopback) past the limit
+  // gets 429 with Retry-After; another client and this suite's own loopback
+  // calls are unaffected.
+  const limited = [];
+  for (let i = 0; i < 40; i++) limited.push(await fetch(`${BASE}/api/catalog`, { headers: { "X-Forwarded-For": "203.0.113.7" } }));
+  const firstLimited = limited.find((r) => r.status === 429);
+  const otherClient = await fetch(`${BASE}/api/catalog`, { headers: { "X-Forwarded-For": "203.0.113.8" } });
+  const loopbackCall = await fetch(`${BASE}/api/catalog`);
+  check(
+    "the API rate-limits each client — past its limit a client gets 429 with Retry-After, while other clients and local callers carry on",
+    limited.filter((r) => r.status === 200).length >= 1 && Boolean(firstLimited) && Number(firstLimited?.headers.get("retry-after")) >= 1 && otherClient.status === 200 && loopbackCall.status === 200,
+    `ok=${limited.filter((r) => r.status === 200).length} limited=${limited.filter((r) => r.status === 429).length} other=${otherClient.status} local=${loopbackCall.status}`
+  );
   check(
     "console ships all ten pages",
     ["overview", "approvals", "budgets", "ledger", "chains", "analytics", "trust", "policy", "agents", "report"].every((p) => dashboardHtml.includes(`data-page="${p}"`)),
@@ -2301,6 +2390,31 @@ try {
     body: JSON.stringify({ maxPerCallUSD: 0.5 }),
   });
   check("a viewer key is refused a write it isn't allowed (403 — role enforcement)", withViewer.status === 403, `got ${withViewer.status}`);
+  const listNoKey = await fetch(`${BASE}/api/approvals`);
+  const listViewer = await fetch(`${BASE}/api/approvals`, { headers: { Authorization: `Bearer ${viewerKey}` } });
+  check("with auth enabled, listing pending approvals needs a key (401 without, 200 with a viewer key)", listNoKey.status === 401 && listViewer.status === 200, `without=${listNoKey.status} viewer=${listViewer.status}`);
+  // The keys file above was written with plaintext keys, as an old install's
+  // would be: the first read rewrote it to digests, and the keys still work.
+  const keysAtRest = readFileSync(KEYS_FILE, "utf8");
+  check(
+    "API keys are stored as SHA-256 digests, never the key — a plaintext keys file is rewritten on first read, and the keys keep working",
+    !keysAtRest.includes(adminKey) && !keysAtRest.includes(viewerKey) && (keysAtRest.match(/"keyHash"/g) || []).length === 2 && withAdmin.status === 200 && listViewer.status === 200,
+    keysAtRest.includes(adminKey) ? "plaintext key on disk" : "digests only"
+  );
+  const privateReads = await Promise.all(["/api/ledger", "/api/policy", "/api/delegations", "/api/freezes", "/api/export.csv"].map(async (p) => [p, (await fetch(`${BASE}${p}`)).status, (await fetch(`${BASE}${p}`, { headers: { Authorization: `Bearer ${viewerKey}` } })).status]));
+  const authPoll = await fetch(`${BASE}/api/approvals`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ address: runawayAccount.address, resource: "/api/agent/summarize", price: "0.02" }) }).then((r) => r.json());
+  const openReads = await Promise.all(["/api/catalog", "/api/stats", "/api/chains", `/api/approvals/${authPoll.id}`].map(async (p) => [p, (await fetch(`${BASE}${p}`)).status]));
+  check(
+    "with auth enabled, the ledger, policy, delegations, freezes and CSV export need a key to read (401 without, 200 with a viewer key) — the catalog, counters and an agent's poll of its own approval stay open",
+    privateReads.every(([, without, viewer]) => without === 401 && viewer === 200) && openReads.every(([, st]) => st === 200),
+    JSON.stringify({ privateReads, openReads })
+  );
+  const gateUnderAuth = await fetch(`${BASE}/api/ap2/evaluate`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ agent: privateKeyToAccount(generatePrivateKey()).address, amountUSD: 0.001, tool: "translate" }) }).then((r) => r.json());
+  check(
+    "with auth enabled, the server's own policy checks still read what they need (its per-boot internal credential) — the gate isn't locked out by its own auth",
+    gateUnderAuth.decision === "allow" && gateUnderAuth.code !== "server_unreachable",
+    `${gateUnderAuth.decision} ${gateUnderAuth.code || ""}`
+  );
   // Public reads stay open even with auth on (the marketing site reads /api/stats
   // cross-origin) — only the admin surface is gated.
   const readOpen = await fetch(`${BASE}/api/stats`);
@@ -2312,6 +2426,100 @@ try {
     body: JSON.stringify({ maxPerCallUSD: 0.5 }),
   });
   check("removing all keys returns the server to open mode", reopened.status === 200, `got ${reopened.status}`);
+
+  // --- Console sign-in (server/users.js, server/accounts.js) ---
+  // Invited from the host like the CLI does, then everything over HTTP the
+  // way the Console does it. The account files are removed afterwards, which
+  // returns the server to open mode for the rest of the suite.
+  const { inviteUser } = await import("../server/users.js");
+  const adminInvite = inviteUser({ email: "Ops@Example.com", role: "admin" });
+  const viewerInvite = inviteUser({ email: "viewer@example.com", role: "viewer" });
+  const consoleCall = (path, { cookie, method = "GET", body, headers = {} } = {}) =>
+    fetch(`${BASE}${path}`, { method, headers: { ...(body ? { "Content-Type": "application/json" } : {}), ...(cookie ? { cookie } : {}), ...headers }, ...(body ? { body: JSON.stringify(body) } : {}) });
+  const sessionOf = (res) => (res.headers.get("set-cookie") || "").split(";")[0];
+  const lockedOut = await consoleCall("/api/ledger");
+  const accepted = await consoleCall("/api/auth/accept-invite", { method: "POST", body: { token: adminInvite.token, password: "correct horse battery" } });
+  const adminCookieHeader = accepted.headers.get("set-cookie") || "";
+  const adminSession = sessionOf(accepted);
+  const reused = await consoleCall("/api/auth/accept-invite", { method: "POST", body: { token: adminInvite.token, password: "another long password" } });
+  const adminRead = await consoleCall("/api/ledger", { cookie: adminSession });
+  check(
+    "an invited Console user turns sign-in on — reads need a session — and the invite link sets a password once, signing them in with an HttpOnly, SameSite=Strict cookie",
+    lockedOut.status === 401 && accepted.status === 200 && /HttpOnly/.test(adminCookieHeader) && /SameSite=Strict/.test(adminCookieHeader) && reused.status === 400 && adminRead.status === 200,
+    `before=${lockedOut.status} accept=${accepted.status} reuse=${reused.status} read=${adminRead.status}`
+  );
+  const policyBody = { maxPerCallUSD: 0.05, maxPerHourUSD: 0.2, maxCallsPerHour: 10, requireApprovalAboveUSD: 0.015 };
+  const noHeader = await consoleCall("/api/policy", { cookie: adminSession, method: "PUT", body: policyBody });
+  const foreign = await consoleCall("/api/policy", { cookie: adminSession, method: "PUT", body: policyBody, headers: { "X-SpendVeto-Request": "1", Origin: "https://evil.example" } });
+  const fromConsole = await consoleCall("/api/policy", { cookie: adminSession, method: "PUT", body: policyBody, headers: { "X-SpendVeto-Request": "1", Origin: BASE } });
+  const viewerSession = sessionOf(await consoleCall("/api/auth/accept-invite", { method: "POST", body: { token: viewerInvite.token, password: "viewer long password" } }));
+  const viewerRead = await consoleCall("/api/ledger", { cookie: viewerSession });
+  const viewerWrite = await consoleCall("/api/policy", { cookie: viewerSession, method: "PUT", body: policyBody, headers: { "X-SpendVeto-Request": "1" } });
+  check(
+    "a Console session can only make changes from the Console — without its header or from another origin a write is refused (403) — and a viewer's session reads but can't write",
+    noHeader.status === 403 && foreign.status === 403 && fromConsole.status === 200 && viewerRead.status === 200 && viewerWrite.status === 403,
+    `noHeader=${noHeader.status} foreign=${foreign.status} console=${fromConsole.status} viewerRead=${viewerRead.status} viewerWrite=${viewerWrite.status}`
+  );
+  // Wallet sign-in (Sign-In with Ethereum): link a wallet from a session, then
+  // that wallet's signature over a server-written challenge signs in.
+  const consoleHeaders = { "X-SpendVeto-Request": "1", Origin: BASE };
+  const opsWallet = privateKeyToAccount(generatePrivateKey());
+  const challengeFor = async (account, purpose, cookie) =>
+    (await (await consoleCall("/api/auth/wallet/challenge", { method: "POST", cookie, headers: cookie ? consoleHeaders : {}, body: { address: account.address, purpose } })).json()).message;
+  const signed = async (account, purpose, cookie) => {
+    const message = await challengeFor(account, purpose, cookie);
+    return { message, signature: await account.signMessage({ message }) };
+  };
+  const linkMessage = await challengeFor(opsWallet, "link", adminSession);
+  const linked = await consoleCall("/api/auth/wallet/link", { method: "POST", cookie: adminSession, headers: consoleHeaders, body: { message: linkMessage, signature: await opsWallet.signMessage({ message: linkMessage }) } });
+  const linkedUser = (await linked.json()).user;
+  const loginProof = await signed(opsWallet, "login");
+  const walletIn = await consoleCall("/api/auth/wallet/login", { method: "POST", body: loginProof });
+  const walletCookie = walletIn.headers.get("set-cookie") || "";
+  const walletRead = await consoleCall("/api/ledger", { cookie: sessionOf(walletIn) });
+  check(
+    "a signed-in Console user links a wallet by signing a one-time challenge naming this Console's domain, and that wallet's signature then signs them in — the same HttpOnly session a password gives, never a transaction",
+    linked.status === 200 && linkedUser?.wallets?.[0]?.toLowerCase() === opsWallet.address.toLowerCase() &&
+      linkMessage.startsWith(`${new URL(BASE).host} wants you to sign in with your Ethereum account:`) && /Nonce: [0-9a-f]{32}/.test(linkMessage) && /Expiration Time: /.test(linkMessage) &&
+      walletIn.status === 200 && /HttpOnly/.test(walletCookie) && walletRead.status === 200,
+    `link=${linked.status} login=${walletIn.status} read=${walletRead.status}`
+  );
+  const walletReplay = await consoleCall("/api/auth/wallet/login", { method: "POST", body: loginProof });
+  const linkAsLogin = await consoleCall("/api/auth/wallet/login", { method: "POST", body: await signed(opsWallet, "link", adminSession) });
+  const altered = await signed(opsWallet, "login");
+  const forgedMessage = altered.message.replace(new URL(BASE).host, "evil.example");
+  const alteredIn = await consoleCall("/api/auth/wallet/login", { method: "POST", body: { message: forgedMessage, signature: await opsWallet.signMessage({ message: forgedMessage }) } });
+  const otherKey = privateKeyToAccount(generatePrivateKey());
+  const wrongSigner = await signed(opsWallet, "login");
+  const wrongSignerIn = await consoleCall("/api/auth/wallet/login", { method: "POST", body: { message: wrongSigner.message, signature: await otherKey.signMessage({ message: wrongSigner.message }) } });
+  const unlinkedIn = await consoleCall("/api/auth/wallet/login", { method: "POST", body: await signed(otherKey, "login") });
+  const stolenLink = await signed(opsWallet, "link", adminSession);
+  const linkToViewer = await consoleCall("/api/auth/wallet/link", { method: "POST", cookie: viewerSession, headers: consoleHeaders, body: stolenLink });
+  check(
+    "wallet sign-in refuses a replayed signature, a link signature used to sign in, a message the server didn't write (another domain), the right message signed by the wrong key, and a wallet no account has linked — and a link challenge only links for the session it was issued to",
+    [walletReplay, linkAsLogin, alteredIn, wrongSignerIn, unlinkedIn].every((r) => r.status === 401) && linkToViewer.status === 400,
+    `replay=${walletReplay.status} linkAsLogin=${linkAsLogin.status} altered=${alteredIn.status} wrongSigner=${wrongSignerIn.status} unlinked=${unlinkedIn.status} linkToViewer=${linkToViewer.status}`
+  );
+  const guesses = [];
+  for (let i = 0; i < 6; i++) guesses.push((await consoleCall("/api/auth/login", { method: "POST", body: { email: "ops@example.com", password: `wrong guess ${i}` } })).status);
+  const rightButLocked = await consoleCall("/api/auth/login", { method: "POST", body: { email: "ops@example.com", password: "correct horse battery" } });
+  const noSuchUser = await consoleCall("/api/auth/login", { method: "POST", body: { email: "nobody@example.com", password: "whatever password" } });
+  check(
+    "five wrong passwords lock the account for 15 minutes — the right one is refused too — and an unknown email gets exactly the answer a wrong password does",
+    guesses.slice(0, 5).every((st) => st === 401) && guesses[5] === 429 && rightButLocked.status === 429 && noSuchUser.status === 401 && (await noSuchUser.json()).error === "email or password is incorrect",
+    `guesses=${guesses} right=${rightButLocked.status} unknown=${noSuchUser.status}`
+  );
+  await consoleCall("/api/auth/logout", { cookie: adminSession, method: "POST" });
+  const afterLogout = await consoleCall("/api/ledger", { cookie: adminSession });
+  const usersAtRest = readFileSync(`${ROOT}data/users.json`, "utf8");
+  const sessionsAtRest = readFileSync(`${ROOT}data/sessions.json`, "utf8");
+  check(
+    "signing out ends the session for good, and nothing secret is stored as itself: passwords as scrypt hashes, session ids and invite tokens as digests",
+    afterLogout.status === 401 && usersAtRest.includes("scrypt$") && !usersAtRest.includes("correct horse battery") && !usersAtRest.includes(adminInvite.token) && !sessionsAtRest.includes(viewerSession.split("=")[1]),
+    `afterLogout=${afterLogout.status}`
+  );
+  unlinkSync(`${ROOT}data/users.json`);
+  unlinkSync(`${ROOT}data/sessions.json`);
 
   // --- World ID gate on human approvals (control #33): a policy can require
   // proof-of-personhood on every APPROVAL (never on a deny — a deny never
@@ -3022,6 +3230,25 @@ try {
     slowHolds.llmUSD > 0 && slowHolds.heldUSD === slowHolds.llmUSD && slowAfter.llmUSD === 0,
     `during=${slowHolds.llmUSD} after=${slowAfter.llmUSD}`
   );
+  // In-flight headroom: a burst whose estimates fit the budget, but not with
+  // room for each to bill 50% over, is not all admitted at once — the rest get
+  // a retryable 429 instead of becoming an overspend.
+  const slowBody = { model: "slow-model", max_tokens: 100, messages: [{ role: "user", content: "slow" }] };
+  const probe = await anthropicCall(slowBody, { "x-spendveto-agent": "inflight-probe" });
+  await probe.text();
+  const slowEstimate = Number(probe.headers.get("x-spendveto-estimate-usd"));
+  const policyBeforeBurst = readFileSync(`${ROOT}data/policy.json`, "utf8");
+  const burstPolicy = JSON.parse(policyBeforeBurst);
+  writeFileSync(`${ROOT}data/policy.json`, JSON.stringify({ ...burstPolicy, llm: { ...burstPolicy.llm, dailyBudgetUSD: Number((slowEstimate * 6.5).toFixed(6)) } }, null, 2));
+  const burst = await Promise.all(Array.from({ length: 6 }, () => anthropicCall(slowBody, { "x-spendveto-agent": "inflight-bot" }).then(async (r) => ({ status: r.status, retry: r.headers.get("x-should-retry"), after: r.headers.get("retry-after"), body: await r.json().catch(() => ({})) }))));
+  writeFileSync(`${ROOT}data/policy.json`, policyBeforeBurst);
+  const burstOk = burst.filter((b) => b.status === 200).length;
+  const burstWait = burst.filter((b) => b.status === 429 && b.body?.spendveto?.code === "llm_budget_in_flight" && b.retry === "true" && Number(b.after) >= 1);
+  check(
+    "while an agent's model calls are in flight, another joins only with room for them all to bill 50% over their estimates — a burst that fits at estimate prices gets retryable 429s for the rest (x-should-retry, retry-after), not an overspend",
+    slowEstimate > 0 && burstOk >= 1 && burstOk < 6 && burstWait.length === 6 - burstOk,
+    `estimate=${slowEstimate} admitted=${burstOk} wait=${burstWait.length} statuses=${burst.map((b) => b.status)}`
+  );
   // Team mode + unified budgets: an agent token bound to a delegated child
   // wallet spends tokens against the SAME cascading cap as its payments.
   const childGrant = await fetch(`${BASE}/api/delegations/wallet`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ capUSD: 0.03, label: "llm-delegate" }) }).then((r) => r.json());
@@ -3337,21 +3564,24 @@ try {
   );
   const leanDir = mkdtempSync(join(tmpdir(), "spendveto-lean-"));
   const leanData = mkdtempSync(join(tmpdir(), "spendveto-lean-data-"));
-  const packed = spawnSync("npm", ["pack", "--json", "--pack-destination", leanDir], { cwd: ROOT, encoding: "utf8" });
-  spawnSync("tar", ["-xzf", join(leanDir, JSON.parse(packed.stdout)[0].filename), "-C", leanDir]);
+  // shell on Windows: npm is npm.cmd there, which Node only spawns through a shell.
+  const packed = spawnSync("npm", ["pack", "--json", "--pack-destination", leanDir], { cwd: ROOT, encoding: "utf8", shell: process.platform === "win32" });
+  // Relative paths from inside leanDir: GNU tar reads "C:\…" as a remote host.
+  spawnSync("tar", ["-xzf", JSON.parse(packed.stdout)[0].filename], { cwd: leanDir });
   const LEAN = join(leanDir, "package");
   const blockedPackages = new Set(OPTIONAL_PACKAGES);
   mkdirSync(join(LEAN, "node_modules"));
   for (const name of readdirSync(join(ROOT, "node_modules"))) {
     if (name.startsWith(".")) continue;
     if (!name.startsWith("@")) {
-      if (!blockedPackages.has(name)) symlinkSync(join(ROOT, "node_modules", name), join(LEAN, "node_modules", name));
+      // "junction": Windows lets anyone make one (a dir symlink needs admin); POSIX ignores the type.
+      if (!blockedPackages.has(name)) symlinkSync(join(ROOT, "node_modules", name), join(LEAN, "node_modules", name), "junction");
       continue;
     }
     for (const sub of readdirSync(join(ROOT, "node_modules", name))) {
       if (blockedPackages.has(`${name}/${sub}`)) continue;
       mkdirSync(join(LEAN, "node_modules", name), { recursive: true });
-      symlinkSync(join(ROOT, "node_modules", name, sub), join(LEAN, "node_modules", name, sub));
+      symlinkSync(join(ROOT, "node_modules", name, sub), join(LEAN, "node_modules", name, sub), "junction");
     }
   }
   const leanUpstream = createServer((req, res) => {
@@ -3613,7 +3843,7 @@ try {
   );
 
   const specText = readFileSync(`${ROOT}spec/policy-v1.schema.json`, "utf8");
-  const hostedSpecText = readFileSync(`${ROOT}site/schemas/policy-v1.json`, "utf8");
+  const hostedSpecText = readFileSync(`${ROOT}web/public/schemas/policy-v1.json`, "utf8");
   const shippedPacks = readdirSync(`${ROOT}data/policy-packs`).filter((f) => f.endsWith(".json")).map((f) => JSON.parse(readFileSync(`${ROOT}data/policy-packs/${f}`, "utf8")));
   const shippedDefault = { maxPerCallUSD: 0.05, maxPerHourUSD: 0.2, maxCallsPerHour: 10, requireApprovalAboveUSD: 0.015, anomaly: { burstAttempts: 10, burstWindowSeconds: 10 } };
   const everySection = {
@@ -3847,7 +4077,8 @@ try {
   const { randomBytes: oobRandom } = await import("node:crypto");
   const oobTx = () => "0x" + oobRandom(32).toString("hex");
   const oobParent = privateKeyToAccount(generatePrivateKey());
-  const oobChild = privateKeyToAccount(generatePrivateKey()).address;
+  const oobChildAccount = privateKeyToAccount(generatePrivateKey());
+  const oobChild = oobChildAccount.address;
   const OOB_SELLER = "0x" + "0bb5".repeat(10);
   const OOB_ELSEWHERE = "0x" + "e15e".repeat(10);
   const OOB_TREASURY = "0x" + "7ea5".repeat(10);
@@ -3855,7 +4086,7 @@ try {
   const oobAgo = (s) => Math.floor(Date.now() / 1000) - s;
   const oobTransfer = (txHash, to, value, extra = {}) => ({ chain: "base-sepolia", txHash, logIndex: 0, from: oobChild, to, token: OOB_USDC, value: String(value), blockTime: oobAgo(60), ...extra });
   // The same call the testnet client makes after a settlement (client/pay.js), carrying the facilitator's hash; it answers 204.
-  const oobLogPayment = (txHash) => fetch(`${BASE}/api/ledger/event`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ address: oobChild, resource: "/api/agent/review", price: 0.01, chain: "base-sepolia", status: "paid", txHash }) });
+  const oobLogPayment = async (txHash) => fetch(`${BASE}/api/ledger/event`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(await signLedgerEvent(oobChildAccount, { resource: "/api/agent/review", price: 0.01, chain: "base-sepolia", status: "paid", txHash })) });
   const OOB_POLICY = { ...LOOSE_POLICY, outOfBand: { chains: ["base-sepolia"], ignoreTo: [OOB_TREASURY], graceSeconds: 0, lookbackBlocks: 100 } };
   writeFileSync(`${ROOT}data/policy.json`, JSON.stringify(OOB_POLICY, null, 2));
   await jsonReq("/api/delegations", { parentAddress: oobParent.address, childAddress: oobChild, capUSD: 0.05, label: "oob-child" });
@@ -4325,10 +4556,10 @@ try {
 if (verifyStats && failures === 0) {
   const assertions = Number(process.env.SPENDVETO_ASSERTION_COUNT) || null;
   writeFileSync(
-    `${ROOT}site/assets/verify-stats.json`,
+    `${ROOT}web/public/assets/verify-stats.json`,
     JSON.stringify({ ...verifyStats, ...(assertions ? { assertions } : {}) }, null, 2) + "\n"
   );
-  console.log(`\nwrote site/assets/verify-stats.json — blocked $${verifyStats.blocked.usd} across ${verifyStats.blocked.count}, ${verifyStats.frozenWallets} frozen`);
+  console.log(`\nwrote web/public/assets/verify-stats.json — blocked $${verifyStats.blocked.usd} across ${verifyStats.blocked.count}, ${verifyStats.frozenWallets} frozen`);
 }
 
 console.log(`\n${failures === 0 ? "ALL CHECKS PASSED" : `${failures} CHECK(S) FAILED`}`);

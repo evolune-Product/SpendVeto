@@ -10,6 +10,8 @@ import { createAdmin, createTenant, mintKeyForTenant } from "./admin.js";
 import { verifyChain } from "./audit.js";
 import { isUnavailable } from "./db.js";
 import { GovernError } from "./util.js";
+import { createSignup, turnstileFromEnv } from "./signup.js";
+import { mailerFromEnv } from "./mailer.js";
 
 const MAX_CALL_MICROS = 1_000_000_000_000; // $1,000,000 for one call: anything larger is a bug upstream
 const MAX_CAP_MICROS = 1_000_000_000_000_000; // $1,000,000,000
@@ -72,6 +74,18 @@ const freezeSchema = z.strictObject({ reason: shortText(500).optional() });
 const webhookSchema = z.strictObject({ url: z.string().max(2000).nullable(), rotate_secret: z.boolean().optional() });
 const keySchema = z.strictObject({ scopes: z.array(z.enum(SCOPES)).min(1), label: shortText(120).optional() });
 const tenantSchema = z.strictObject({ name: shortText(200).min(1) });
+const signupSchema = z.strictObject({
+  email: z.string().trim().max(254).email(),
+  org_name: shortText(200).trim().min(1),
+  turnstile_token: z.string().max(4096).optional(),
+  wallet: z.strictObject({ message: z.string().min(1).max(2000), signature: z.string().regex(/^0x[0-9a-fA-F]{130}$/) }).optional(),
+});
+const signupWalletSchema = z.strictObject({ address: z.string().regex(/^0x[0-9a-fA-F]{40}$/) });
+const signupVerifySchema = z.strictObject({ token: z.string().min(20).max(200) });
+
+// The marketing site calls signup from the browser; nothing else here is
+// meant for one. GOVERN_SIGNUP_ORIGINS adds origins (comma-separated).
+const SIGNUP_ORIGINS = new Set(["https://spendveto.com", "https://www.spendveto.com", "http://localhost:8403", ...String(process.env.GOVERN_SIGNUP_ORIGINS || "").split(",").map((o) => o.trim()).filter(Boolean)]);
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
@@ -112,11 +126,26 @@ function rateLimiter(perSecond) {
   };
 }
 
-export function createGovernApp({ pool, now, rateLimitPerSecond } = {}) {
+export function createGovernApp({ pool, now, rateLimitPerSecond, mailer = mailerFromEnv(), verifyHuman = turnstileFromEnv(), signupVerifyUrl } = {}) {
   const engine = createEngine({ pool, now });
   const admin = createAdmin({ pool, now });
+  const signup = createSignup({ pool, mailer, verifyHuman, now, ...(signupVerifyUrl ? { verifyUrl: signupVerifyUrl } : {}) });
   const app = express();
   app.disable("x-powered-by");
+  // X-Forwarded-For only from a proxy on this machine (nginx on the host):
+  // signup's per-client limit keys on req.ip. GOVERN_TRUST_PROXY names another hop.
+  const trustProxy = process.env.GOVERN_TRUST_PROXY ?? "loopback";
+  app.set("trust proxy", /^\d+$/.test(trustProxy) ? Number(trustProxy) : trustProxy === "false" ? false : trustProxy);
+  // CORS for the signup routes only, and only from the site's origins.
+  app.use("/v1/signup", (req, res, next) => {
+    const origin = req.get("Origin");
+    if (origin && SIGNUP_ORIGINS.has(origin)) {
+      res.vary("Origin");
+      res.set({ "Access-Control-Allow-Origin": origin, "Access-Control-Allow-Methods": "POST", "Access-Control-Allow-Headers": "Content-Type", "Access-Control-Max-Age": "600" });
+    }
+    if (req.method === "OPTIONS") return res.status(204).end();
+    next();
+  });
   app.use(express.json({ limit: "64kb" }));
 
   const limiter = rateLimiter(rateLimitPerSecond || Number(process.env.GOVERN_RATE_LIMIT_PER_SEC) || 200);
@@ -215,6 +244,14 @@ export function createGovernApp({ pool, now, rateLimitPerSecond } = {}) {
   r.post("/keys", scope("admin"), send((req) => admin.createKey(req.auth, parse(keySchema, req.body))));
   r.get("/keys", scope("admin"), send((req) => admin.listKeys(req.auth)));
   r.delete("/keys/:id", scope("admin"), send((req) => admin.revokeKey(req.auth, uuidParam(req, "id", "unknown_key"))));
+
+  // Self-serve signup (signup.js): public, rate-limited, email-verified.
+  r.post("/signup/wallet", send((req) => {
+    const origin = req.get("Origin");
+    return signup.walletChallenge(parse(signupWalletSchema, req.body), SIGNUP_ORIGINS.has(origin) ? origin : null, req.ip);
+  }));
+  r.post("/signup", send((req) => signup.request(parse(signupSchema, req.body), req.ip)));
+  r.post("/signup/verify", send((req) => signup.verify(parse(signupVerifySchema, req.body), req.ip)));
 
   // Operator (deploy-time secret; disabled unless SPENDVETO_OPERATOR_KEY is set)
   r.post("/operator/tenants", requireOperator(), send(async (req) => ({ status: 201, body: { ok: true, ...(await createTenant(pool, parse(tenantSchema, req.body))) } })));

@@ -1,4 +1,4 @@
-import { readFileSync, writeFileSync, existsSync, unlinkSync, mkdirSync } from "node:fs";
+import { readFileSync, writeFileSync, existsSync, unlinkSync, mkdirSync } from "./store.js";
 import { dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { dataPath } from "../shared-config.js";

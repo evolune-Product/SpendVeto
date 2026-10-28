@@ -1,0 +1,277 @@
+import "../styles/pages.css";
+import "./network.css";
+import Page from "../components/Page.jsx";
+
+export const head = {
+  "title": "The Trust Layer for AI Agent Payments — Spend Attestations, Shared Reputation, Open Policy | SpendVeto",
+  "description": "Sellers verify that an AI agent's spending was governed. Companies share fraud reports as signed hashes. Agent budgets become an open JSON Schema. Open formats anyone can verify offline.",
+  "path": "/network",
+  "ogTitle": "The trust layer for AI agent payments | SpendVeto",
+  "ogDescription": "Spend attestations sellers verify offline, fraud reports shared across companies as signed hashes, and an open policy standard for agent budgets.",
+  "ogType": "article",
+  "jsonLd": [
+    {
+      "@context": "https://schema.org",
+      "@graph": [
+        {
+          "@type": "TechArticle",
+          "@id": "https://spendveto.com/network#article",
+          "headline": "The trust layer for AI agent payments: spend attestations, shared reputation and an open policy standard",
+          "description": "How sellers verify that an AI agent's spending was governed, how companies share fraud reports without sharing data, and the open JSON Schema for agent budgets.",
+          "url": "https://spendveto.com/network",
+          "datePublished": "2026-10-18",
+          "dateModified": "2026-10-18",
+          "author": {
+            "@type": "Organization",
+            "@id": "https://spendveto.com/#org",
+            "name": "SpendVeto"
+          },
+          "publisher": {
+            "@type": "Organization",
+            "@id": "https://spendveto.com/#org",
+            "name": "SpendVeto"
+          },
+          "about": [
+            "AI agent payments",
+            "spend governance",
+            "agentic commerce",
+            "payment fraud prevention"
+          ],
+          "isBasedOn": "https://spendveto.com/spec/NETWORK.md"
+        },
+        {
+          "@type": "BreadcrumbList",
+          "itemListElement": [
+            {
+              "@type": "ListItem",
+              "position": 1,
+              "name": "SpendVeto",
+              "item": "https://spendveto.com/"
+            },
+            {
+              "@type": "ListItem",
+              "position": 2,
+              "name": "The network",
+              "item": "https://spendveto.com/network"
+            }
+          ]
+        },
+        {
+          "@type": "FAQPage",
+          "mainEntity": [
+            {
+              "@type": "Question",
+              "name": "What is a governed-spend attestation?",
+              "acceptedAnswer": {
+                "@type": "Answer",
+                "text": "A short-lived token, signed by the buyer's SpendVeto instance only after its policy allowed a payment, naming the payer, the payee, the resource, a USD ceiling and the policy version. It travels with the payment as an X-SpendVeto-Attestation header, and the seller verifies it offline against the issuer address it trusts."
+              }
+            },
+            {
+              "@type": "Question",
+              "name": "How does a seller require governed AI agents?",
+              "acceptedAnswer": {
+                "@type": "Answer",
+                "text": "Add one Express middleware, requireGovernedAgent({ trustedIssuers, audience, price }), in front of the paid route. It refuses requests with no attestation, a forged or self-minted one, one for another payee, price, resource or payer, an expired one, or a replayed one. It never calls SpendVeto and refuses to start without trusted issuers."
+              }
+            },
+            {
+              "@type": "Question",
+              "name": "Does sharing reputation mean sharing customer data?",
+              "acceptedAnswer": {
+                "@type": "Answer",
+                "text": "No. A reputation feed lists SHA-256 hashes of counterparty identifiers with a kind and severity — no raw addresses, reasons, amounts or customers — signed by the publisher. Hashing keeps identifiers from a casual reader, not from someone who can guess them, so publish only what you would be comfortable confirming."
+              }
+            },
+            {
+              "@type": "Question",
+              "name": "Why can't a payment platform just build this?",
+              "acceptedAnswer": {
+                "@type": "Answer",
+                "text": "A platform can build spend limits for its own rail. An agent's spending crosses model providers, stablecoins, cards and bank payouts, and a seller needs proof that holds whichever rail the money used. The attestation, reputation-feed and policy formats are open and get more useful with every company that runs them, which a single rail owner can't replicate by itself."
+              }
+            }
+          ]
+        }
+      ]
+    }
+  ]
+};
+
+export default function NetworkPage() {
+  return (
+    <Page note={<>Every claim on this page is covered by SpendVeto's automated test suite.</>}>
+      <div className="pg">
+        <h1>The trust layer between AI agents and the businesses they pay.</h1>
+        <p className="lede">
+          Every payment platform can cap what an agent spends{" "}
+          <em>on its own rail</em>
+          . But an agent pays a model provider, an API in stablecoins, a vendor by card and a contractor by bank transfer, and none of those businesses can tell whether anyone is in control of it. SpendVeto adds three open pieces on top of its policy engine. Each one gets more useful with every other company that runs it.
+        </p>
+        <div className="grid3">
+          <div className="card">
+            <b>1 · Spend attestations</b>
+            <p>
+              The payment carries signed proof that the buyer's policy allowed it. Sellers verify it offline and can refuse agents nobody governs.
+            </p>
+          </div>
+          <div className="card">
+            <b>2 · Shared reputation</b>
+            <p>
+              Report a scam payee once; every company that trusts you refuses it, on every rail. Feeds carry hashes, never data.
+            </p>
+          </div>
+          <div className="card">
+            <b>3 · An open policy standard</b>
+            <p>Agent budgets as a published JSON Schema, linted in CI so a typo can't silently remove a limit.</p>
+          </div>
+        </div>
+        <h2>1 · Governed-spend attestations: 3-D Secure, for agents</h2>
+        <p>
+          When an agent is about to pay, SpendVeto runs its normal checks: budgets, approvals, payee rules, kill switch. Only if the answer is yes does it sign a five-minute token naming the{" "}
+          <b>payer</b>
+          , the{" "}
+          <b>payee</b>
+          , the{" "}
+          <b>resource</b>
+          , a{" "}
+          <b>USD ceiling</b>
+          {" "}and the{" "}
+          <b>policy version</b>
+          . Above the approval line, it signs only after a human has approved. The token rides with the payment as{" "}
+          <code>X-SpendVeto-Attestation</code>
+          . The SDK, the MCP server and the proxy attach it automatically.
+        </p>
+        <p>
+          The seller pins the buyer's issuer address (published at{" "}
+          <code>/.well-known/spendveto-issuer.json</code>
+          ) and checks one secp256k1 signature. It makes no call to SpendVeto and shares no data:
+        </p>
+        <pre className="term">
+          {"import { requireGovernedAgent } from \"spendveto/integrations/seller-express.js\";\n\napp.get(\"/api/report\",\n  requireGovernedAgent({ trustedIssuers: [\"0xBuyerIssuer…\"], audience: \"0xYourPayTo…\", price: 0.25 }),\n  (req, res) => res.json(report(req.spendveto))   // verified claims: payer, ceiling, policy version\n);"}
+        </pre>
+        <p>
+          It refuses a missing token, a forged or self-minted one, one issued for another payee, price, resource or payer, an expired one, and a replayed one. Each refusal comes with a code naming the root cause, and the middleware won't start without a trust list. The seller learns{" "}
+          <em>that</em>
+          {" "}a policy governed the spend and which version. It never sees the buyer's limits, because a seller who could read a budget could price to it.
+        </p>
+        <div className="card warn">
+          <b>What an attestation proves, and what it doesn't.</b>
+          {" "}It proves the named issuer's engine said yes to this payer, payee, resource and ceiling at that time. It doesn't prove the payment happened (that's the rail's job), or that the issuer's policy is strict. Whether an issuer is good enough is the seller's judgment about that issuer.
+        </div>
+        <h2>2 · Shared counterparty reputation: one report protects every subscriber</h2>
+        <p>
+          The payee that just drained one company's agent is, by definition, new to the next one. A local blocklist can't help with that. With SpendVeto:
+        </p>
+        <ol>
+          <li>
+            Report a counterparty as{" "}
+            <b>block</b>
+            {" "}or{" "}
+            <b>review</b>
+            : a crypto address, a UPI VPA, an IBAN, an email, a domain, or a card network merchant id. From that moment the policy engine, payouts and card authorizations refuse it, or hand it to a human, whichever rail the money would use.
+          </li>
+          <li>
+            Publish your reports as a{" "}
+            <b>signed feed of hashes</b>
+            . Raw identifiers, free-text reasons, amounts and customers never leave your instance.
+          </li>
+          <li>
+            Another company imports your feed{" "}
+            <b>only if it explicitly trusts your issuer address</b>
+            . A feed edited after signing breaks its digest. An older feed can't be replayed over a newer one, so when you withdraw a report it stays withdrawn.
+          </li>
+        </ol>
+        <p>
+          Each subscriber decides what an imported report does: refuse outright, or send it to a human. Canonicalization makes one counterparty one hash, so checksum casing, a URL versus its bare domain, and a spaced IBAN all match. Case-sensitive addresses keep their case.
+        </p>
+        <div className="card warn">
+          <b>Honest limit.</b>
+          {" "}Hashing keeps identifiers away from a casual reader, not from someone who can guess them. An email or VPA is guessable, and anyone can hash a candidate and look it up. Publish what you'd be comfortable confirming.
+        </div>
+        <h2>3 · An open policy standard for agent budgets</h2>
+        <p>
+          A misspelled limit fails{" "}
+          <em>open</em>
+          .{" "}
+          <code>maxPerHourUsd</code>
+          {" "}isn't{" "}
+          <code>maxPerHourUSD</code>
+          , so the engine never reads it, and the agent runs on a budget nobody wrote. The SpendVeto policy file is now a published JSON Schema at{" "}
+          <a className="inline" href="/schemas/policy-v1.json">spendveto.com/schemas/policy-v1.json</a>
+          . Point a policy file at it with{" "}
+          <code>"$schema"</code>
+          {" "}for editor autocomplete, and lint it anywhere:
+        </p>
+        <pre className="term">
+          {"spendveto validate policy.json --strict\n#   error    /maxPerHourUsd  unknown key \"maxPerHourUsd\" — … did you mean \"maxPerHourUSD\"?\n\n# .github/workflows/policy.yml — nothing sent anywhere\n- run: npx spendveto validate config/agent-policy.json --strict"}
+        </pre>
+        <p>
+          The validator catches unknown keys, wrong types, unregistered chain ids, and limits that contradict each other, such as an approval threshold above the per-call cap. It implements exactly the JSON Schema keywords the schema uses and refuses a schema that uses any others, so no rule can go silently unenforced.
+        </p>
+        <h2>Why a platform can't copy a network</h2>
+        <ul>
+          <li>
+            <b>It gets better with other people's adoption.</b>
+            {" "}A seller can only require governed agents once buyers can prove governance, and every buyer that can makes requiring it cheaper for the next seller. Every publisher makes every subscriber's blocklist better. A rival that starts later starts with an empty network.
+          </li>
+          <li>
+            <b>It has to be neutral.</b>
+            {" "}An agent's budget spans rails that compete with each other. A card network, a processor or a model provider can govern its own traffic. It can't be the referee of everyone else's.
+          </li>
+          <li>
+            <b>The formats are open.</b>
+            {" "}Anyone can verify an attestation with any Ethereum library, implement a feed, or validate a policy. The{" "}
+            <a className="inline" href="/spec/NETWORK.md">specification</a>
+            {" "}is published in full and free to implement. Standards spread because nobody has to ask permission.
+          </li>
+          <li>
+            <b>Your data stays yours.</b>
+            {" "}There is no central database to trust: issuers sign, verifiers verify, subscribers choose whom to trust.
+          </li>
+        </ul>
+        <p>
+          Every behavior on this page is exercised by{" "}
+          <code>npm run verify</code>
+          {" "}(510 end-to-end assertions): offline verification, forged and replayed tokens, payer binding, feeds refused until trusted, edits and rollbacks rejected, the same report enforced on payouts and card swipes, and the GitHub Action failing a typo.
+        </p>
+        <h2>Questions</h2>
+        <div className="faq">
+          <details>
+            <summary>What is a governed-spend attestation?</summary>
+            <p>
+              A short-lived token, signed by the buyer's SpendVeto instance only after its policy allowed a payment, naming the payer, the payee, the resource, a USD ceiling and the policy version. It travels with the payment as an{" "}
+              <code>X-SpendVeto-Attestation</code>
+              {" "}header, and the seller verifies it offline against the issuer address it trusts.
+            </p>
+          </details>
+          <details>
+            <summary>How does a seller require governed AI agents?</summary>
+            <p>
+              Add one Express middleware,{" "}
+              <code>requireGovernedAgent(&#123; trustedIssuers, audience, price &#125;)</code>
+              , in front of the paid route. It refuses requests with no attestation, a forged or self-minted one, one for another payee, price, resource or payer, an expired one, or a replayed one. It never calls SpendVeto and refuses to start without trusted issuers.
+            </p>
+          </details>
+          <details>
+            <summary>Does sharing reputation mean sharing customer data?</summary>
+            <p>
+              No. A reputation feed lists SHA-256 hashes of counterparty identifiers with a kind and severity — no raw addresses, reasons, amounts or customers — signed by the publisher. Hashing keeps identifiers from a casual reader, not from someone who can guess them, so publish only what you would be comfortable confirming.
+            </p>
+          </details>
+          <details>
+            <summary>Why can't a payment platform just build this?</summary>
+            <p>
+              A platform can build spend limits for its own rail. An agent's spending crosses model providers, stablecoins, cards and bank payouts, and a seller needs proof that holds whichever rail the money used. The attestation, reputation-feed and policy formats are open and get more useful with every company that runs them, which a single rail owner can't replicate by itself.
+            </p>
+          </details>
+        </div>
+        <div className="row-btns">
+          <a className="pill pill-primary" href="/docs">Get started →</a>
+          <a className="pill pill-ghost" href="/spec/NETWORK.md">Read the specification</a>
+          <a className="pill pill-ghost" href="/console/">Open the console demo</a>
+        </div>
+      </div>
+    </Page>
+  );
+}

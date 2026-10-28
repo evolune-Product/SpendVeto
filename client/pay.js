@@ -1,16 +1,23 @@
 import { MODE, PORT, DEFAULT_CHAIN } from "../shared-config.js";
 import { getRail } from "../rails/index.js";
 import { checkPolicy } from "./policy.js";
+import { signLedgerEvent } from "./ledger-event.js";
 
 const BASE_URL = `http://localhost:${PORT}`;
 const APPROVAL_POLL_MS = 800;
 
-export function logEvent(event) {
-  return fetch(`${BASE_URL}/api/ledger/event`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(event),
-  }).catch(() => {});
+// Signed by `account` (client/ledger-event.js): the server only records events
+// about a wallet from that wallet's own key.
+// Best-effort, as before: a reporting failure never breaks the payment flow.
+export async function logEvent(account, event) {
+  try {
+    const body = await signLedgerEvent(account, event);
+    await fetch(`${BASE_URL}/api/ledger/event`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+  } catch {}
 }
 
 function sleep(ms) {
@@ -86,7 +93,7 @@ export function governedCall(tool, account, opts = {}) {
 async function governedCallUnlocked(tool, account, { onStatus = () => {}, approvalTimeoutMs = 30000, chain = DEFAULT_CHAIN, query } = {}) {
   const policyCheck = await checkPolicy(account.address, tool.price, tool.id, chain, tool.category, tool.payTo);
   if (!policyCheck.allowed) {
-    await logEvent({ address: account.address, resource: tool.path, price: tool.price, chain, status: "blocked", reason: policyCheck.reason });
+    await logEvent(account, { resource: tool.path, price: tool.price, chain, status: "blocked", reason: policyCheck.reason });
     // The denial is structured so the calling agent can self-correct instead
     // of crashing or retry-looping: a machine code plus a concrete fix.
     return {
@@ -107,7 +114,7 @@ async function governedCallUnlocked(tool, account, { onStatus = () => {}, approv
     );
     const { outcome } = await waitForApproval(tool, account, approvalTimeoutMs);
     if (outcome === "denied") {
-      await logEvent({ address: account.address, resource: tool.path, price: tool.price, chain, status: "blocked", reason: "denied by human approver" });
+      await logEvent(account, { resource: tool.path, price: tool.price, chain, status: "blocked", reason: "denied by human approver" });
       return {
         ok: false,
         stage: "approval",
@@ -117,7 +124,7 @@ async function governedCallUnlocked(tool, account, { onStatus = () => {}, approv
       };
     }
     if (outcome === "timeout") {
-      await logEvent({ address: account.address, resource: tool.path, price: tool.price, chain, status: "blocked", reason: "approval timed out" });
+      await logEvent(account, { resource: tool.path, price: tool.price, chain, status: "blocked", reason: "approval timed out" });
       return {
         ok: false,
         stage: "approval",
@@ -136,12 +143,12 @@ async function governedCallUnlocked(tool, account, { onStatus = () => {}, approv
     const data = await rail.pay({ tool, account, chain, baseUrl: BASE_URL, query, attestation });
     if (MODE === "testnet") {
       const settlement = data?.[Symbol.for("spendveto.settlement")];
-      await logEvent({ address: account.address, resource: tool.path, price: tool.price, chain, status: "paid", ...(settlement?.transaction ? { txHash: settlement.transaction } : {}) });
+      await logEvent(account, { resource: tool.path, price: tool.price, chain, status: "paid", ...(settlement?.transaction ? { txHash: settlement.transaction } : {}) });
     }
     return { ok: true, stage: "paid", data, policyCheck };
   } catch (err) {
     if (MODE === "testnet") {
-      await logEvent({ address: account.address, resource: tool.path, price: tool.price, chain, status: "failed", reason: err.message });
+      await logEvent(account, { resource: tool.path, price: tool.price, chain, status: "failed", reason: err.message });
     }
     return { ok: false, stage: "payment", reason: err.message, policyCheck };
   }

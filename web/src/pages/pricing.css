@@ -1,0 +1,15 @@
+.banner { max-width: 60rem; margin: 0 auto 2.2rem; border: 1px solid rgba(224,160,92,.4); background: rgba(224,160,92,.06); border-radius: 12px; padding: .9rem 1.2rem; color: var(--dim,#93a094); font-size: .9rem; line-height: 1.6; }
+.banner b { color: var(--copper,#e0a05c); }
+.tiers { max-width: 72rem; margin: 0 auto; display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 1.1rem; padding: 0 1.2rem; }
+.tier { border: 1px solid var(--line,#22291f); border-radius: 16px; background: rgba(255,255,255,.012); padding: 1.5rem 1.4rem; display: flex; flex-direction: column; }
+.tier.hot { border-color: var(--green-deep,#1f7a52); background: rgba(70,214,140,.04); position: relative; }
+.tier.hot::before { content: "MOST TEAMS"; position: absolute; top: -.55rem; left: 1.2rem; font-size: .58rem; letter-spacing: .16em; font-weight: 800; color: var(--green,#46d68c); background: var(--bg,#0b0f0c); padding: 0 .5rem; }
+.tier h2 { font-size: 1rem; letter-spacing: .04em; }
+.price { font-size: 1.9rem; font-weight: 800; margin: .7rem 0 .1rem; font-family: "Space Grotesk", sans-serif; }
+.price span { font-size: .8rem; font-weight: 500; color: var(--faint,#5c675e); }
+.per { font-size: .78rem; color: var(--dim,#93a094); min-height: 2.2em; }
+.tier ul { list-style: none; padding: 0; margin: 1rem 0 1.4rem; display: grid; gap: .5rem; font-size: .86rem; color: var(--dim,#93a094); }
+.tier li::before { content: "— "; color: var(--green,#46d68c); }
+.tier .cta { margin-top: auto; text-align: center; font: inherit; font-size: .9rem; font-weight: 700; padding: .7rem; border-radius: 11px; text-decoration: none; border: 1px solid var(--line,#22291f); color: var(--ink,#eef3ed); }
+.tier.hot .cta, .cta.go { background: var(--green,#46d68c); border-color: var(--green,#46d68c); color: #06130b; }
+.foot-note { max-width: 60rem; margin: 2.4rem auto 0; padding: 0 1.2rem; color: var(--faint,#5c675e); font-size: .82rem; line-height: 1.7; }

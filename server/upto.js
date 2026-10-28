@@ -34,7 +34,7 @@
 // authorization, and it is not a facilitator. It is the buyer's ledger of
 // what has been authorized but not yet spent — the number no rail reports and
 // every budget depends on.
-import { readFileSync, writeFileSync, existsSync, mkdirSync } from "node:fs";
+import { readFileSync, writeFileSync, existsSync, mkdirSync } from "./store.js";
 import { randomUUID } from "node:crypto";
 import { fileURLToPath } from "node:url";
 import { DATA_DIR as STATE_DIR } from "../shared-config.js";

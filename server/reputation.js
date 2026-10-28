@@ -22,7 +22,7 @@
 // payment is the subscriber's call (importedAction), never the publisher's.
 
 import { createHash, randomUUID } from "node:crypto";
-import { readFileSync, writeFileSync, existsSync } from "node:fs";
+import { readFileSync, writeFileSync, existsSync } from "./store.js";
 import { recoverMessageAddress } from "viem";
 
 export const FEED_SPEC = "spendveto-reputation-feed/v1";

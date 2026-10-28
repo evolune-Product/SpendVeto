@@ -84,6 +84,9 @@ export function pseudoAddress(seed) {
 
 const sha = (s) => createHash("sha256").update(s).digest("hex");
 const round6 = (n) => Math.round(n * 1e6) / 1e6;
+// How far over its estimate an in-flight request is assumed able to bill when
+// deciding whether another may join it (see the in-flight headroom in decide).
+const IN_FLIGHT_MARGIN = 1.5;
 const clean = (v, max = 64) => String(v || "").replace(/[^\w .:@\-/]/g, "").slice(0, max).trim();
 
 // Hop-by-hop and length/encoding headers never cross the proxy as-is.
@@ -269,6 +272,12 @@ export function createLlmGuard(deps) {
     }
     return round6(total);
   }
+  function heldCount(address) {
+    const key = address.toLowerCase();
+    let n = 0;
+    for (const h of holds.values()) if (h.address === key && Date.now() - h.at <= 15 * 60e3) n++;
+    return n;
+  }
   function withLock(address, fn) {
     const key = address.toLowerCase();
     const prev = locks.get(key) || Promise.resolve();
@@ -361,6 +370,24 @@ export function createLlmGuard(deps) {
     const day = windowUSD(identity.address, DAY);
     if (day + held + estimate.usd > settings.dailyBudgetUSD) {
       return deny("llm_daily_budget", `would exceed the daily budget $${settings.dailyBudgetUSD} ($${day.toFixed(4)} spent in the last 24h, $${held.toFixed(4)} in flight)`, "the budget resets on a rolling 24 hours — or a human can raise policy.llm.dailyBudgetUSD", 402, { spentDayUSD: day });
+    }
+    // In-flight headroom. A hold is the estimate, and a provider can bill above
+    // it (cache writes, a provider-side system prompt, text denser than bytes/3).
+    // One request at a time that gap is one request's; with many in flight it
+    // multiplies — 100 parallel calls overshot a $0.10 budget by 14% in testing.
+    // So while others are in flight, admit only with room for every in-flight
+    // request, this one included, to bill IN_FLIGHT_MARGIN over its estimate;
+    // otherwise a retryable 429 — the room is back once they've settled. A lone
+    // request is decided exactly as before.
+    if (heldCount(identity.address) > 0) {
+      const need = (held + estimate.usd) * IN_FLIGHT_MARGIN;
+      const session = identity.session && Number(settings.sessionBudgetUSD) > 0
+        ? [[windowUSD(identity.address, DAY, identity.session), Number(settings.sessionBudgetUSD), "session"]] : [];
+      for (const [spent, cap, label] of [[hour, settings.hourlyBudgetUSD, "hourly"], [day, settings.dailyBudgetUSD, "daily"], ...session]) {
+        if (spent + need > cap) {
+          return deny("llm_budget_in_flight", `the ${label} budget $${cap} has no room for this request while ${heldCount(identity.address)} more from this agent are in flight ($${spent.toFixed(4)} spent, $${held.toFixed(4)} held)`, "retry in a moment — the room comes back as the requests in flight settle", 429, { retryAfter: 1 });
+        }
+      }
     }
     if (identity.session && Number(settings.sessionBudgetUSD) > 0) {
       const s = windowUSD(identity.address, DAY, identity.session) + heldUSD(identity.address, identity.session);

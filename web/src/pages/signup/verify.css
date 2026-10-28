@@ -1,0 +1,9 @@
+.verify-wrap { max-width: 720px; margin: 0 auto; padding: 8rem clamp(1.2rem, 4vw, 3rem) 5rem; }
+.verify-wrap h1 { font-size: clamp(1.8rem, 4vw, 2.4rem); letter-spacing: -0.02em; margin-bottom: 1.2rem; }
+.key-reveal { display: flex; flex-direction: column; gap: 0.9rem; }
+.key-reveal p { color: var(--dim); line-height: 1.65; }
+.key-reveal p b { color: var(--ink); }
+.key-reveal a { color: var(--green); }
+.key-reveal .key { display: block; padding: 0.9rem 1rem; border: 1px solid rgba(70, 214, 140, 0.4); border-radius: 10px; background: var(--panel); color: var(--ink); font-size: 0.9rem; overflow-wrap: anywhere; }
+.key-reveal .go { align-self: flex-start; padding: 0.6rem 1.2rem; border: 1px solid var(--green-deep); border-radius: 99px; background: transparent; color: var(--green); font: inherit; font-weight: 700; cursor: pointer; }
+.key-reveal pre.block { margin: 0; overflow-x: auto; }

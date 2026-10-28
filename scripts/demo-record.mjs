@@ -183,7 +183,7 @@ async function burnCaptions(videoPath, marks, offset) {
   for (let i = 0; i < marks.length; i++) {
     await page.setContent(`
       <style>
-        @font-face { font-family: "SG"; src: url("file://${ROOT}site/fonts/space-grotesk.woff2") format("woff2"); font-weight: 500 700; }
+        @font-face { font-family: "SG"; src: url("file://${ROOT}web/public/fonts/space-grotesk.woff2") format("woff2"); font-weight: 500 700; }
         html, body { margin: 0; background: transparent; }
         .cap {
           width: ${W}px; min-height: 220px; display: flex; align-items: center; justify-content: center;

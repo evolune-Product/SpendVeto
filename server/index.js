@@ -1,34 +1,38 @@
 import dotenv from "dotenv";
 import { fileURLToPath } from "node:url";
 import { join } from "node:path";
-import { readFileSync } from "node:fs";
+import { readFileSync, isPostgres, awaitPersisted } from "./store.js";
 import express from "express";
 import { loadOptional } from "./optional.js";
 import { parseChallenges, assessChallenge, mppHoldUSD, authorizeCharge, reportCharge, openSession, recordVoucher, closeSession, mppState } from "./mpp.js";
 import { outOfBandSettings, reconcile, scanChains, outOfBandState } from "./outofband.js";
 import { createMcpGuard } from "./mcpguard.js";
 import { MODE, PORT, TOOLS, CHAINS, FACILITATOR_URL, findChain, DEFAULT_CHAIN, dataPath, PACKAGE_DATA_DIR } from "../shared-config.js";
-import { randomUUID } from "node:crypto";
-import { writeFileSync } from "node:fs";
+import { randomBytes, randomUUID } from "node:crypto";
+import { writeFileSync } from "./store.js";
 import { createSimulateGate, receiptMessage, signDecision, signUpiDecision, signEuDecision, signUkDecision, signBrDecision, signUsDecision, consentMessage, instanceSigner } from "./simulate.js";
 import { decisionEvents, toJSONL } from "./events.js";
-import { checkPolicy, policyHash, loadPolicy } from "../client/policy.js";
+import { checkPolicy, policyHash, loadPolicy, usePolicySources } from "../client/policy.js";
 import { verifyMessage } from "viem";
 import { runTool } from "./agent.js";
 import { getLedger, getBalances, appendLedgerEntry, creditSimBalance, verifyLedgerChain } from "./ledger.js";
-import { createApproval, getApproval, decideApproval, listApprovals, findApprovableFor, consumeApproval } from "./approvals.js";
+import { createApproval, getApproval, decideApproval, listApprovals, findApprovableFor, consumeApproval, decideLinkToken, verifyDecideLinkToken } from "./approvals.js";
+import { ledgerEventMessage, LEDGER_EVENT_MAX_AGE_MS } from "../client/ledger-event.js";
 import { worldIdConfigured, verifyWorldIdProof, rpContextFor, WORLD_ACTION } from "./worldid.js";
 import { listDelegations, createDelegation, revokeDelegation } from "./delegations.js";
 import { listFreezes, findActiveFreeze, createFreeze, unfreeze } from "./freezes.js";
 import { generatePrivateKey, privateKeyToAccount } from "viem/accounts";
-import { readdirSync, existsSync } from "node:fs";
+import { readdirSync, existsSync } from "./store.js";
 import { account as mainAccount } from "../client/wallet.js";
 import { maybeFreezeForBurst, analyzeAnomalies } from "./anomaly.js";
 import { trustScoreFor, trustGraph, payeeReputation } from "./trust.js";
 import { sendAlert } from "./alerts.js";
 import { railsCatalog } from "../rails/index.js";
 import { setShadowPolicy, clearShadowPolicy, shadowReport } from "./shadow.js";
-import { requireAuth } from "./auth.js";
+import { requireAuth, authEnabled } from "./auth.js";
+import { neutralizeFormula } from "./csv.js";
+import { createRateLimiter } from "./ratelimit.js";
+import { createAccountsRouter } from "./accounts.js";
 import { recordConsent, consentsForDelegation } from "./consents.js";
 import { toVerifiableCredential } from "./vc.js";
 import { normalizeReceipt } from "./receipts.js";
@@ -63,7 +67,60 @@ const app = express();
 // reports "http", which leaks into every self-referential URL this server
 // generates (discovery.js's Bazaar resource list, openapi.js's servers[].url)
 // and would advertise a scheme a real client can't necessarily reach.
-app.set("trust proxy", true);
+// Believed only from a proxy on this machine (nginx on the same host, a local
+// tunnel): `true` believed X-Forwarded-For from anyone, so a client could
+// claim any IP in one header — and the rate limit keys on that IP. Any other
+// topology names its hop in SPENDVETO_TRUST_PROXY (Express's syntax: an
+// IP/CIDR list, or a hop count).
+const trustProxy = process.env.SPENDVETO_TRUST_PROXY ?? "loopback";
+app.set("trust proxy", /^\d+$/.test(trustProxy) ? Number(trustProxy) : trustProxy === "false" ? false : trustProxy);
+
+// With Postgres storage (server/store.js) writes reach the database in order,
+// just after they're made. A response leaves only once the writes before it
+// are committed — a client is never told "paid" about a row that isn't
+// durable — and if storage has failed it answers 503 instead of a success.
+if (isPostgres()) {
+  app.use((req, res, next) => {
+    const end = res.end;
+    res.end = function (...args) {
+      awaitPersisted().then(
+        () => end.apply(res, args),
+        () => {
+          if (res.headersSent) return res.destroy();
+          res.statusCode = 503;
+          res.removeHeader("Content-Length");
+          res.setHeader("Content-Type", "application/json");
+          end.call(res, JSON.stringify({ code: "storage_unavailable", error: "SpendVeto couldn't commit this change to its database — nothing here should be treated as done" }));
+        },
+      );
+      return res;
+    };
+    next();
+  });
+}
+
+// Every response: no framework banner, no MIME sniffing, and nothing here can
+// be framed — the Console's Approve/Freeze buttons must not be clickable
+// through someone else's page. The CSP fits the Console: its own scripts and
+// styles (React sets style attributes), and fetches to itself and the proxy.
+app.disable("x-powered-by");
+app.use((req, res, next) => {
+  res.set({
+    "X-Content-Type-Options": "nosniff",
+    "X-Frame-Options": "DENY",
+    "Referrer-Policy": "no-referrer",
+    "Content-Security-Policy": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self' http://localhost:8404 http://127.0.0.1:8404; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'",
+  });
+  next();
+});
+
+// Per-client rate limit on /api/* (server/ratelimit.js). 0 turns it off.
+app.use(createRateLimiter({ perMinute: Number(process.env.SPENDVETO_RATE_LIMIT_PER_MIN ?? 600) }));
+
+// The server's own credential for the policy checks it runs in-process
+// (client/policy.js reads the ledger over HTTP): once auth is on, those reads
+// need a key like anyone else's (server/auth.js accepts this one as a viewer).
+process.env.SPENDVETO_INTERNAL_TOKEN = randomBytes(32).toString("hex");
 
 // The LLM spend guard (server/llmguard.js) is mounted BEFORE the JSON body
 // parser: it needs the raw request bytes — Anthropic bodies are forwarded
@@ -121,12 +178,41 @@ app.use(createCardRouter({
 }));
 
 app.use(express.json());
-// Local-tool CORS: lets the marketing site (:8403) show live governance stats.
+// Cross-origin reads are for what is public on purpose: the open standards
+// and catalog any origin may read, and the live counters, which only the
+// marketing site's own origins may read (SPENDVETO_CORS_ORIGINS adds more).
+// Everything else — ledger, policy, approvals — answers no cross-origin read,
+// so a page the operator happens to visit can't read this server.
+const CORS_ANY = /^\/(?:openapi\.json|\.well-known\/spendveto-issuer\.json|api\/(?:catalog|chains|rails|discovery\/resources|policy\/schema|reputation\/feed|worldid\/rp-context))$/;
+const STATS_ORIGINS = new Set(["http://localhost:8403", "http://127.0.0.1:8403", "https://spendveto.com", ...String(process.env.SPENDVETO_CORS_ORIGINS || "").split(",").map((o) => o.trim()).filter(Boolean)]);
 app.use((req, res, next) => {
-  res.set("Access-Control-Allow-Origin", "*");
+  if (CORS_ANY.test(req.path)) res.set("Access-Control-Allow-Origin", "*");
+  else if (req.path === "/api/stats") {
+    res.vary("Origin");
+    if (STATS_ORIGINS.has(req.get("Origin"))) res.set("Access-Control-Allow-Origin", req.get("Origin"));
+  }
   next();
 });
-app.use(express.static(fileURLToPath(new URL("../dashboard", import.meta.url))));
+// The Console is a built artifact (scripts/build-console.mjs). Unbuilt, the
+// API still works and / says how to get the UI, rather than a bare 404.
+const consoleDir = fileURLToPath(new URL("../dashboard/dist", import.meta.url));
+app.use(express.static(consoleDir));
+if (!existsSync(join(consoleDir, "index.html"))) {
+  app.get("/", (req, res) => res.type("text/plain").send("The SpendVeto Console isn't built. Run `npm run build:console`, then reload. The API is up regardless.\n"));
+}
+
+// Once auth is on, reading needs a viewer key too — the ledger, policy,
+// delegations and approvals are what an attacker maps before acting. Open:
+// what agents and sellers need without a key (paying for a tool, the catalog
+// and standards, polling their own approval, a token-gated decide link) and
+// the aggregate counters. Open mode (no keys) is unchanged.
+const PUBLIC_READS = /^\/(?:$|openapi\.json$|\.well-known\/spendveto-issuer\.json$|api\/(?:agent\/.+|auth\/state|health|catalog|chains|rails|stats|waitlist|discovery\/resources|policy\/schema|policy\/validate|reputation\/feed|worldid\/rp-context|approvals\/[^/]+|approvals\/[^/]+\/decide)$)/;
+app.use((req, res, next) => {
+  if ((req.method !== "GET" && req.method !== "HEAD") || !authEnabled() || PUBLIC_READS.test(req.path)) return next();
+  return requireAuth("viewer")(req, res, next);
+});
+// Console sign-in and user management (server/accounts.js).
+app.use(createAccountsRouter());
 
 async function serveAgentResult(toolId, res, settlement) {
   const result = await runTool(toolId);
@@ -474,7 +560,14 @@ app.get("/api/waitlist", (req, res) => {
   res.json({ count: readWaitlist().length });
 });
 
+// ?view=spend: only what the policy engine's caps read (paid and unmanaged
+// rows, five fields) — an agent's check stops downloading the whole history.
+const spendView = () => getLedger().filter((e) => e.status === "paid" || e.status === "unmanaged").map(({ address, amount, ts, category, status }) => ({ address, amount, ts, category, status }));
+// Liveness plus which storage the core is on (public: says nothing about the data).
+app.get("/api/health", (req, res) => res.json({ ok: true, storage: isPostgres() ? "postgres" : "file", mode: MODE }));
+
 app.get("/api/ledger", (req, res) => {
+  if (req.query.view === "spend") return res.json({ entries: spendView() });
   res.json({ entries: getLedger(), balances: getBalances(), mode: MODE });
 });
 
@@ -486,9 +579,24 @@ app.get("/api/ledger/verify-chain", (req, res) => {
   res.json(verifyLedgerChain());
 });
 
-app.post("/api/ledger/event", (req, res) => {
-  const { address, resource, price, chain, category, status, reason, txHash, payTo } = req.body || {};
+// Signed by the wallet the event is about (client/ledger-event.js): only a
+// wallet's own key can put rows about it in the ledger — and with them trip
+// its runaway auto-freeze or count against its budgets. Fresh and single-use.
+const seenEventNonces = new Map(); // nonce -> ts, pruned past the max age
+app.post("/api/ledger/event", async (req, res) => {
+  const { address, resource, price, chain, category, status, reason, txHash, payTo, auth } = req.body || {};
   if (!address || !status) return res.status(400).json({ error: "address and status are required" });
+  if (!/^0x[0-9a-fA-F]{40}$/.test(address)) return res.status(400).json({ error: "address must be a 0x-prefixed 20-byte address" });
+  const unsigned = (why) => res.status(401).json({ code: "ledger_event_unsigned", error: `ledger events must be signed by the wallet they name — ${why}` });
+  if (!auth || typeof auth.signature !== "string" || typeof auth.nonce !== "string" || !Number.isFinite(Number(auth.ts))) return unsigned("send auth: { ts, nonce, signature } (client/ledger-event.js signLedgerEvent)");
+  const now = Date.now();
+  if (Math.abs(now - Number(auth.ts)) > LEDGER_EVENT_MAX_AGE_MS) return unsigned("the signature is stale");
+  for (const [n, t] of seenEventNonces) if (now - t > LEDGER_EVENT_MAX_AGE_MS * 2) seenEventNonces.delete(n);
+  if (seenEventNonces.has(auth.nonce)) return unsigned("this signed event was already recorded (replay)");
+  let valid = false;
+  try { valid = await verifyMessage({ address, message: ledgerEventMessage(req.body, auth.ts, auth.nonce), signature: auth.signature }); } catch {}
+  if (!valid) return unsigned("the signature doesn't match this event and address");
+  seenEventNonces.set(auth.nonce, now);
   // The settlement's transaction hash (testnet x402) is what lets out-of-band
   // detection (server/outofband.js) recognise this payment on-chain exactly.
   const tx = typeof txHash === "string" && /^0x[0-9a-fA-F]{64}$/.test(txHash) ? txHash.toLowerCase() : null;
@@ -501,7 +609,7 @@ app.post("/api/ledger/event", (req, res) => {
 
 // Audit export: the full ledger as CSV for accounting/compliance workflows.
 app.get("/api/export.csv", (req, res) => {
-  const quote = (v) => `"${String(v ?? "").replaceAll('"', '""')}"`;
+  const quote = (v) => `"${neutralizeFormula(v).replaceAll('"', '""')}"`;
   const rows = getLedger().map((e) => [e.ts, e.address, e.resource, e.amount, e.chain, e.status, e.mode, e.reason].map(quote).join(","));
   res.set("Content-Type", "text/csv");
   res.set("Content-Disposition", `attachment; filename="spendveto-ledger-${new Date().toISOString().slice(0, 10)}.csv"`);
@@ -900,8 +1008,8 @@ app.post("/api/approvals", (req, res) => {
     address,
     resource,
     price,
-    approveUrl: `http://localhost:${PORT}/api/approvals/${record.id}/decide?decision=approved`,
-    denyUrl: `http://localhost:${PORT}/api/approvals/${record.id}/decide?decision=denied`,
+    approveUrl: `http://localhost:${PORT}/api/approvals/${record.id}/decide?decision=approved&token=${decideLinkToken(record.id, "approved")}`,
+    denyUrl: `http://localhost:${PORT}/api/approvals/${record.id}/decide?decision=denied&token=${decideLinkToken(record.id, "denied")}`,
   });
   res.status(201).json(record);
 });
@@ -924,7 +1032,9 @@ function readPolicyRequiresWorldId() {
   }
 }
 
-app.get("/api/approvals", (req, res) => {
+// The list exposes every pending approval's id, so once auth is on it needs a
+// key — and an id alone can't decide anything (see the one-click link below).
+app.get("/api/approvals", requireAuth("viewer"), (req, res) => {
   res.json({ approvals: listApprovals() });
 });
 
@@ -939,12 +1049,18 @@ app.get("/api/approvals/:id", (req, res) => {
 app.get("/api/approvals/:id/decide", (req, res) => {
   const decision = req.query.decision;
   if (decision !== "approved" && decision !== "denied") return res.status(400).send("decision must be 'approved' or 'denied'");
+  // The link's own token, bound to this approval and this decision: without
+  // it, anyone who learned the id could approve the spend from any browser.
+  if (!verifyDecideLinkToken(req.params.id, decision, req.query.token)) return res.status(403).send("this link isn't valid for this approval — use the link from the approval alert, or decide in the SpendVeto Console");
   // Real-money payouts are never decided by an unauthenticated link: they go
   // through the authenticated POST (approver role, World ID when required).
   if (String(getApproval(req.params.id)?.resource || "").startsWith("payout:")) return res.status(403).send("payout approvals must be decided in the SpendVeto Console");
   const record = decideApproval(req.params.id, decision, readPolicyRequiredApprovals());
   if (!record) return res.status(409).send("not pending (already decided, or unknown id)");
-  res.send(`<body style="font-family:system-ui;background:#0b0f0c;color:#eef3ed;display:grid;place-items:center;height:100vh"><div style="text-align:center"><h2>${decision === "approved" ? "✅ Approved" : "⛔ Denied"}</h2><p style="color:#93a094">${record.resource} · $${record.price} — recorded. You can close this tab.</p></div></body>`);
+  // Escaped: the resource can carry text an agent chose (llm:<model> from a
+  // request body, an MCP tool name), and this page shares the admin API's origin.
+  const escHtml = (v) => String(v).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]);
+  res.send(`<body style="font-family:system-ui;background:#0b0f0c;color:#eef3ed;display:grid;place-items:center;height:100vh"><div style="text-align:center"><h2>${decision === "approved" ? "✅ Approved" : "⛔ Denied"}</h2><p style="color:#93a094">${escHtml(record.resource)} · $${escHtml(record.price)} — recorded. You can close this tab.</p></div></body>`);
 });
 
 // The signed handshake IDKit needs before it will even open a proof
@@ -1628,15 +1744,28 @@ app.post("/api/upto/void", (req, res) => {
 // The hold number client/policy.js folds into the hourly budget: every open
 // upto ceiling plus every live auth-capture hold (server/authcapture.js) —
 // two schemes, one question: what has this wallet signed away but not spent?
-app.get("/api/upto/holds/:address", (req, res) => {
-  const uptoUSD = openHoldUSD(req.params.address);
-  const authCaptureUSD = authCaptureHoldUSD(req.params.address);
+function holdsFor(address) {
+  const uptoUSD = openHoldUSD(address);
+  const authCaptureUSD = authCaptureHoldUSD(address);
   // In-flight LLM requests reserve their estimate too (server/llmguard.js),
   // so a payment racing a model call sees the money already committed.
-  const llmUSD = llmGuard.heldUSD(req.params.address);
+  const llmUSD = llmGuard.heldUSD(address);
   // Allowed MPP charges not yet reported and open MPP session deposits (server/mpp.js).
-  const mppUSD = mppHoldUSD(req.params.address, bookMpp);
-  res.json({ address: req.params.address, heldUSD: Math.round((uptoUSD + authCaptureUSD + llmUSD + mppUSD) * 1e6) / 1e6, uptoUSD, authCaptureUSD, llmUSD, mppUSD });
+  const mppUSD = mppHoldUSD(address, bookMpp);
+  return { address, heldUSD: Math.round((uptoUSD + authCaptureUSD + llmUSD + mppUSD) * 1e6) / 1e6, uptoUSD, authCaptureUSD, llmUSD, mppUSD };
+}
+app.get("/api/upto/holds/:address", (req, res) => {
+  res.json(holdsFor(req.params.address));
+});
+
+// The policy engine runs in this process for the gate, the LLM guard and the
+// evaluators: hand it the same state in-process (client/policy.js).
+usePolicySources({
+  freezes: async () => listFreezes(),
+  reputation: async (payee) => reputation.check([payee]),
+  spendEntries: async () => spendView(),
+  heldUSD: async (address) => holdsFor(address).heldUSD,
+  delegations: async () => listDelegations(),
 });
 
 // ---- AI FinOps (server/finops.js): one cost view across every rail, FOCUS export, rebilling ----

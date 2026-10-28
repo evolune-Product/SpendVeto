@@ -2,9 +2,9 @@
 
 **Spend controls for AI agents — model tokens, crypto and fiat payments, and cards.** Model providers and payment rails move an agent's money; SpendVeto decides whether the agent should be allowed to move it — budgets, loop detection, human approval, delegated caps and a kill switch, enforced *before* anything is spent. And because no single rail sees all of an agent's spending, it is also the neutral trust layer between agents and the businesses they pay: signed spend attestations a seller can check, reputation feeds shared across companies, and an open policy standard.
 
-[**Live site + playground**](https://spendveto.com) · [**Docs**](https://spendveto.com/docs.html) · [**npm**](https://www.npmjs.com/package/spendveto) · Proprietary · x402 + MCP native
+[**Live site + playground**](https://spendveto.com) · [**Docs**](https://spendveto.com/docs) · [**npm**](https://www.npmjs.com/package/spendveto) · Proprietary · x402 + MCP native
 
-**Every claim in this README is executed before it ships.** `npm run verify` runs **492 end-to-end assertions** from a clean clone — real secp256k1 keypairs, real ECDSA verification, a real MCP stdio JSON-RPC session, and a synthetic runaway agent frozen mid-burst. If a claim isn't a test, it doesn't ship; features that can't work locally yet are declared slots that refuse honestly, never stubs that pretend.
+**Every claim in this README is executed before it ships.** `npm run verify` runs **510 end-to-end assertions** from a clean clone — real secp256k1 keypairs, real ECDSA verification, a real MCP stdio JSON-RPC session, and a synthetic runaway agent frozen mid-burst. If a claim isn't a test, it doesn't ship; features that can't work locally yet are declared slots that refuse honestly, never stubs that pretend.
 
 What *isn't* true yet is stated just as plainly: no external security audit, no customers. Settlement is testnet and simulate only, by default, for every chain. XRPL mainnet settlement (real money, RLUSD) is fully wired but **disabled unless an operator explicitly opts in** — that's their decision and their risk; we don't run, monitor, or control anyone's deployment. Funding positioning and market numbers live in [`PITCH.md`](./PITCH.md).
 
@@ -181,11 +181,11 @@ npm run call -- summarize      # $0.02 — above the approval line: go approve/d
 npm run call -- translate      # $0.005
 ```
 
-`npm run verify` runs the whole thing headlessly — **492 end-to-end assertions**: catalog, forged-signature rejection, hard policy blocks, all three approval outcomes (approved / denied / timed-out-fails-closed), delegation caps including the n-level cascade, tool + chain scoping, multichain settlement (chain-scoped signatures, per-chain balances, chain allowlists), runaway-burst auto-freeze, the manual kill switch, signed-receipt verification, CSV export, per-tool/per-wallet/per-chain analytics, webhook alerts actually arriving at a live receiver, structured self-correcting denials, side-effect-free dry runs, TTL grant expiry, one-click approval links, the stats endpoint, AP2 mandate-chain drift detection, human-not-present authority, governed Bazaar discovery, ACP shared-payment-token scope, request-integrity binding (including a payload swapped after authorization), signed dispute evidence packs and their tamper detection, OpenTelemetry span export under an inbound traceparent, governed-spend attestations verified offline by a seller (replay, payer binding, tampering), signed reputation feeds crossing organizations (trust, rollback, digest), policy-schema validation in the CLI and the GitHub Action, and a real MCP stdio JSON-RPC round trip.
+`npm run verify` runs the whole thing headlessly — **510 end-to-end assertions**: catalog, forged-signature rejection, hard policy blocks, all three approval outcomes (approved / denied / timed-out-fails-closed), delegation caps including the n-level cascade, tool + chain scoping, multichain settlement (chain-scoped signatures, per-chain balances, chain allowlists), runaway-burst auto-freeze, the manual kill switch, signed-receipt verification, CSV export, per-tool/per-wallet/per-chain analytics, webhook alerts actually arriving at a live receiver, structured self-correcting denials, side-effect-free dry runs, TTL grant expiry, one-click approval links, the stats endpoint, AP2 mandate-chain drift detection, human-not-present authority, governed Bazaar discovery, ACP shared-payment-token scope, request-integrity binding (including a payload swapped after authorization), signed dispute evidence packs and their tamper detection, OpenTelemetry span export under an inbound traceparent, governed-spend attestations verified offline by a seller (replay, payer binding, tampering), signed reputation feeds crossing organizations (trust, rollback, digest), policy-schema validation in the CLI and the GitHub Action, and a real MCP stdio JSON-RPC round trip.
 
-> **On the number:** a fresh clone runs **492** assertions. Three more exercise a real cross-project integration against [Basis](https://github.com/revanthrajeev/basis) and run only when `../prediction-copilot` is checked out beside this repo — the suite prints `(skipped: cross-project Basis integration test …)` when it isn't. Every published number is the 492 anyone can reproduce.
+> **On the number:** a fresh clone runs **510** assertions. Three more exercise a real cross-project integration against [Basis](https://github.com/revanthrajeev/basis) and run only when `../prediction-copilot` is checked out beside this repo — the suite prints `(skipped: cross-project Basis integration test …)` when it isn't. Every published number is the 510 anyone can reproduce.
 
-**Marketing site**: `npm run site` serves the deploy-ready landing page (Three.js hero, animated product walkthrough) at http://localhost:8403 — `site/` is fully static and self-contained, drop it on Vercel/Netlify as-is. Includes an **interactive playground** (`site/playground.html`) that runs the real policy-decision logic client-side — set a budget, fire agent spend, watch it pass/pause/block — and a **use-cases** page grounded in real 2026 agent-spend scenarios.
+**Marketing site**: `npm run site` builds and serves the landing page (Three.js hero, animated product walkthrough) at http://localhost:8403. The source is React + Vite in `web/`; `npm run build:site` prerenders it into `site/` — plain static HTML with no React runtime and no CDNs, so it still drops onto any static host as-is. Includes an **interactive playground** (`site/playground.html`) that runs the real policy-decision logic client-side — set a budget, fire agent spend, watch it pass/pause/block — and a **use-cases** page grounded in real 2026 agent-spend scenarios.
 
 ## The catalog
 
@@ -248,6 +248,26 @@ Revoke anytime: `POST /api/delegations/:id/revoke` — a revoked link kills the 
 ## Receipts, exports, alerts, analytics
 
 Every simulate-mode settlement comes back **ECDSA-signed by the server** (`settlement.signature` / `signedBy` / `receiptId`) so receipts are independently verifiable — and now addressable: `GET /api/receipts/:id` looks one up, `POST /api/receipts/verify` checks any receipt's signature server-side (a tampered price fails — tested). Set `alertSigningSecret` in the policy and every webhook delivery carries an `X-SpendVeto-Signature` HMAC header, so receivers can prove an alert really came from your SpendVeto. The full ledger exports as CSV at `/api/export.csv`; per-tool and per-wallet rollups live at `/api/analytics`; and if you set `alertWebhookUrl` in `data/policy.json`, freezes, blocked calls, and pending approvals POST to it in real time (point it at a Slack incoming webhook).
+
+## Console sign-in
+
+`npm run user -- invite you@company.com admin` on the host prints a one-time link; opening it sets your password and signs you in. From then on the Console asks everyone to sign in, and admins invite the rest of the team from its Users page — viewers read, approvers also decide approvals, admins change everything. Sessions are HttpOnly cookies that can only make changes from the Console itself; five wrong passwords lock an account for 15 minutes; passwords are stored as scrypt hashes. `npm run user -- reset <email>` sends a new link when someone forgets theirs, `-- disable <email>` signs them out everywhere. With no users, the Console runs open, as it always has on a laptop.
+
+Once signed in, anyone can link a browser wallet (MetaMask, Rabby, any extension wallet) on the Users page and sign in with it instead of the password — Sign-In with Ethereum: the server writes each message (its domain, a single-use nonce, a five-minute expiry) and accepts back only that message signed by that wallet. A signature, never a transaction. On a public deployment set `SPENDVETO_PUBLIC_URL` so the message names your Console's domain.
+
+## Postgres storage
+
+By default the core keeps its state in `data/*.json` — nothing to install. For a hosted deployment, set `SPENDVETO_CORE_DATABASE_URL=postgres://…` and restart: on first start the server imports its existing data files, and from then on keeps every document in Postgres and the ledger in an append-only table (the database itself refuses to rewrite a row). Responses wait until the writes they caused are committed, one server per database is enforced, and the proxy and CLI see each other's changes. `GET /api/health` says which storage is live; `npm run test:pg-storage` proves it against a test database.
+
+## Locking down the API
+
+With no keys, the server runs open — the zero-setup local mode. Mint a key on the host (`npm run apikey -- admin`, or `-- viewer` / `-- approver`) and the server requires one: writes need the role they name, and every read except the public ones (the catalog and open standards, the aggregate counters, an agent paying for a tool or polling its own approval) needs at least a viewer key. Local tools that read the API — the agent client, the proxy, the MCP server, the `spendveto` CLI — send `SPENDVETO_API_KEY` from their environment; the server's own in-process policy checks use a per-boot internal credential. Whatever the mode:
+
+- One-click approve/deny links carry a token bound to their approval and their decision; an approval id alone decides nothing.
+- Ledger events a client reports are signed by the wallet they name (`client/ledger-event.js`); nobody can write rows about a wallet they don't hold the key to.
+- Each client is rate-limited on `/api/*` (`SPENDVETO_RATE_LIMIT_PER_MIN`, default 600 a minute; local callers aren't limited). The client IP comes from X-Forwarded-For only when the proxy is on this machine — name any other hop in `SPENDVETO_TRUST_PROXY`.
+- API keys are stored as SHA-256 digests; the key itself is shown once, when it's minted.
+- Cross-origin reads are limited to the public endpoints (the counters only to the marketing site's origins — add more with `SPENDVETO_CORS_ORIGINS`); responses refuse framing and MIME sniffing; CSV exports neutralize spreadsheet formulas.
 
 ## World ID: proof-of-personhood on approvals
 
@@ -527,7 +547,7 @@ scripts/
   policy.mjs                list/apply policy packs
   site.mjs                  serves the marketing site on :8403
   sdk-python/               Python client (pip install ./sdk-python), same surface as the npm SDK
-  verify.mjs                492 end-to-end assertions incl. MCP stdio round trip + multichain + auto-freeze
+  verify.mjs                510 end-to-end assertions incl. MCP stdio round trip + multichain + auto-freeze
 data/
   policy.json               editable spend rules incl. anomaly burst threshold + alertWebhookUrl
   policy-packs/             importable governance presets (cautious/standard/production)

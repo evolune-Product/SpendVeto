@@ -21,7 +21,7 @@
 // require governed-spend attestations (integrations/seller-express.js).
 // Only stablecoin transfers the registry can price are valued; native-coin
 // transfers aren't watched.
-import { readFileSync, writeFileSync, existsSync, mkdirSync } from "node:fs";
+import { readFileSync, writeFileSync, existsSync, mkdirSync } from "./store.js";
 import { createPublicClient, http, parseAbiItem } from "viem";
 import { CHAINS, DATA_DIR } from "../shared-config.js";
 

@@ -24,7 +24,8 @@
 // FOCUS scope: the export covers technology services — model tokens and paid
 // x402 API tools. Card swipes and payouts are spend, not technology
 // consumption, so they appear in the cost report but not in the FOCUS file.
-import { readFileSync, writeFileSync, existsSync } from "node:fs";
+import { readFileSync, writeFileSync, existsSync } from "./store.js";
+import { csvCell } from "./csv.js";
 
 const round6 = (n) => Math.round(n * 1e6) / 1e6;
 
@@ -93,11 +94,6 @@ function monthBounds(ms) {
   const d = new Date(ms);
   return [Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), 1), Date.UTC(d.getUTCFullYear(), d.getUTCMonth() + 1, 1)];
 }
-const csvCell = (v) => {
-  if (v === null || v === undefined) return "";
-  const s = typeof v === "object" ? JSON.stringify(v) : String(v);
-  return /[",\n\r]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
-};
 
 const METERS = [
   ["input", "Input Tokens"],

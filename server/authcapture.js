@@ -39,7 +39,7 @@
 // not a facilitator, and it reads no chain state. Lifecycle events reach it
 // from whoever observes them (the seller's settle responses, an indexer, the
 // operator); it checks them against the signed terms and books the result.
-import { readFileSync, writeFileSync, existsSync, mkdirSync } from "node:fs";
+import { readFileSync, writeFileSync, existsSync, mkdirSync } from "./store.js";
 import { randomUUID } from "node:crypto";
 import { fileURLToPath } from "node:url";
 import { CHAINS, DATA_DIR as STATE_DIR } from "../shared-config.js";

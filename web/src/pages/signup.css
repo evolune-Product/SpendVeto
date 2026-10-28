@@ -1,0 +1,73 @@
+.auth-wrap { min-height: 100vh; display: grid; grid-template-columns: 1.05fr 1fr; }
+@media (max-width: 940px) { .auth-wrap { grid-template-columns: 1fr; } .auth-side { display: none; } }
+.auth-side {
+  position: relative; overflow: hidden; border-right: 1px solid var(--line);
+  background: linear-gradient(rgba(7, 10, 8, 0.55), rgba(7, 10, 8, 0.92)), url("/assets/terrain.jpg") center 70% / cover no-repeat;
+  /* Top-aligned with the same padding as .auth-main, so the pitch starts level
+     with "Get started" at any window height, not below a screen of terrain. */
+  display: flex; flex-direction: column; justify-content: flex-start; padding: 7.5rem clamp(1.5rem, 4vw, 3.5rem) 4rem;
+}
+.auth-side h2 { font-size: clamp(1.7rem, 2.8vw, 2.5rem); letter-spacing: -0.02em; max-width: 18ch; }
+.auth-side p { color: var(--dim); margin-top: 1rem; max-width: 46ch; line-height: 1.7; font-size: 0.95rem; }
+.auth-main { display: flex; flex-direction: column; justify-content: flex-start; padding: 7.5rem clamp(1.4rem, 5vw, 4.5rem) 4rem; }
+.auth-box { width: min(520px, 100%); margin: 0 auto; }
+.auth-box h1 { font-size: 2rem; letter-spacing: -0.02em; margin-bottom: 0.6rem; }
+.auth-box .sub { color: var(--dim); font-size: 0.92rem; line-height: 1.65; margin-bottom: 1.6rem; }
+.step { border: 1px solid var(--line); border-radius: 14px; background: var(--panel); padding: 1.3rem 1.4rem; margin-top: 1rem; }
+.step.primary { border-color: rgba(70, 214, 140, 0.4); }
+.step .tag { display: block; font-size: 0.7rem; letter-spacing: 0.14em; text-transform: uppercase; color: var(--faint); margin-bottom: 0.4rem; }
+.step.primary .tag { color: var(--green); }
+.step h2 { font-size: 1.1rem; letter-spacing: -0.01em; }
+.step p { color: var(--dim); font-size: 0.88rem; line-height: 1.65; margin-top: 0.5rem; }
+.step pre.block { margin: 0.9rem 0 0; font-size: 0.8rem; overflow-x: auto; }
+.go {
+  display: block; text-align: center; margin-top: 1rem; font-weight: 700; font-size: 0.95rem;
+  padding: 0.8rem; border-radius: 99px; text-decoration: none;
+  background: var(--green); color: #06130c;
+  box-shadow: 0 0 0 1px rgba(70, 214, 140, 0.4), 0 10px 45px -10px rgba(70, 214, 140, 0.6);
+}
+.go:hover { background: #5ce39d; }
+.go.ghost { background: transparent; color: var(--green); box-shadow: none; border: 1px solid var(--green-deep); }
+.go.ghost:hover { background: rgba(70, 214, 140, 0.08); }
+.step .mail { display: block; text-align: center; margin-top: 0.7rem; font-size: 0.82rem; color: var(--faint); }
+.step .mail a, .alt a { color: var(--green); }
+.alt { margin-top: 1.6rem; text-align: center; font-size: 0.84rem; color: var(--faint); }
+.side-points { display: flex; flex-direction: column; gap: 0.8rem; margin-top: 1.6rem; }
+.side-points span { font-size: 0.84rem; color: var(--dim); }
+.side-points span::before { content: "✓ "; color: var(--green); }
+/* Cards sit over the terrain, so they carry their own dark backing. */
+.side-card {
+  margin-top: 1.6rem; max-width: 520px; padding: 1.1rem 1.25rem; border-radius: 14px;
+  border: 1px solid var(--line); background: rgba(7, 10, 8, 0.72);
+  -webkit-backdrop-filter: blur(6px); backdrop-filter: blur(6px);
+}
+.side-tag { display: block; font-size: 0.68rem; letter-spacing: 0.14em; text-transform: uppercase; color: var(--green); margin-bottom: 0.7rem; }
+.side-steps { margin: 0; padding-left: 1.2rem; display: flex; flex-direction: column; gap: 0.6rem; }
+.side-steps li { font-size: 0.84rem; line-height: 1.6; color: var(--dim); }
+.side-steps li::marker { color: var(--green); font-weight: 700; }
+.side-steps b { color: var(--ink); }
+.side-steps .mono { font-size: 0.78rem; color: var(--ink); overflow-wrap: anywhere; }
+.side-chips { display: flex; flex-wrap: wrap; gap: 0.45rem; }
+.side-chips span { font-size: 0.76rem; padding: 0.3rem 0.7rem; border-radius: 99px; border: 1px solid var(--line); color: var(--dim); background: var(--panel); }
+
+/* Governance API signup (islands/Signup.jsx) — shared with signup/verify */
+.signup-form { display: flex; flex-direction: column; gap: 0.7rem; margin-top: 0.9rem; }
+.signup-form label { display: flex; flex-direction: column; gap: 0.3rem; font-size: 0.8rem; color: var(--dim); }
+.signup-form input { font: inherit; font-size: 0.92rem; padding: 0.65rem 0.8rem; border-radius: 9px; border: 1px solid var(--line); background: var(--panel-2); color: var(--ink); outline: none; }
+.signup-form input:focus { border-color: rgba(70, 214, 140, 0.5); }
+.signup-form .go { width: 100%; margin-top: 0.3rem; border: none; cursor: pointer; font: inherit; font-weight: 700; }
+.signup-form .go:disabled { opacity: 0.6; cursor: default; }
+.signup-form .go.ghost { border: 1px solid var(--green-deep); margin-top: 0; }
+.wallet-step { display: flex; flex-direction: column; gap: 0.45rem; padding-bottom: 0.8rem; border-bottom: 1px solid var(--line); }
+.wallet-list { display: flex; flex-direction: column; gap: 0.4rem; }
+.wallet-opt { display: flex; align-items: center; gap: 0.6rem; width: 100%; font: inherit; font-size: 0.9rem; font-weight: 600; padding: 0.6rem 0.8rem; border-radius: 9px; border: 1px solid var(--line); background: var(--panel-2); color: var(--ink); cursor: pointer; }
+.wallet-opt:hover { border-color: rgba(70, 214, 140, 0.5); }
+.wallet-opt img { border-radius: 5px; }
+.wallet-hint { font-size: 0.76rem; line-height: 1.5; color: var(--dim); margin: 0; }
+.wallet-step .signup-note { margin-top: 0; }
+.wallet-chip { display: flex; justify-content: space-between; align-items: center; gap: 0.6rem; font-size: 0.84rem; color: var(--ink); padding: 0.6rem 0.8rem; border-radius: 9px; border: 1px solid rgba(70, 214, 140, 0.4); background: rgba(70, 214, 140, 0.07); margin: 0; }
+.link-btn { font: inherit; font-size: 0.8rem; background: none; border: none; color: var(--green); cursor: pointer; padding: 0; text-decoration: underline; }
+.signup-note { font-size: 0.86rem; line-height: 1.6; margin-top: 0.8rem; color: var(--dim); }
+.signup-note.ok { color: var(--ink); border: 1px solid rgba(70, 214, 140, 0.4); background: rgba(70, 214, 140, 0.07); border-radius: 10px; padding: 0.8rem 1rem; }
+.signup-note.err { color: var(--rust); }
+.signup-note a { color: var(--green); }

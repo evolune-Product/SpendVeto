@@ -20,13 +20,14 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import { MODE, PORT } from "../shared-config.js";
 import { account } from "../client/wallet.js";
 import { governedCall } from "../client/pay.js";
+import { apiAuthHeaders } from "../client/api-auth.js";
 
 const BASE_URL = `http://localhost:${PORT}`;
 const server = new McpServer({ name: "spendveto", version: "0.4.0" });
 
 let TOOLS;
 try {
-  ({ tools: TOOLS } = await fetch(`${BASE_URL}/api/catalog`).then((r) => r.json()));
+  ({ tools: TOOLS } = await fetch(`${BASE_URL}/api/catalog`, { headers: apiAuthHeaders() }).then((r) => r.json()));
 } catch {
   console.error(`[spendveto] cannot reach ${BASE_URL} — start the server with \`npm run server\` before the MCP server`);
   process.exit(1);
@@ -76,12 +77,12 @@ server.registerTool(
   async () => {
     try {
       const [{ entries, balances }, policy, { approvals }, { delegations }, { freezes }, stats] = await Promise.all([
-        fetch(`${BASE_URL}/api/ledger`).then((r) => r.json()),
-        fetch(`${BASE_URL}/api/policy`).then((r) => r.json()),
-        fetch(`${BASE_URL}/api/approvals`).then((r) => r.json()),
-        fetch(`${BASE_URL}/api/delegations`).then((r) => r.json()),
-        fetch(`${BASE_URL}/api/freezes`).then((r) => r.json()),
-        fetch(`${BASE_URL}/api/stats`).then((r) => r.json()),
+        fetch(`${BASE_URL}/api/ledger`, { headers: apiAuthHeaders() }).then((r) => r.json()),
+        fetch(`${BASE_URL}/api/policy`, { headers: apiAuthHeaders() }).then((r) => r.json()),
+        fetch(`${BASE_URL}/api/approvals`, { headers: apiAuthHeaders() }).then((r) => r.json()),
+        fetch(`${BASE_URL}/api/delegations`, { headers: apiAuthHeaders() }).then((r) => r.json()),
+        fetch(`${BASE_URL}/api/freezes`, { headers: apiAuthHeaders() }).then((r) => r.json()),
+        fetch(`${BASE_URL}/api/stats`, { headers: apiAuthHeaders() }).then((r) => r.json()),
       ]);
       const me = account.address.toLowerCase();
       const cutoff = Date.now() - 60 * 60 * 1000;
