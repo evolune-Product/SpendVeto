@@ -24,6 +24,7 @@ npm run mcp        # stdio MCP server — stdout must stay protocol-clean (doten
 node bin/spendveto.mjs validate [file] [--strict]   # lint a policy against spec/policy-v1.schema.json (same validator as the API + action.yml)
 node bin/spendveto.mjs rails      # which x402 chain-SDK families are installed + the command for the rest (server/optional.js)
 npm run user -- invite <email> admin   # Console accounts: one-time invite link (also reset / disable / list); any user turns sign-in on
+npm run mail:sample -- --to you@x.com  # send every email ([Sample] subject, links name no account) through the configured provider — checks setup + looks
 npm run verify     # 511 e2e assertions; takes 3–4 min (approval timeouts + TTL sleeps)
 ```
 

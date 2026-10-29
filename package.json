@@ -68,6 +68,7 @@
     "gen-wallets": "node scripts/gen-wallets.mjs",
     "apikey": "node scripts/apikey.mjs",
     "user": "node scripts/user.mjs",
+    "mail:sample": "node scripts/send-sample-emails.mjs",
     "deploy-safe-allowance": "node scripts/deploy-safe-allowance.mjs",
     "presite": "node scripts/build-site.mjs",
     "site": "node scripts/site.mjs",
