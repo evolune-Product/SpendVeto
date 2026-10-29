@@ -54,7 +54,7 @@ export default function SignupPage() {
             One command starts the gate, the console and the LLM spend guard on your own machine. Your keys and your ledger never leave it, and nothing below needs an account.
           </p>
           <div className="side-points">
-            <span>510 end-to-end checks on every claim</span>
+            <span>511 end-to-end checks on every claim</span>
             {" "}
             <span>Claude Code, Codex, MCP and x402 in front of the same budget</span>
             {" "}

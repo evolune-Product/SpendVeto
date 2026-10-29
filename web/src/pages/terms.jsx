@@ -86,7 +86,7 @@ export default function TermsPage() {
               Don't use SpendVeto to circumvent sanctions, facilitate fraud, or process payments for illegal goods or services.
             </li>
             <li>
-              Don't misrepresent SpendVeto's verification status — the "510/510" claim refers specifically to the assertions in SpendVeto's test suite at the time of the build; modified deployments should re-verify independently.
+              Don't misrepresent SpendVeto's verification status — the "511/511" claim refers specifically to the assertions in SpendVeto's test suite at the time of the build; modified deployments should re-verify independently.
             </li>
           </ul>
           <h2>Governing law</h2>

@@ -45,7 +45,7 @@ export default function PricingPage() {
           <div className="price">$0 <span>forever</span></div>
           <div className="per">Your machine, your keys</div>
           <ul>
-            <li>Every control in the repo — all 510 verified behaviors</li>
+            <li>Every control in the repo — all 511 verified behaviors</li>
             <li>Unlimited agents, wallets, budgets, chains</li>
             <li>Marketplace, console, MCP, proxy, API rail</li>
             <li>Community support</li>

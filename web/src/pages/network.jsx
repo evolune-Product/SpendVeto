@@ -233,7 +233,7 @@ export default function NetworkPage() {
         <p>
           Every behavior on this page is exercised by{" "}
           <code>npm run verify</code>
-          {" "}(510 end-to-end assertions): offline verification, forged and replayed tokens, payer binding, feeds refused until trusted, edits and rollbacks rejected, the same report enforced on payouts and card swipes, and the GitHub Action failing a typo.
+          {" "}(511 end-to-end assertions): offline verification, forged and replayed tokens, payer binding, feeds refused until trusted, edits and rollbacks rejected, the same report enforced on payouts and card swipes, and the GitHub Action failing a typo.
         </p>
         <h2>Questions</h2>
         <div className="faq">

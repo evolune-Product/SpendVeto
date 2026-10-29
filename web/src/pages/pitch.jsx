@@ -14,7 +14,7 @@ export const client = true;
 
 export default function PitchPage() {
   return (
-    <Page note={<>Every product claim in this deck is covered by <span className="mono">npm run verify</span> — 510 end-to-end assertions.</>}>
+    <Page note={<>Every product claim in this deck is covered by <span className="mono">npm run verify</span> — 511 end-to-end assertions.</>}>
       <div className="deck">
         <section className="slide" id="s1">
           <div className="shell">
@@ -22,7 +22,7 @@ export default function PitchPage() {
             <h1 className="reveal">Your agents can spend.<br /><span className="g">SpendVeto decides.</span></h1>
             <p className="sub reveal">
               <strong>The spend-governance layer for AI agents.</strong>
-              {" "}Payment rails move an agent's money; SpendVeto decides whether it should be allowed to move it. Self-hosted, x402 + MCP native, working today — every claim in this deck is executed by a 510-assertion verification suite before it's published.
+              {" "}Payment rails move an agent's money; SpendVeto decides whether it should be allowed to move it. Self-hosted, x402 + MCP native, working today — every claim in this deck is executed by a 511-assertion verification suite before it's published.
             </p>
           </div>
           <span className="slide-num mono">01 / 13</span>
@@ -149,7 +149,7 @@ export default function PitchPage() {
               </div>
             </div>
             <p className="foot-note reveal">
-              Real x402 on Base Sepolia + zero-setup simulate mode with real ECDSA and replay protection. 510 end-to-end assertions:{" "}
+              Real x402 on Base Sepolia + zero-setup simulate mode with real ECDSA and replay protection. 511 end-to-end assertions:{" "}
               <span className="mono">npm run verify</span>
               .
             </p>

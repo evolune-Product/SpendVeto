@@ -200,6 +200,14 @@ const server = spawn("node", ["server/index.js"], {
     MODERN_TREASURY_API_KEY: "mt_verify_key",
     MODERN_TREASURY_ORIGINATING_ACCOUNT_ID: "0b0b0b0b-0000-4000-8000-000000000000",
     MODERN_TREASURY_API_BASE: "http://localhost:8496",
+    // Transactional email (server/mailer.js) → a local mock of Brevo's API
+    // (port 8494), started by the Console sign-in section.
+    SPENDVETO_MAIL_PROVIDER: "brevo",
+    BREVO_API_KEY: "xkeysib-verify-only",
+    BREVO_API_BASE: "http://localhost:8494",
+    SPENDVETO_MAIL_FROM: "SpendVeto <noreply@mail.spendveto.com>",
+    SPENDVETO_MAIL_REPLY_TO: "",
+    SPENDVETO_PUBLIC_URL: "",
   },
   stdio: ["ignore", "pipe", "pipe"],
 });
@@ -2499,6 +2507,36 @@ try {
     "wallet sign-in refuses a replayed signature, a link signature used to sign in, a message the server didn't write (another domain), the right message signed by the wrong key, and a wallet no account has linked — and a link challenge only links for the session it was issued to",
     [walletReplay, linkAsLogin, alteredIn, wrongSignerIn, unlinkedIn].every((r) => r.status === 401) && linkToViewer.status === 400,
     `replay=${walletReplay.status} linkAsLogin=${linkAsLogin.status} altered=${alteredIn.status} wrongSigner=${wrongSignerIn.status} unlinked=${unlinkedIn.status} linkToViewer=${linkToViewer.status}`
+  );
+  // Invite by email: the server is configured for Brevo, pointed at a local
+  // mock (port 8494) that speaks its transactional-email API.
+  const mailSeen = [];
+  let mailFails = false;
+  const mailMock = createServer((req, res) => {
+    let raw = "";
+    req.on("data", (d) => (raw += d));
+    req.on("end", () => {
+      mailSeen.push({ url: req.url, headers: req.headers, body: JSON.parse(raw || "{}") });
+      res.writeHead(mailFails ? 500 : 201, { "content-type": "application/json" });
+      res.end(JSON.stringify(mailFails ? { code: "internal_error" } : { messageId: "<verify@smtp-relay.example>" }));
+    });
+  });
+  await new Promise((r) => mailMock.listen(8494, r));
+  const invited = await consoleCall("/api/users/invite", { method: "POST", cookie: adminSession, headers: consoleHeaders, body: { email: "approver@example.com", role: "approver" } });
+  const invitedBody = await invited.json();
+  const inviteMail = mailSeen[0];
+  const emailedToken = inviteMail?.body.textContent?.match(/#accept-invite=([\w-]+)/)?.[1];
+  const acceptedFromEmail = await consoleCall("/api/auth/accept-invite", { method: "POST", body: { token: emailedToken, password: "approver long password" } });
+  mailFails = true;
+  const unsentInvite = await (await consoleCall("/api/users/invite", { method: "POST", cookie: adminSession, headers: consoleHeaders, body: { email: "later@example.com", role: "viewer" } })).json();
+  await new Promise((r) => mailMock.close(r));
+  check(
+    "an admin's Console invite is emailed through the configured provider (Brevo's API) — to the invitee, from the configured sender, naming who invited them and carrying the one-time link that then sets their password; when the provider fails, the invite still stands and the admin gets the link to pass on",
+    invited.status === 201 && invitedBody.emailed === true && inviteMail?.url === "/v3/smtp/email" && inviteMail.headers["api-key"] === "xkeysib-verify-only" &&
+      inviteMail.body.to?.[0]?.email === "approver@example.com" && inviteMail.body.sender?.email === "noreply@mail.spendveto.com" &&
+      inviteMail.body.subject === "ops@example.com invited you to the SpendVeto Console" && inviteMail.body.htmlContent.includes(invitedBody.inviteUrl) &&
+      acceptedFromEmail.status === 200 && unsentInvite.emailed === false && unsentInvite.reason === "send_failed" && /#accept-invite=[\w-]+$/.test(unsentInvite.inviteUrl),
+    `invite=${invited.status} emailed=${invitedBody.emailed} mails=${mailSeen.length} accept=${acceptedFromEmail.status} failed=${unsentInvite.reason}`
   );
   const guesses = [];
   for (let i = 0; i < 6; i++) guesses.push((await consoleCall("/api/auth/login", { method: "POST", body: { email: "ops@example.com", password: `wrong guess ${i}` } })).status);

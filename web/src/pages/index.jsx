@@ -3,7 +3,7 @@ import Page from "../components/Page.jsx";
 
 export const head = {
   "title": "SpendVeto — Spend Limits & a Kill Switch for AI Agents",
-  "description": "Budgets, loop detection and a kill switch for AI agents — Claude Code, Codex, OpenAI/Anthropic SDKs, x402, cards and payouts. Self-hosted; 510 tested claims.",
+  "description": "Budgets, loop detection and a kill switch for AI agents — Claude Code, Codex, OpenAI/Anthropic SDKs, x402, cards and payouts. Self-hosted; 511 tested claims.",
   "path": "/",
   "keywords": "AI agent spending limit, AI agent budget, Claude Code cost limit, Codex budget, LLM budget proxy, AI agent kill switch, runaway agent loop, agent payments governance, x402, agentic commerce, AI FinOps, spend attestation, MCP",
   "jsonLd": [
@@ -115,7 +115,7 @@ export const head = {
               "name": "Is this a real product or a demo?",
               "acceptedAnswer": {
                 "@type": "Answer",
-                "text": "Real. It runs on your machine today: real ECDSA signatures, real x402 settlement on six testnets, and a 510-assertion end-to-end suite (npm run verify) that exercises every claim on this page. Hosted SpendVeto isn't self-serve yet: we set it up directly with each team, and managed custody, orgs and SSO are still being built."
+                "text": "Real. It runs on your machine today: real ECDSA signatures, real x402 settlement on six testnets, and a 511-assertion end-to-end suite (npm run verify) that exercises every claim on this page. Hosted SpendVeto isn't self-serve yet: we set it up directly with each team, and managed custody, orgs and SSO are still being built."
               }
             },
             {
@@ -147,7 +147,7 @@ export const head = {
               "name": "What does “simulate mode” actually simulate?",
               "acceptedAnswer": {
                 "@type": "Answer",
-                "text": "Only the settlement. Keypairs, ECDSA signing and verification, nonce replay protection, signed receipts — all real cryptography; balances just settle in a local file instead of on-chain. Forged signatures are rejected, and that rejection is one of the 510 tested assertions. Flip one env var for real x402 on Base Sepolia."
+                "text": "Only the settlement. Keypairs, ECDSA signing and verification, nonce replay protection, signed receipts — all real cryptography; balances just settle in a local file instead of on-chain. Forged signatures are rejected, and that rejection is one of the 511 tested assertions. Flip one env var for real x402 on Base Sepolia."
               }
             },
             {
@@ -223,7 +223,7 @@ export default function IndexPage() {
         <canvas id="bg" aria-hidden="true"></canvas>
         <img className="hero-grip" src="/assets/hero-grip.jpg" alt="" aria-hidden="true" />
         <div className="hero-inner">
-          <div className="live-chip"><i></i><span id="live-stats">510 end-to-end checks · verified build</span></div>
+          <div className="live-chip"><i></i><span id="live-stats">511 end-to-end checks · verified build</span></div>
           <h1>Your agents can spend.<br /><span className="accent">SpendVeto decides.</span></h1>
           <p className="hero-sub">
             {" "}AI agents now spend money on their own — model tokens, paid APIs, other agents, card checkouts — at machine speed.{" "}
@@ -373,7 +373,7 @@ export default function IndexPage() {
           <p className="counter reveal"><b>02 / 06</b> Product — working today, not a roadmap</p>
           <h2 className="reveal">Eight controls between your agent and its money.</h2>
           <p className="lede reveal">
-            Every one of them is exercised by a 510-assertion end-to-end verification suite on every change — real payments, real signatures, real JSON-RPC. Nothing below is a mockup.
+            Every one of them is exercised by a 511-assertion end-to-end verification suite on every change — real payments, real signatures, real JSON-RPC. Nothing below is a mockup.
           </p>
           <div className="grid8">
             <div className="cell reveal">
@@ -1205,7 +1205,7 @@ export default function IndexPage() {
               <summary>Is this a real product or a demo?</summary>
               <p>
                 Real. It runs on your machine today: real ECDSA signatures, real x402 settlement on six testnets, and a{" "}
-                <b>510-assertion end-to-end suite</b>
+                <b>511-assertion end-to-end suite</b>
                 {" "}(
                 <span className="mono">npm run verify</span>
                 ) that exercises every claim on this page. Hosted SpendVeto isn't self-serve yet: we set it up directly with each team, and managed custody, orgs and SSO are still being built.
@@ -1240,7 +1240,7 @@ export default function IndexPage() {
             <details className="reveal">
               <summary>What does “simulate mode” actually simulate?</summary>
               <p>
-                Only the settlement. Keypairs, ECDSA signing and verification, nonce replay protection, signed receipts — all real cryptography; balances just settle in a local file instead of on-chain. Forged signatures are rejected, and that rejection is one of the 510 tested assertions. Flip one env var for real x402 on Base Sepolia.
+                Only the settlement. Keypairs, ECDSA signing and verification, nonce replay protection, signed receipts — all real cryptography; balances just settle in a local file instead of on-chain. Forged signatures are rejected, and that rejection is one of the 511 tested assertions. Flip one env var for real x402 on Base Sepolia.
               </p>
             </details>
             <details className="reveal">

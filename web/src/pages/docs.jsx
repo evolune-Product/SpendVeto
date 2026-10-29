@@ -72,7 +72,7 @@ export default function DocsPage() {
         <article>
           <h1>Documentation</h1>
           <p className="lede">
-            SpendVeto is a governance gate in front of a catalog of paid (x402/USDC) endpoints, reachable three ways — CLI, delegated child agents, and any MCP client. Everything on this page is exercised by the 510-assertion suite in{" "}
+            SpendVeto is a governance gate in front of a catalog of paid (x402/USDC) endpoints, reachable three ways — CLI, delegated child agents, and any MCP client. Everything on this page is exercised by the 511-assertion suite in{" "}
             <code>npm run verify</code>
             .
           </p>
@@ -158,7 +158,7 @@ export default function DocsPage() {
                     {" "}for an installed copy)
                   </td>
                 </tr>
-                <tr><td><code>npm run verify</code></td><td>510 end-to-end assertions, headless</td></tr>
+                <tr><td><code>npm run verify</code></td><td>511 end-to-end assertions, headless</td></tr>
                 <tr><td><code>npm run site</code></td><td>Serve this marketing site (:8403)</td></tr>
               </tbody>
             </table>
@@ -803,7 +803,7 @@ export default function DocsPage() {
           <p>
             <code>npm run verify</code>
             {" "}boots everything headlessly and runs{" "}
-            <b>510 assertions</b>
+            <b>511 assertions</b>
             : forged-signature rejection, all three approval outcomes, cascading caps, tool + chain scoping, chain-scoped signatures with per-chain balances, burst auto-freeze, manual freeze/unfreeze, signed-receipt verification, CSV export, per-chain analytics, webhook delivery to a live receiver, and a real MCP stdio JSON-RPC session.
           </p>
         </article>

@@ -2,6 +2,15 @@
 
 Every feature listed here is exercised by the end-to-end suite (`npm run verify`) — the suite grew from 33 assertions at the first public cut to **114** at v0.7.0. If a claim isn't an assertion, it doesn't ship.
 
+## Email: Brevo, Console invites by email, welcome email — 2026-10-28
+
+- **One mail module for both services** (`server/mailer.js`, moved from `govern/`): Brevo added alongside Resend and Postmark, plus a `console` provider for local work. `SPENDVETO_MAIL_REPLY_TO` gives the noreply sender somewhere for replies to go; every message carries a tag for the provider's dashboard. One email layout (`renderEmail`) escapes every value it's given.
+- **Console invites are emailed** from the Users page and from `npm run user -- invite`: who invited them, the role and what it can do, the one-time link and when it expires. The admin still gets the link back — and is told plainly when mail isn't configured or the send failed, so the invite never silently goes nowhere.
+- **Welcome email for new Governance API accounts**, sent once the link has created the account: the account and its ID, which admin key (its prefix — keys are never emailed), the owner wallet if one signed, and the first three calls to make. Sent after the account is committed and never able to fail the signup.
+- The signup link and "you already have an account" emails moved onto the same layout.
+- `npm run user`, `apikey`, `delegate` and `policy` now read `.env.local` like the server does — before, on a host using Postgres storage or a custom data directory, they wrote somewhere the server wasn't reading.
+- **Verify: 511** (+1). Governance API suite: 91 (+2).
+
 ## Wallet sign-in and wallet-first signup — 2026-10-28
 
 Sign-In with Ethereum (EIP-4361) on both sides. The server writes every message itself — its own domain, a single-use nonce, a short expiry, a statement saying what the signature is for — and accepts back only that exact message, signed by the address it was issued to. A signature, never a transaction or gas. Browser wallets are found the EIP-6963 way (`client/browser-wallet.js`), so several installed wallets can be told apart; no WalletConnect SDK.

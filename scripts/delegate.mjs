@@ -4,6 +4,7 @@
 // Caps cascade: a grandchild's spending counts against its own cap and every
 // ancestor's — enforced in the caller's policy check (client/policy.js).
 // Requires the server to be running (it stores the grant).
+import "./load-env.mjs"; // first: .env.local before anything reads it
 import { generatePrivateKey, privateKeyToAccount } from "viem/accounts";
 import { readFileSync, writeFileSync, existsSync } from "../server/store.js";
 import { fileURLToPath } from "node:url";

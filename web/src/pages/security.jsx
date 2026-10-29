@@ -145,7 +145,7 @@ export default function SecurityPage() {
         </p>
         <div className="callout">
           <b>Verification, not marketing:</b>
-          {" "}every control above is exercised by an assertion in the 510-check suite (
+          {" "}every control above is exercised by an assertion in the 511-check suite (
           <span className="mono">npm run verify</span>
           ) on every change to the codebase — see{" "}
           <a href="/docs#verify" style={{ color: "var(--ink)" }}>the verification docs</a>

@@ -98,7 +98,7 @@ Give the agent runtime a `spend` key and keep approval for the human-facing path
 
 Limits: 3 links per address per hour, 10 signup requests per client per hour (`req.ip` — X-Forwarded-For is believed only from a loopback proxy, `GOVERN_TRUST_PROXY` for other hops), and a Cloudflare Turnstile check when `GOVERN_TURNSTILE_SECRET` is set. These routes (`/v1/signup*`), and only these, answer CORS — for spendveto.com and `GOVERN_SIGNUP_ORIGINS`.
 
-Email goes through `SPENDVETO_MAIL_PROVIDER` (`resend` or `postmark`) from `SPENDVETO_MAIL_FROM`. With no provider configured, signup answers `503 signup_unavailable` rather than creating accounts nobody verified; a provider failure answers `502 mail_failed`.
+Once the link has created the account, a welcome email follows (`govern/emails.js`): the account, its ID, the admin key's prefix (never the key), the owner wallet if any, and the first calls to make. It's sent after the commit and can't fail the signup. Email goes through `server/mailer.js` — `SPENDVETO_MAIL_PROVIDER` (`brevo`, `resend` or `postmark`) from `SPENDVETO_MAIL_FROM`, replies to `SPENDVETO_MAIL_REPLY_TO`. With no provider configured, signup answers `503 signup_unavailable` rather than creating accounts nobody verified; a provider failure answers `502 mail_failed`.
 
 ## Guarantees, and how they are tested
 

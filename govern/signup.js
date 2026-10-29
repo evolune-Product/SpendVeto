@@ -1,4 +1,5 @@
-// Self-serve signup: email → one-time link → tenant + first admin key.
+// Self-serve signup: email → one-time link → tenant + first admin key, then a
+// welcome email (emails.js holds every message's content).
 //
 //   POST /v1/signup/wallet  { address }                             → 201 { message } (optional first step)
 //   POST /v1/signup         { email, org_name, turnstile_token?, wallet? }  → 202, always the same answer
@@ -23,6 +24,7 @@ import { randomBytes } from "node:crypto";
 import { getAddress, isAddress, recoverMessageAddress } from "viem";
 import { createSiweMessage, parseSiweMessage } from "viem/siwe";
 import { withTx } from "./db.js";
+import { existingAccountEmail, signupLinkEmail, welcomeEmail } from "./emails.js";
 import { insertTenant } from "./admin.js";
 import { GovernError, sha256 } from "./util.js";
 
@@ -132,26 +134,25 @@ export function createSignup({ pool, mailer, verifyHuman, now = () => new Date()
     // stored link stays valid, and a retry counts toward the hourly 3.
     const deliver = (msg) => mailer.send(msg).catch(() => { throw new GovernError(502, "mail_failed", "couldn't send the email just now — try again in a minute"); });
     if (outcome.kind === "link") {
-      const link = `${verifyUrl}#token=${outcome.token}`;
-      const owner = outcome.walletAddress ? getAddress(outcome.walletAddress) : null;
-      await deliver({
-        to: address,
-        subject: "Finish creating your SpendVeto account",
-        text: `Finish creating the SpendVeto account for ${org_name}:\n\n${link}\n\n${owner ? `It will be owned by the wallet ${owner}, which signed the request.\n\n` : ""}The link works once, for 24 hours. If you didn't ask for this, ignore this email — nothing is created until the link is opened.\n`,
-        html: `<p>Finish creating the SpendVeto account for <b>${escapeHtml(org_name)}</b>:</p><p><a href="${link}">Create my account</a></p>${owner ? `<p>It will be owned by the wallet <code>${owner}</code>, which signed the request.</p>` : ""}<p>The link works once, for 24 hours. If you didn't ask for this, ignore this email — nothing is created until the link is opened.</p>`,
-      });
+      await deliver(signupLinkEmail({ to: address, orgName: org_name, link: `${verifyUrl}#token=${outcome.token}`, ownerWallet: outcome.walletAddress }));
     } else if (outcome.kind === "existing") {
-      await deliver({
-        to: address,
-        subject: "You already have a SpendVeto account",
-        text: "Someone — hopefully you — tried to create a SpendVeto account with this address, which already has one. No second account was created. Lost your API key? An admin key of your account can mint a new one (POST /v1/keys); if you have none left, reply to this email.\n",
-        html: "<p>Someone — hopefully you — tried to create a SpendVeto account with this address, which already has one. No second account was created.</p><p>Lost your API key? An admin key of your account can mint a new one (<code>POST /v1/keys</code>); if you have none left, reply to this email.</p>",
-      });
+      await deliver(existingAccountEmail({ to: address }));
     }
     return { status: 202, body: { ok: true, message: SIGNUP_ACCEPTED } };
   }
 
+  // The welcome email goes out after the account is committed and never holds
+  // up the answer: the page showing the admin key matters more than the email,
+  // and a provider hiccup must not turn a created account into an error.
   async function verify({ token }, ip) {
+    const result = await createFromLink({ token }, ip);
+    const { email, tenant, admin_key } = result.body;
+    mailer?.send(welcomeEmail({ to: email, tenant, keyPrefix: admin_key.slice(0, 12) }))
+      .catch((err) => console.error(`[signup] welcome email to tenant ${tenant.id} failed: ${err.message}`));
+    return result;
+  }
+
+  async function createFromLink({ token }, ip) {
     limitClient(ip);
     try {
       return await withTx(pool, async (client) => {
@@ -172,4 +173,3 @@ export function createSignup({ pool, mailer, verifyHuman, now = () => new Date()
   return { walletChallenge, request, verify };
 }
 
-const escapeHtml = (s) => String(s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]);

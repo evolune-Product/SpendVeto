@@ -43,7 +43,7 @@ export default function AboutPage() {
         </p>
         <div className="facts">
           <div className="fact">
-            <b>510/510</b>
+            <b>511/511</b>
             <span>end-to-end checks, real signatures, run before every claim ships</span>
           </div>
           <div className="fact">
@@ -78,7 +78,7 @@ export default function AboutPage() {
               I've been in crypto since I was 17: trading through the 2021–22 cycle first, then deploying my own contracts on BNB Chain and running staking and DeFi positions. That's the reason I'm building on the buyer side rather than the rail side — I've watched what automated systems do to a wallet when nothing is standing in the way.
             </p>
             <p>
-              I wrote SpendVeto's codebase — the policy engine, the x402 gate, the MCP server, the SDK and the 510-assertion suite — and that's the answer I'd rather give than an argument: the repo is public, so you can check whether it holds up.
+              I wrote SpendVeto's codebase — the policy engine, the x402 gate, the MCP server, the SDK and the 511-assertion suite — and that's the answer I'd rather give than an argument: the repo is public, so you can check whether it holds up.
             </p>
             <p className="founder-links">
               <a href="https://x.com/RevanthRajeev" target="_blank" rel="noopener">X</a>

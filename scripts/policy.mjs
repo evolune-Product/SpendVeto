@@ -3,6 +3,7 @@
 //   npm run policy -- apply cautious|standard|production
 // Applying a pack overwrites data/policy.json (the previous file is kept at
 // data/policy.json.bak). Packs are plain JSON — teams can commit their own.
+import "./load-env.mjs"; // first: .env.local before anything reads it
 import { readFileSync, writeFileSync, readdirSync, existsSync, copyFileSync } from "../server/store.js";
 import { fileURLToPath } from "node:url";
 import { closeStore } from "../server/store.js";

@@ -4,7 +4,7 @@
 
 [**Live site + playground**](https://spendveto.com) · [**Docs**](https://spendveto.com/docs) · [**npm**](https://www.npmjs.com/package/spendveto) · Proprietary · x402 + MCP native
 
-**Every claim in this README is executed before it ships.** `npm run verify` runs **510 end-to-end assertions** from a clean clone — real secp256k1 keypairs, real ECDSA verification, a real MCP stdio JSON-RPC session, and a synthetic runaway agent frozen mid-burst. If a claim isn't a test, it doesn't ship; features that can't work locally yet are declared slots that refuse honestly, never stubs that pretend.
+**Every claim in this README is executed before it ships.** `npm run verify` runs **511 end-to-end assertions** from a clean clone — real secp256k1 keypairs, real ECDSA verification, a real MCP stdio JSON-RPC session, and a synthetic runaway agent frozen mid-burst. If a claim isn't a test, it doesn't ship; features that can't work locally yet are declared slots that refuse honestly, never stubs that pretend.
 
 What *isn't* true yet is stated just as plainly: no external security audit, no customers. Settlement is testnet and simulate only, by default, for every chain. XRPL mainnet settlement (real money, RLUSD) is fully wired but **disabled unless an operator explicitly opts in** — that's their decision and their risk; we don't run, monitor, or control anyone's deployment. Funding positioning and market numbers live in [`PITCH.md`](./PITCH.md).
 
@@ -181,9 +181,9 @@ npm run call -- summarize      # $0.02 — above the approval line: go approve/d
 npm run call -- translate      # $0.005
 ```
 
-`npm run verify` runs the whole thing headlessly — **510 end-to-end assertions**: catalog, forged-signature rejection, hard policy blocks, all three approval outcomes (approved / denied / timed-out-fails-closed), delegation caps including the n-level cascade, tool + chain scoping, multichain settlement (chain-scoped signatures, per-chain balances, chain allowlists), runaway-burst auto-freeze, the manual kill switch, signed-receipt verification, CSV export, per-tool/per-wallet/per-chain analytics, webhook alerts actually arriving at a live receiver, structured self-correcting denials, side-effect-free dry runs, TTL grant expiry, one-click approval links, the stats endpoint, AP2 mandate-chain drift detection, human-not-present authority, governed Bazaar discovery, ACP shared-payment-token scope, request-integrity binding (including a payload swapped after authorization), signed dispute evidence packs and their tamper detection, OpenTelemetry span export under an inbound traceparent, governed-spend attestations verified offline by a seller (replay, payer binding, tampering), signed reputation feeds crossing organizations (trust, rollback, digest), policy-schema validation in the CLI and the GitHub Action, and a real MCP stdio JSON-RPC round trip.
+`npm run verify` runs the whole thing headlessly — **511 end-to-end assertions**: catalog, forged-signature rejection, hard policy blocks, all three approval outcomes (approved / denied / timed-out-fails-closed), delegation caps including the n-level cascade, tool + chain scoping, multichain settlement (chain-scoped signatures, per-chain balances, chain allowlists), runaway-burst auto-freeze, the manual kill switch, signed-receipt verification, CSV export, per-tool/per-wallet/per-chain analytics, webhook alerts actually arriving at a live receiver, structured self-correcting denials, side-effect-free dry runs, TTL grant expiry, one-click approval links, the stats endpoint, AP2 mandate-chain drift detection, human-not-present authority, governed Bazaar discovery, ACP shared-payment-token scope, request-integrity binding (including a payload swapped after authorization), signed dispute evidence packs and their tamper detection, OpenTelemetry span export under an inbound traceparent, governed-spend attestations verified offline by a seller (replay, payer binding, tampering), signed reputation feeds crossing organizations (trust, rollback, digest), policy-schema validation in the CLI and the GitHub Action, and a real MCP stdio JSON-RPC round trip.
 
-> **On the number:** a fresh clone runs **510** assertions. Three more exercise a real cross-project integration against [Basis](https://github.com/revanthrajeev/basis) and run only when `../prediction-copilot` is checked out beside this repo — the suite prints `(skipped: cross-project Basis integration test …)` when it isn't. Every published number is the 510 anyone can reproduce.
+> **On the number:** a fresh clone runs **511** assertions. Three more exercise a real cross-project integration against [Basis](https://github.com/revanthrajeev/basis) and run only when `../prediction-copilot` is checked out beside this repo — the suite prints `(skipped: cross-project Basis integration test …)` when it isn't. Every published number is the 511 anyone can reproduce.
 
 **Marketing site**: `npm run site` builds and serves the landing page (Three.js hero, animated product walkthrough) at http://localhost:8403. The source is React + Vite in `web/`; `npm run build:site` prerenders it into `site/` — plain static HTML with no React runtime and no CDNs, so it still drops onto any static host as-is. Includes an **interactive playground** (`site/playground.html`) that runs the real policy-decision logic client-side — set a budget, fire agent spend, watch it pass/pause/block — and a **use-cases** page grounded in real 2026 agent-spend scenarios.
 
@@ -251,9 +251,13 @@ Every simulate-mode settlement comes back **ECDSA-signed by the server** (`settl
 
 ## Console sign-in
 
-`npm run user -- invite you@company.com admin` on the host prints a one-time link; opening it sets your password and signs you in. From then on the Console asks everyone to sign in, and admins invite the rest of the team from its Users page — viewers read, approvers also decide approvals, admins change everything. Sessions are HttpOnly cookies that can only make changes from the Console itself; five wrong passwords lock an account for 15 minutes; passwords are stored as scrypt hashes. `npm run user -- reset <email>` sends a new link when someone forgets theirs, `-- disable <email>` signs them out everywhere. With no users, the Console runs open, as it always has on a laptop.
+`npm run user -- invite you@company.com admin` on the host prints a one-time link; opening it sets your password and signs you in. From then on the Console asks everyone to sign in, and admins invite the rest of the team from its Users page — viewers read, approvers also decide approvals, admins change everything. Sessions are HttpOnly cookies that can only make changes from the Console itself; five wrong passwords lock an account for 15 minutes; passwords are stored as scrypt hashes. With a mail provider configured (below), invites are emailed — the admin still gets the link, in case. `npm run user -- reset <email>` prints a new link when someone forgets theirs, `-- disable <email>` signs them out everywhere. With no users, the Console runs open, as it always has on a laptop.
 
 Once signed in, anyone can link a browser wallet (MetaMask, Rabby, any extension wallet) on the Users page and sign in with it instead of the password — Sign-In with Ethereum: the server writes each message (its domain, a single-use nonce, a five-minute expiry) and accepts back only that message signed by that wallet. A signature, never a transaction. On a public deployment set `SPENDVETO_PUBLIC_URL` so the message names your Console's domain.
+
+## Email
+
+Set `SPENDVETO_MAIL_PROVIDER` (`brevo`, `resend` or `postmark`), its API key and `SPENDVETO_MAIL_FROM`, and the Console emails its invites; the Governance API uses the same settings for signup links and welcome emails. Without them nothing is emailed and nothing pretends to be: the Console hands the admin the link, and self-serve signup refuses. `SPENDVETO_MAIL_PROVIDER=console` prints each email to the terminal for local work. Details in `.env.example`.
 
 ## Postgres storage
 
@@ -547,7 +551,7 @@ scripts/
   policy.mjs                list/apply policy packs
   site.mjs                  serves the marketing site on :8403
   sdk-python/               Python client (pip install ./sdk-python), same surface as the npm SDK
-  verify.mjs                510 end-to-end assertions incl. MCP stdio round trip + multichain + auto-freeze
+  verify.mjs                511 end-to-end assertions incl. MCP stdio round trip + multichain + auto-freeze
 data/
   policy.json               editable spend rules incl. anomaly burst threshold + alertWebhookUrl
   policy-packs/             importable governance presets (cautious/standard/production)

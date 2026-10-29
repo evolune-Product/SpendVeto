@@ -7,6 +7,7 @@
 //   npm run apikey -- viewer "dashboard" # a read-scoped key
 //
 // The key is printed ONCE — store it now; it can't be recovered later.
+import "./load-env.mjs"; // first: .env.local before anything reads it
 import { createKey, ROLES, readKeys } from "../server/auth.js";
 import { closeStore } from "../server/store.js";
 

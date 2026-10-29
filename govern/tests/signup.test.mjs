@@ -3,7 +3,7 @@ import { test, before, after } from "node:test";
 import assert from "node:assert/strict";
 import { generatePrivateKey, privateKeyToAccount } from "viem/accounts";
 import { freshDb, makeClock, startApp, client } from "./helpers.mjs";
-import { mailerFromEnv } from "../mailer.js";
+import { mailerFromEnv } from "../../server/mailer.js";
 import { SIGNUP_ACCEPTED } from "../signup.js";
 
 let pool;
@@ -13,7 +13,7 @@ after(async () => { await pool?.end(); });
 // A mailer that records instead of sending.
 function mockMailer() {
   const sent = [];
-  return { sent, send: async (msg) => { sent.push(msg); }, linkTo: (to) => [...sent].reverse().find((m) => m.to === to)?.text.match(/#token=([\w-]+)/)?.[1] };
+  return { sent, send: async (msg) => { sent.push(msg); }, linkTo: (to) => [...sent].reverse().find((m) => m.to === to && m.tag === "signup-link")?.text.match(/#token=([\w-]+)/)?.[1] };
 }
 const tenants = async () => (await pool.query("SELECT count(*)::int AS n FROM sv_tenants")).rows[0].n;
 
@@ -38,7 +38,10 @@ test("signup → link → tenant and a working admin key, once", async () => {
     assert.equal(await tenants(), before, "nothing is created until the link is opened");
     const mail = mailer.sent.at(-1);
     assert.equal(mail.to, "founder@acme.example");
-    assert.match(mail.text, /^Finish creating the SpendVeto account for Acme Robotics:\n\nhttps:\/\/spendveto\.com\/signup\/verify#token=/);
+    assert.equal(mail.tag, "signup-link");
+    assert.match(mail.text, /^Finish creating the SpendVeto account for Acme Robotics\n/);
+    assert.match(mail.text, /\nCreate my account:\nhttps:\/\/spendveto\.com\/signup\/verify#token=[\w-]+\n/);
+    assert.match(mail.html, /<a href="https:\/\/spendveto\.com\/signup\/verify#token=[\w-]+"/);
     const token = mailer.linkTo("founder@acme.example");
     const stored = (await pool.query("SELECT token_hash FROM sv_signups WHERE email = $1", ["founder@acme.example"])).rows[0].token_hash;
     assert.notEqual(stored, token, "the token is stored as its digest");
@@ -55,6 +58,29 @@ test("signup → link → tenant and a working admin key, once", async () => {
     assert.equal(again.status, 400, "a link creates at most one account");
     assert.equal(again.body.code, "invalid_token");
     assert.equal(await tenants(), before + 1);
+
+    const welcome = mailer.sent.filter((m) => m.tag === "welcome");
+    assert.equal(welcome.length, 1, "one welcome email, for the one account");
+    assert.equal(welcome[0].to, "founder@acme.example");
+    assert.equal(welcome[0].subject, "Welcome to SpendVeto — your account is ready");
+    assert.ok(welcome[0].text.includes(ok.body.tenant.id) && welcome[0].text.includes(`${ok.body.admin_key.slice(0, 12)}…`), "names the account and which key");
+    assert.ok(!welcome[0].text.includes(ok.body.admin_key) && !welcome[0].html.includes(ok.body.admin_key), "never the key itself");
+    assert.ok(welcome[0].text.includes("/v1/budgets/my-agent") && welcome[0].text.includes("/v1/keys"), "first steps: a budget, then an agent key");
+  } finally { await app.close(); }
+});
+
+test("a welcome email that fails to send never fails the signup — the account and its key still come back", async () => {
+  const sent = [];
+  const mailer = { send: async (m) => { if (m.tag === "welcome") throw new Error("provider down"); sent.push(m); } };
+  const app = await startApp(pool, { mailer });
+  try {
+    const anon = client(app.url);
+    await anon.post("/signup", { email: "flaky@example.com", org_name: "Flaky <b>Co</b>" });
+    const link = sent.at(-1);
+    assert.ok(!link.html.includes("<b>Co</b>") && link.html.includes("Flaky &lt;b&gt;Co&lt;/b&gt;"), "names typed into the form are escaped in the HTML");
+    const made = await anon.post("/signup/verify", { token: link.text.match(/#token=([\w-]+)/)[1] });
+    assert.equal(made.status, 201);
+    assert.match(made.body.admin_key, /^svk_/);
   } finally { await app.close(); }
 });
 
@@ -256,4 +282,22 @@ test("mail providers: Resend and Postmark requests, and none without config", as
   assert.equal(calls[1].url, "https://api.postmarkapp.com/email");
   assert.equal(calls[1].init.headers["X-Postmark-Server-Token"], "pm_x");
   assert.equal(JSON.parse(calls[1].init.body).To, "a@b.example");
+});
+
+test("Brevo: its transactional-email request shape, with reply-to and a tag", async () => {
+  const calls = [];
+  const fake = async (url, init) => { calls.push({ url, init }); return { ok: true }; };
+  assert.equal(mailerFromEnv({ SPENDVETO_MAIL_PROVIDER: "brevo", SPENDVETO_MAIL_FROM: "x@y.example" }, fake), null, "needs BREVO_API_KEY");
+  const brevo = mailerFromEnv({ SPENDVETO_MAIL_PROVIDER: "Brevo", BREVO_API_KEY: "xkeysib-test", SPENDVETO_MAIL_FROM: "SpendVeto <noreply@mail.spendveto.com>", SPENDVETO_MAIL_REPLY_TO: "founders@example.com" }, fake);
+  assert.equal(brevo.provider, "brevo");
+  await brevo.send({ to: "a@b.example", subject: "s", text: "t", html: "<p>h</p>", tag: "welcome" });
+  assert.equal(calls[0].url, "https://api.brevo.com/v3/smtp/email");
+  assert.equal(calls[0].init.headers["api-key"], "xkeysib-test");
+  assert.deepEqual(JSON.parse(calls[0].init.body), {
+    sender: { name: "SpendVeto", email: "noreply@mail.spendveto.com" }, to: [{ email: "a@b.example" }], subject: "s", htmlContent: "<p>h</p>", textContent: "t",
+    replyTo: { email: "founders@example.com" }, tags: ["welcome"],
+  });
+  await mailerFromEnv({ SPENDVETO_MAIL_PROVIDER: "brevo", BREVO_API_KEY: "k", BREVO_API_BASE: "http://localhost:9999/", SPENDVETO_MAIL_FROM: "a@b.example" }, fake).send({ to: "c@d.example", subject: "s", text: "t", html: "h" });
+  assert.equal(calls[1].url, "http://localhost:9999/v3/smtp/email", "base URL overridable for tests");
+  await assert.rejects(mailerFromEnv({ SPENDVETO_MAIL_PROVIDER: "brevo", BREVO_API_KEY: "k", SPENDVETO_MAIL_FROM: "a@b.example" }, async () => ({ ok: false, status: 401 })).send({ to: "c@d.example", subject: "s", text: "t", html: "h" }), /answered 401/);
 });

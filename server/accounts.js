@@ -1,6 +1,7 @@
 import express from "express";
 import { requireAuth, authEnabled } from "./auth.js";
 import { createRateLimiter } from "./ratelimit.js";
+import { consoleOrigin, sendInvite } from "./console-emails.js";
 import { acceptInvite, changePassword, destroySession, inviteUser, linkWallet, listUsers, login, removeUser, sessionTokenFrom, sessionUser, SESSION_COOKIE, SESSION_TTL_MS, unlinkWallet, updateUser, walletChallenge, walletLogin } from "./users.js";
 
 // Console sign-in (server/users.js holds the accounts and sessions).
@@ -55,7 +56,7 @@ export function createAccountsRouter() {
   const signedIn = requireAuth("viewer");
   r.post("/api/auth/wallet/challenge", loginLimit, (req, res, next) => (req.body?.purpose === "link" ? signedIn(req, res, next) : next()), (req, res) => {
     try {
-      const origin = new URL(process.env.SPENDVETO_PUBLIC_URL || `${req.protocol}://${req.get("host")}`).origin;
+      const origin = consoleOrigin(req);
       res.json(walletChallenge({ address: req.body?.address, purpose: req.body?.purpose, user: req.user, host: new URL(origin).host, origin }));
     } catch (e) { fail(res, e); }
   });
@@ -84,10 +85,15 @@ export function createAccountsRouter() {
   });
 
   r.get("/api/users", requireAuth("admin"), (req, res) => res.json({ users: listUsers() }));
-  r.post("/api/users/invite", requireAuth("admin"), (req, res) => {
+  // The link is emailed when a mail provider is configured (console-emails.js),
+  // and always handed back too, so the admin can pass it on if mail is off or fails.
+  r.post("/api/users/invite", requireAuth("admin"), async (req, res) => {
     try {
       const out = inviteUser(req.body || {});
-      res.status(201).json({ user: out.user, expiresAt: out.expiresAt, inviteUrl: `${req.protocol}://${req.get("host")}/#accept-invite=${out.token}` });
+      const consoleUrl = consoleOrigin(req);
+      const inviteUrl = `${consoleUrl}/#accept-invite=${out.token}`;
+      const delivery = await sendInvite({ user: out.user, inviteUrl, expiresAt: out.expiresAt, invitedBy: req.user?.email, consoleUrl });
+      res.status(201).json({ user: out.user, expiresAt: out.expiresAt, inviteUrl, ...delivery });
     } catch (e) { fail(res, e); }
   });
   r.patch("/api/users/:id", requireAuth("admin"), (req, res) => {

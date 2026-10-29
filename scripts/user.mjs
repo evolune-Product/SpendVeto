@@ -2,20 +2,22 @@
 // Console accounts, from the host — the only way to create the first admin
 // (there is no unauthenticated way to make one over HTTP, by design).
 //
-//   npm run user -- invite you@company.com admin   # prints a one-time invite link
+//   npm run user -- invite you@company.com admin   # a one-time invite link, emailed when mail is configured, and printed
 //   npm run user -- list
-//   npm run user -- reset you@company.com          # new invite link; the old password stops working
+//   npm run user -- reset you@company.com          # new invite link (printed); the old password stops working
 //   npm run user -- disable you@company.com
 //
 // The link opens the Console, where the invitee sets their own password, so
-// no password ever passes through a shell or its history. Set
-// SPENDVETO_PUBLIC_URL (e.g. https://app.spendveto.com) when the Console isn't
-// on this machine's localhost.
+// no password ever passes through a shell or its history. Reads .env.local
+// like the server: SPENDVETO_PUBLIC_URL (e.g. https://app.spendveto.com) when
+// the Console isn't on this machine's localhost, SPENDVETO_MAIL_* to email it.
+import "./load-env.mjs"; // first: .env.local before anything reads it
 import { PORT } from "../shared-config.js";
 import { inviteUser, listUsers, updateUser } from "../server/users.js";
 import { readFileSync, writeFileSync } from "../server/store.js";
 import { dataPath } from "../shared-config.js";
 import { closeStore } from "../server/store.js";
+import { sendInvite } from "../server/console-emails.js";
 
 const [cmd, email, role] = process.argv.slice(2);
 const base = (process.env.SPENDVETO_PUBLIC_URL || `http://localhost:${PORT}`).replace(/\/$/, "");
@@ -24,7 +26,10 @@ const find = (e) => listUsers().find((u) => u.email === String(e || "").trim().t
 try {
   if (cmd === "invite") {
     const out = inviteUser({ email, role: role || "viewer" });
-    console.log(`\nInvited ${out.user.email} as ${out.user.role}. Open this link to set a password (valid until ${out.expiresAt}, one use):\n\n  ${base}/#accept-invite=${out.token}\n`);
+    const inviteUrl = `${base}/#accept-invite=${out.token}`;
+    const delivery = await sendInvite({ user: out.user, inviteUrl, expiresAt: out.expiresAt, consoleUrl: base });
+    const sent = delivery.emailed ? `Emailed the link to ${out.user.email}.` : delivery.reason === "send_failed" ? `Couldn't email it (${delivery.error}) — send them this link yourself.` : "Email isn't configured (SPENDVETO_MAIL_PROVIDER) — send them this link yourself.";
+    console.log(`\nInvited ${out.user.email} as ${out.user.role}. ${sent} It sets their password (valid until ${out.expiresAt}, one use):\n\n  ${inviteUrl}\n`);
   } else if (cmd === "reset") {
     const user = find(email);
     if (!user) throw new Error(`no user ${email}`);

@@ -11,7 +11,7 @@ import { verifyChain } from "./audit.js";
 import { isUnavailable } from "./db.js";
 import { GovernError } from "./util.js";
 import { createSignup, turnstileFromEnv } from "./signup.js";
-import { mailerFromEnv } from "./mailer.js";
+import { mailerFromEnv } from "../server/mailer.js";
 
 const MAX_CALL_MICROS = 1_000_000_000_000; // $1,000,000 for one call: anything larger is a bug upstream
 const MAX_CAP_MICROS = 1_000_000_000_000_000; // $1,000,000,000

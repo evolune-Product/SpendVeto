@@ -55,7 +55,14 @@ export default function Users({ auth, onSignedOut, onUserChange }) {
             </form>
             {invite && (
               <div className="invite-link">
-                <p className="hint">Send this to {invite.user.email} — it works once, until {dateTime(invite.expiresAt)}. It isn't shown again.</p>
+                {invite.emailed ? (
+                  <p className="form-note">Emailed the invite to {invite.user.email}. The link works once, until {dateTime(invite.expiresAt)} — if the email doesn't arrive, send them this yourself (it isn't shown again):</p>
+                ) : (
+                  <p className="hint">
+                    {invite.reason === "send_failed" ? `Couldn't email it (${invite.error}). ` : "Email isn't set up on this server. "}
+                    Send this to {invite.user.email} yourself — it works once, until {dateTime(invite.expiresAt)}. It isn't shown again.
+                  </p>
+                )}
                 <code>{invite.inviteUrl}</code>
               </div>
             )}
